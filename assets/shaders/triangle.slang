@@ -4,6 +4,14 @@ struct VertexOut {
     float3 color : COLOR;
 };
 
+// View Projection Matrix (VP)
+struct PushConstants {
+    float4x4 mvp;
+};
+
+[[vk::push_constant]]
+ConstantBuffer<PushConstants> pc;
+
 // Entry point do Vertex Shader
 [shader("vertex")]
 VertexOut vertexMain(uint vertexID : SV_VertexID) {
@@ -23,7 +31,7 @@ VertexOut vertexMain(uint vertexID : SV_VertexID) {
         float3(0.0, 0.0, 1.0)  // Azul
     };
 
-    output.position = float4(positions[vertexID], 0.0, 1.0);
+    output.position = mul(pc.mvp, float4(positions[vertexID], -1.0, 1.0));
     output.color = colors[vertexID];
     
     return output;

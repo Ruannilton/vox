@@ -7,6 +7,7 @@ import "core:slice"
 import vma "shared:vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
+import glm "core:math/linalg/glsl"
 
 NUM_FRAMES_IN_FLIGHT :: 2
 NUM_SWAP_CHAIN_IMAGES :: NUM_FRAMES_IN_FLIGHT + 1
@@ -56,6 +57,8 @@ Globals :: struct {
 	graphicsPipeline:  vk.Pipeline,
 	timelineSemaphore: vk.Semaphore,
 	nextSignalValue:   u64,
+	camera:            Camera,
+	deltaTime:         f32,
 }
 
 globals: Globals
@@ -88,6 +91,23 @@ main :: proc() {
 			resize_window()
 		},
 	)
+	glfw.SetKeyCallback(
+		globals.window,
+		proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
+			context = globals.global_context
+			speed := 1000.0 * globals.deltaTime
+			if key == glfw.KEY_W && action == glfw.PRESS {
+				camera_move(&globals.camera, speed, 0.0)
+			} else if key == glfw.KEY_S && action == glfw.PRESS {
+				camera_move(&globals.camera, -speed, 0.0)
+			} else if key == glfw.KEY_A && action == glfw.PRESS {
+				camera_move(&globals.camera, 0.0, -speed)
+			} else if key == glfw.KEY_D && action == glfw.PRESS {
+				camera_move(&globals.camera, 0.0, speed)
+			}
+			log.info("Camera position: {}", globals.camera.position)
+		},
+	)
 	log.info("Window created successfully")
 
 	// Initialize Vulkan
@@ -115,16 +135,26 @@ main :: proc() {
 	create_graphics_pipeline()
 	defer destroy_graphics_pipeline()
 
+	globals.camera = camera_create(glm.vec3{0, 0, 30}, glm.vec3{0, 0, 0}, 45.0)
+	camera_look_at(&globals.camera, glm.vec3{0, 0, -1})
 	globals.frameIndex = 0
 	globals.nextSignalValue = NUM_FRAMES_IN_FLIGHT + 1
+	projection := glm.mat4Perspective(glm.radians(globals.camera.fov), f32(globals.swapchain.width) / f32(globals.swapchain.height), 0.1, 100.0)
+	
+	last_frame_time := glfw.GetTime()
 	for !glfw.WindowShouldClose(globals.window) {
 		free_all(context.temp_allocator)
 		glfw.PollEvents()
+		current_time := glfw.GetTime()
+		globals.deltaTime = f32(current_time - last_frame_time)
+		last_frame_time = current_time
 
 		current_frame := globals.frames[globals.frameIndex]
 		signal_value := globals.nextSignalValue
 		globals.nextSignalValue += 1
 		waitValue := signal_value - NUM_FRAMES_IN_FLIGHT
+		view := camera_view(globals.camera)
+		vp := projection * view
 
 		wait_info := vk.SemaphoreWaitInfo {
 			sType          = .SEMAPHORE_WAIT_INFO,
@@ -236,6 +266,7 @@ main :: proc() {
 		vk.CmdSetScissor(current_frame.vkCommandBuffer, 0, 1, &scissor)
 
 		// draw
+		vk.CmdPushConstants(current_frame.vkCommandBuffer, globals.pipelineLayout, {.VERTEX}, 0, cast(u32)size_of(glm.mat4), raw_data(&vp))
 		vk.CmdBindPipeline(current_frame.vkCommandBuffer, .GRAPHICS, globals.graphicsPipeline)
 		vk.CmdDraw(current_frame.vkCommandBuffer, 3, 1, 0, 0)
 
@@ -307,6 +338,7 @@ main :: proc() {
 		vk_check(vk.QueuePresentKHR(globals.vkQueue, &present_info))
 
 		globals.frameIndex = (globals.frameIndex + 1) % NUM_FRAMES_IN_FLIGHT
+
 
 	}
 
@@ -865,6 +897,12 @@ create_graphics_pipeline :: proc() {
 
 	pipeline_layout_create_info := vk.PipelineLayoutCreateInfo {
 		sType = .PIPELINE_LAYOUT_CREATE_INFO,
+		pushConstantRangeCount = 1,
+		pPushConstantRanges = &vk.PushConstantRange {
+			stageFlags = {.VERTEX},
+			offset     = 0,
+			size       = cast(u32)size_of(glm.mat4),
+		},
 	}
 	vk_check(
 		vk.CreatePipelineLayout(
