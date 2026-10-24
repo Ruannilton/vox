@@ -51,7 +51,6 @@ main :: proc() {
 
 
 	camera = camera_create(glm.vec3{0, 0, 30}, glm.vec3{0, -90, 0}, 45.0)
-	camera_look_at(&camera, glm.vec3{0, 0, -1})
 	projection := glm.mat4Perspective(
 		glm.radians(camera.fov),
 		f32(engine.app.presentation.width) / f32(engine.app.presentation.height),
@@ -101,8 +100,8 @@ main :: proc() {
 		},
 	)
 
-	triangle_pipeline := engine.create_triangle_pipeline()
-	defer engine.destroy_triangle_pipeline(&triangle_pipeline)
+	mesh_pipeline := engine.create_mesh_shader_pipeline()
+	defer engine.destroy_mesh_shader_pipeline(&mesh_pipeline)
 
 	log.info("Starting main loop")
 	for !glfw.WindowShouldClose(engine.app.glfwWindow) {
@@ -190,8 +189,8 @@ main :: proc() {
 		vk.CmdBeginRendering(cmd, &rendering_info)
 
 
-		engine.record_triangle_pipeline(&triangle_pipeline, cmd, &vp)
-
+		engine.record_mesh_shader_pipeline(&mesh_pipeline, cmd, &vp)
+		
 		vk.CmdEndRendering(cmd)
 
 		transition_present_barrier := vk.ImageMemoryBarrier2 {

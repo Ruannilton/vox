@@ -114,6 +114,9 @@ create_vulkan_device :: proc() {
 		vk.KHR_SWAPCHAIN_EXTENSION_NAME,
 		vk.EXT_SHADER_OBJECT_EXTENSION_NAME,
 		vk.KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+		vk.EXT_MESH_SHADER_EXTENSION_NAME,
+		vk.KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME,
+		vk.KHR_SPIRV_1_4_EXTENSION_NAME 
 	}
 
 	features_ext_chain: rawptr
@@ -141,6 +144,12 @@ create_vulkan_device :: proc() {
 		sType = .PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
 		pNext = features_ext_chain,
 		shaderObject = true,
+	}
+	features_ext_chain = &vk.PhysicalDeviceMeshShaderFeaturesEXT{
+		sType = .PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+		meshShader = true,
+		taskShader = true,
+		pNext = features_ext_chain
 	}
 
 	device_create_info := vk.DeviceCreateInfo {
