@@ -1,9 +1,9 @@
 package main
 
+import "base:runtime"
+import "core:log"
 import "core:os"
 import vk "vendor:vulkan"
-import "core:log"
-import "base:runtime"   
 
 vk_check :: proc(result: vk.Result, location := #caller_location) {
 	if result != .SUCCESS do log.panicf("Vulkan failure: {}", result, location = location)
