@@ -9,13 +9,13 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Indicador | Quantidade |
 | --- | ---: |
 | Specs registradas | 5 |
-| Specs aprovadas | 2 |
+| Specs aprovadas | 3 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
 | Implementações concluídas | 2 |
 | Validações verificadas | 2 |
 
-Três documentos estão em `rascunho`; VS-00 está integralmente concluída (o teste forçado de rejeição do AC-02 foi dispensado pelo mantenedor); VS-01 está integralmente concluída (evidências nos ACs; teleporte em massa e shutdown com join cobertos por simulação, não exercitados em runtime).
+Três documentos estão registrados; VS-00 e VS-01 estão integralmente concluídas; VS-02 está `aprovada` (albedo por paleta procedural de cores sólidas, sem arquivos de textura) e pronta para gerar implementação; VS-03 e VS-04 permanecem em `rascunho`.
 
 ## Tracking das especificações
 
@@ -23,7 +23,7 @@ Três documentos estão em `rascunho`; VS-00 está integralmente concluída (o t
 | --- | --- | --- | --- | --- | --- | --- |
 | VS-00 | [[VS-00-fundacao-vulkan|Fundação Vulkan]] | `aprovada` | `concluida` | `verificada` | — | — |
 | VS-01 | [[VS-01-streaming-generate-pack|Streaming, generate e pack]] | `aprovada` | `concluida` | `verificada` | VS-00 | — |
-| VS-02 | [[VS-02-task-mesh-templates|Task/mesh e templates]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-01 | — |
+| VS-02 | [[VS-02-task-mesh-templates|Task/mesh e templates]] | `aprovada` | `nao-iniciada` | `nao-iniciada` | VS-01 | — |
 | VS-03 | [[VS-03-edicao-e1|Edição E1]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-02 | — |
 | VS-04 | [[VS-04-mirror-c2|Mirror C2]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-03 | — |
 
