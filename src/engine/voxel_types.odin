@@ -34,7 +34,9 @@ CULL_FACE_NEVER        :: 7
 // --- Renderização (VS-02) ---
 NEIGHBOR_SLOT_INVALID       :: max(u32)
 MAXIMUM_VISIBLE_CHUNKS      :: 4096
-TASK_PAYLOAD_BRICK_CAPACITY :: 2048
+// Payload: 2 entradas de 14 bits por word (ver common.slang).
+TASK_PAYLOAD_WORDS          :: 2048
+TASK_PAYLOAD_BRICK_CAPACITY :: 4096
 
 // Ordem igual a FACE_NORMALS no common.slang (+X,-X,+Y,-Y,+Z,-Z).
 NEIGHBOR_OFFSETS :: [6]ChunkCoordinate{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}

@@ -302,6 +302,12 @@ void select_bricks(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadI
     uint thread = local_id.x;
     VisibleChunk chunk = visible_chunks[push_constants.visible_chunk_offset + group_id.x];
 
+    // O payload é reescrito a cada dispatch: as words de brick_indices só
+    // recebem InterlockedOr nas posições selecionadas, então precisam
+    // começar zeradas (cada word carrega 2 entradas de 14 bits).
+    for (uint i = thread; i < TASK_PAYLOAD_WORDS; i += 128) {
+        shared_payload.brick_indices[i] = 0;
+    }
     if (thread == 0) {
         shared_selected_brick_count = 0;
         shared_payload.storage_slot_index = chunk.storage_slot_index;
@@ -326,22 +332,33 @@ void select_bricks(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadI
         uint occupancy_word = occupancy_pool[occupancy_base + brick_index];
 
         // TODO: culling de frustum por brick (bounds do brick vs frustum).
-        if (occupancy_word != 0) {
-            // CAMINHO B: lê o nível de subdivisão decidido pelo pack.
-            uint subd_word = occupancy_pool[occupancy_base + SUBDIVISION_WORD_BASE + (brick_index >> 4u)];
-            uint subdivision = (subd_word >> ((brick_index & 15u) * 2u)) & 3u;
-            uint parts = 1u << subdivision;
+        if (occupancy_word == 0) continue;
 
-            for (uint part = 0; part < parts; part++) {
-                uint position;
-                InterlockedAdd(shared_selected_brick_count, 1, position);
-                if (position < TASK_PAYLOAD_BRICK_CAPACITY) {
-                    shared_payload.brick_indices[position] =
-                        brick_index | (part << 10u) | (subdivision << 12u);
-                }
-                // Payload cheio (patológico: todos os bricks pesados x4):
-                // os excedentes são descartados neste frame.
+        // Culling de oclusão: brick cheio com os 6 vizinhos cheios não tem
+        // face exposta — o grupo emitiria zero triângulos (render_sim.py).
+        if (is_brick_occluded(chunk.storage_slot_index, occupancy_word,
+                brick_coordinate_from_index(brick_index), chunk.neighbor_slots)) {
+            continue;
+        }
+
+        // CAMINHO B: lê o nível de subdivisão decidido pelo pack.
+        uint subd_word = occupancy_pool[occupancy_base + SUBDIVISION_WORD_BASE + (brick_index >> 4u)];
+        uint subdivision = (subd_word >> ((brick_index & 15u) * 2u)) & 3u;
+        uint parts = 1u << subdivision;
+
+        for (uint part = 0; part < parts; part++) {
+            uint position;
+            InterlockedAdd(shared_selected_brick_count, 1, position);
+            if (position < TASK_PAYLOAD_BRICK_CAPACITY) {
+                // 2 entradas de 14 bits por word: InterlockedOr porque as
+                // duas metades da mesma word podem ser escritas por threads
+                // distintas (a word começa zerada).
+                uint entry = brick_index | (part << 10u) | (subdivision << 12u);
+                InterlockedOr(shared_payload.brick_indices[position >> 1u],
+                              entry << ((position & 1u) * 14u));
             }
+            // Payload cheio é impossível por construção (capacidade = pior
+            // caso: 1024 bricks × 4 partes); o guarda permanece defensivo.
         }
     }
     GroupMemoryBarrierWithGroupSync();
@@ -374,8 +391,10 @@ void build_brick_mesh(
 ) {
     uint slot = payload.storage_slot_index;
 
-    // CAMINHO B: decodifica o grupo (brick + parte, conforme subdivisão do pack)
-    uint entry            = payload.brick_indices[group_id.x];
+    // CAMINHO B: decodifica o grupo (brick + parte, conforme subdivisão do
+    // pack) — 2 entradas de 14 bits por word do payload.
+    uint packed_word     = payload.brick_indices[group_id.x >> 1u];
+    uint entry           = (packed_word >> ((group_id.x & 1u) * 14u)) & 0x3FFFu;
     uint brick_idx        = entry & 1023u;
     uint part             = (entry >> 10u) & 3u;
     uint subdivision_log2 = (entry >> 12u) & 3u;

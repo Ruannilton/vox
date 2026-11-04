@@ -50,7 +50,12 @@ static const uint CULL_FACE_NEVER = 7; // triângulo nunca culpado (interior/dia
 // VS-02: publicação de visíveis e payload do task shader.
 static const uint NEIGHBOR_SLOT_INVALID       = 0xFFFFFFFFu;
 static const uint MAXIMUM_VISIBLE_CHUNKS      = 4096;
-static const uint TASK_PAYLOAD_BRICK_CAPACITY = 2048; // payload ≈ 8,2 KiB < 16 KiB
+// Payload: 2 entradas de 14 bits (brick 10b | parte 2b | subdivisão 2b) por
+// word — 2048 words ≈ 8,2 KiB < 16 KiB, capacidade 4096 entradas = pior caso
+// exato (1024 bricks × 4 partes). Não usa tipos de 16 bits (shaderInt16 não
+// é habilitado).
+static const uint TASK_PAYLOAD_WORDS          = 2048;
+static const uint TASK_PAYLOAD_BRICK_CAPACITY = 4096;
 
 // ----------------------------------------------------------------------------
 // Estruturas (espelhadas em src/engine — std430)
@@ -124,13 +129,15 @@ struct VisibleChunk {
     uint _padding[2];
 };
 
-// VS-02: payload task→mesh. Entrada de brick_indices:
-// brick (10 bits) | parte<<10 | subdivisão<<12.
+// VS-02: payload task→mesh. Cada word carrega 2 entradas de 14 bits:
+// brick (10 bits) | parte<<10 | subdivisão<<12; entrada i está na metade
+// (i&1)*14 da word i>>1. Words não escritas permanecem zeradas (o task
+// shader zera antes de selecionar).
 struct TaskPayload {
     uint storage_slot_index;
     int3 chunk_world_origin;
     uint neighbor_slots[6];
-    uint brick_indices[TASK_PAYLOAD_BRICK_CAPACITY];
+    uint brick_indices[TASK_PAYLOAD_WORDS];
 };
 
 // VS-02: saída do mesh shader.
@@ -192,6 +199,40 @@ uint read_brick_occupancy(uint slot, int3 coord) {
 bool is_voxel_solid_local(uint slot, int3 coord) {
     uint occupancy = read_brick_occupancy(slot, coord / BRICK_SIZE);
     return ((occupancy >> bit_index_from_local_coordinate(coord % BRICK_SIZE)) & 1u) != 0;
+}
+
+// VS-02: word de ocupação de um brick VIZINHO com redirecionamento B2 entre
+// chunks (mesma ordem de FACE_NORMALS). Vizinho inválido => 0 (conservador:
+// tratado como não-cheio, nunca contribui para culling de oclusão).
+uint read_brick_occupancy_b2(uint slot, int3 brick_coord, uint neighbor_slots[6]) {
+    if (all(brick_coord >= 0) && all(brick_coord < BRICKS_PER_CHUNK_AXIS)) {
+        return read_brick_occupancy(slot, brick_coord);
+    }
+    uint neighbor_slot = NEIGHBOR_SLOT_INVALID;
+    int3 local = brick_coord;
+    if (brick_coord.x < 0)                              { neighbor_slot = neighbor_slots[1]; local.x += BRICKS_PER_CHUNK_AXIS.x; }
+    else if (brick_coord.x >= BRICKS_PER_CHUNK_AXIS.x)  { neighbor_slot = neighbor_slots[0]; local.x -= BRICKS_PER_CHUNK_AXIS.x; }
+    else if (brick_coord.y < 0)                         { neighbor_slot = neighbor_slots[3]; local.y += BRICKS_PER_CHUNK_AXIS.y; }
+    else if (brick_coord.y >= BRICKS_PER_CHUNK_AXIS.y)  { neighbor_slot = neighbor_slots[2]; local.y -= BRICKS_PER_CHUNK_AXIS.y; }
+    else if (brick_coord.z < 0)                         { neighbor_slot = neighbor_slots[5]; local.z += BRICKS_PER_CHUNK_AXIS.z; }
+    else                                                { neighbor_slot = neighbor_slots[4]; local.z -= BRICKS_PER_CHUNK_AXIS.z; }
+    if (neighbor_slot == NEIGHBOR_SLOT_INVALID) return 0;
+    return read_brick_occupancy(neighbor_slot, local);
+}
+
+// Brick ocluso = cheio (32/32 voxels sólidos) com os 6 bricks vizinhos cheios:
+// nenhum voxel tem face exposta (independente da câmera), então o grupo não
+// emitiria geometria. Simulação: tools/sim/render_sim.py (cenário de oclusão).
+bool is_brick_occluded(uint slot, uint occupancy_word, int3 brick_coord, uint neighbor_slots[6]) {
+    if (occupancy_word != 0xFFFFFFFFu) return false;
+    [unroll]
+    for (uint face = 0; face < 6; face++) {
+        int3 neighbor_coord = brick_coord + FACE_NORMALS[face];
+        if (read_brick_occupancy_b2(slot, neighbor_coord, neighbor_slots) != 0xFFFFFFFFu) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // CORREÇÃO B2: leitura fora do chunk é redirecionada à ocupação do vizinho
