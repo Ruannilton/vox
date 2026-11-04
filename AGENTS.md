@@ -22,7 +22,12 @@ Constantes e layouts: src/assets/shaders/common.slang é a fonte única de verda
 - Registrar decisões arquiteturais em docs/obsidian/decisoes/ usando modelos/modelo-decisao.md e indexá-las em decisoes/00-indice.md.
 - Manter o frontmatter da spec, docs/obsidian/tracking/status.md e docs/obsidian/tracking/dependencias.md sincronizados a cada mudança.
 - Só iniciar implementação com spec aprovada e dependências concluídas; só marcar validação verificada com evidência reproduzível.
+- Ao fim de uma specificação realizar o commit passando o nome da especificação na mensagem
+
+## Odin
+- Documentação em docs/Odin-Documentation
+- NUNCA tente ler a documentação completa, procure pelo item em especifico
 
 ## Comandos
-- Build: <preencher>
+- Build: `run.bat` (compila shaders Slang → `bin/`, `odin build ./src -out:./bin/vox.exe` e executa)
 - Simulações: python3 tools/sim/<arquivo>.py

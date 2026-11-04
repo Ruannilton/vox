@@ -112,7 +112,11 @@ main :: proc() {
 		vp := projection * view
 
 		frame_resource := engine.AcquireFrameResource()
-		swapchain_frame := engine.AcquireNextImage()
+		swapchain_frame, acquired := engine.AcquireNextImage()
+		if !acquired {
+			// Janela minimizada ou swapchain recriada/fora de data: pula o frame.
+			continue
+		}
 
 
 		vk_check(vk.ResetCommandPool(engine.app.vkDevice, frame_resource.vkCommandPool, {}))

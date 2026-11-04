@@ -17,12 +17,38 @@ create_vulkan_instance :: proc() {
 	vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
 	log.assert(vk.CreateInstance != nil, "Failed to load Vulkan API")
 
-	layers := []cstring{"VK_LAYER_KHRONOS_validation", "VK_LAYER_KHRONOS_shader_object"}
+	// REQ-FND-PLAT-02: validation layers apenas quando disponíveis; ausência gera warning e a execução continua.
+	requested_layers := []cstring{"VK_LAYER_KHRONOS_validation"}
+	layers := make([dynamic]cstring, 0, len(requested_layers), context.temp_allocator)
+	available_layer_count: u32
+	vk_check(vk.EnumerateInstanceLayerProperties(&available_layer_count, nil))
+	available_layers := make([]vk.LayerProperties, available_layer_count, context.temp_allocator)
+	vk_check(vk.EnumerateInstanceLayerProperties(&available_layer_count, raw_data(available_layers)))
+	for requested in requested_layers {
+		found := false
+		for &available in available_layers {
+			if string(cstring(&available.layerName[0])) == string(requested) {
+				found = true
+				break
+			}
+		}
+		if found {
+			append(&layers, requested)
+		} else {
+			log.warnf("Validation layer {} ausente; continuando sem validation", requested)
+		}
+	}
+	app.validationLayersEnabled = len(layers) > 0
+	if app.validationLayersEnabled {
+		log.infof("Validation layers ativas: {}", layers[:])
+	}
 
-	extensions := slice.concatenate(
-		[][]cstring{glfw.GetRequiredInstanceExtensions(), {vk.EXT_DEBUG_UTILS_EXTENSION_NAME, vk.EXT_VALIDATION_FEATURES_EXTENSION_NAME}},
-		context.temp_allocator,
-	)
+	extensions := make([dynamic]cstring, 0, 8, context.temp_allocator)
+	append(&extensions, ..glfw.GetRequiredInstanceExtensions())
+	append(&extensions, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
+	if app.validationLayersEnabled {
+		append(&extensions, vk.EXT_VALIDATION_FEATURES_EXTENSION_NAME)
+	}
 
 	debug_messenger_info := vk.DebugUtilsMessengerCreateInfoEXT {
 		sType = .DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
@@ -53,8 +79,10 @@ create_vulkan_instance :: proc() {
 		pEnabledValidationFeatures     = raw_data(enabled_features),
 	}
 
-	pNextExtension: rawptr
-	pNextExtension = &validation_features
+	pNextExtension: rawptr = &debug_messenger_info
+	if app.validationLayersEnabled {
+		pNextExtension = &validation_features
+	}
 
 	instance_info := vk.InstanceCreateInfo {
 		sType                   = .INSTANCE_CREATE_INFO,
@@ -102,22 +130,134 @@ destroy_vulkan_surface :: proc() {
 	log.info("Vulkan surface destroyed successfully")
 }
 
+// REQ-FND-DEV-02: extensões de dispositivo obrigatórias.
+REQUIRED_DEVICE_EXTENSIONS :: []cstring {
+	vk.KHR_SWAPCHAIN_EXTENSION_NAME,
+	vk.EXT_MESH_SHADER_EXTENSION_NAME,
+	vk.EXT_SHADER_OBJECT_EXTENSION_NAME,
+}
+
+// Cadeia completa de features consultada (REQ-FND-DEV-01) e habilitada (REQ-FND-DEV-03).
+DeviceFeatureChain :: struct {
+	v11:           vk.PhysicalDeviceVulkan11Features,
+	v12:           vk.PhysicalDeviceVulkan12Features,
+	v13:           vk.PhysicalDeviceVulkan13Features,
+	v14:           vk.PhysicalDeviceVulkan14Features,
+	shader_object: vk.PhysicalDeviceShaderObjectFeaturesEXT,
+	mesh_shader:   vk.PhysicalDeviceMeshShaderFeaturesEXT,
+}
+
+@(private)
+init_device_feature_chain :: proc(chain: ^DeviceFeatureChain) {
+	chain.v11 = {
+		sType                 = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+		shaderDrawParameters  = true,
+		storageBuffer16BitAccess = true,
+	}
+	chain.v12 = {
+		sType            = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		pNext            = &chain.v11,
+		timelineSemaphore = true,
+		scalarBlockLayout = true,
+	}
+	chain.v13 = {
+		sType            = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+		pNext            = &chain.v12,
+		dynamicRendering = true,
+		synchronization2 = true,
+	}
+	chain.v14 = {
+		sType = .PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
+		pNext = &chain.v13,
+	}
+	chain.shader_object = {
+		sType        = .PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
+		pNext        = &chain.v14,
+		shaderObject = true,
+	}
+	chain.mesh_shader = {
+		sType      = .PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+		pNext      = &chain.shader_object,
+		meshShader = true,
+		taskShader = true,
+	}
+}
+
+// Anexa à lista `missing` o nome de cada feature obrigatória não suportada.
+@(private)
+collect_missing_features :: proc(chain: ^DeviceFeatureChain, missing: ^[dynamic]string) {
+	if !chain.v11.shaderDrawParameters do append(missing, "shaderDrawParameters")
+	if !chain.v11.storageBuffer16BitAccess do append(missing, "storageBuffer16BitAccess")
+	if !chain.v12.timelineSemaphore do append(missing, "timelineSemaphore")
+	if !chain.v12.scalarBlockLayout do append(missing, "scalarBlockLayout")
+	if !chain.v13.dynamicRendering do append(missing, "dynamicRendering")
+	if !chain.v13.synchronization2 do append(missing, "synchronization2")
+	if !chain.shader_object.shaderObject do append(missing, "shaderObject")
+	if !chain.mesh_shader.meshShader do append(missing, "meshShader")
+	if !chain.mesh_shader.taskShader do append(missing, "taskShader")
+}
+
+@(private)
+query_device_features :: proc(device: vk.PhysicalDevice) -> DeviceFeatureChain {
+	chain: DeviceFeatureChain
+	chain.v11.sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES
+	chain.v12 = {sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, pNext = &chain.v11}
+	chain.v13 = {sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, pNext = &chain.v12}
+	chain.v14 = {sType = .PHYSICAL_DEVICE_VULKAN_1_4_FEATURES, pNext = &chain.v13}
+	chain.shader_object = {sType = .PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT, pNext = &chain.v14}
+	chain.mesh_shader = {sType = .PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT, pNext = &chain.shader_object}
+	features2 := vk.PhysicalDeviceFeatures2 {
+		sType = .PHYSICAL_DEVICE_FEATURES_2,
+		pNext = &chain.mesh_shader,
+	}
+	vk.GetPhysicalDeviceFeatures2(device, &features2)
+	return chain
+}
+
+@(private)
+collect_missing_extensions :: proc(device: vk.PhysicalDevice, missing: ^[dynamic]string) {
+	count: u32
+	vk_check(vk.EnumerateDeviceExtensionProperties(device, nil, &count, nil))
+	available := make([]vk.ExtensionProperties, count, context.temp_allocator)
+	vk_check(vk.EnumerateDeviceExtensionProperties(device, nil, &count, raw_data(available)))
+
+	for required in REQUIRED_DEVICE_EXTENSIONS {
+		found := false
+		for &ext in available {
+			if string(cstring(&ext.extensionName[0])) == string(required) {
+				found = true
+				break
+			}
+		}
+		if !found do append(missing, string(required))
+	}
+}
+
 @(private)
 create_vulkan_device :: proc() {
 	log.info("Creating Vulkan device")
-	app.vkPhysicalDevice = select_physical_device()
+	if !select_physical_device() {
+		log.panic("Nenhum dispositivo Vulkan atende aos requisitos obrigatórios (ver diagnóstico acima)")
+	}
 	log.info("Selected physical device successfully")
 
 	queue_priorities: f32 = 1.0
-	queue_create_info := []vk.DeviceQueueCreateInfo {
-		{
-			sType = .DEVICE_QUEUE_CREATE_INFO,
-			queueFamilyIndex = app.queues[.Graphics].familyIndex,
-			queueCount = 1,
+	queue_create_infos := make([dynamic]vk.DeviceQueueCreateInfo, 0, 2, context.temp_allocator)
+	append(&queue_create_infos, vk.DeviceQueueCreateInfo {
+		sType            = .DEVICE_QUEUE_CREATE_INFO,
+		queueFamilyIndex = app.queues[.Graphics].familyIndex,
+		queueCount       = 1,
+		pQueuePriorities = &queue_priorities,
+	})
+	compute_family := app.queues[.Compute].familyIndex
+	if compute_family != app.queues[.Graphics].familyIndex {
+		append(&queue_create_infos, vk.DeviceQueueCreateInfo {
+			sType            = .DEVICE_QUEUE_CREATE_INFO,
+			queueFamilyIndex = compute_family,
+			queueCount       = 1,
 			pQueuePriorities = &queue_priorities,
-		},
+		})
 	}
-	
 
 	extensions := []cstring {
 		vk.KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -125,49 +265,19 @@ create_vulkan_device :: proc() {
 		vk.KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
 		vk.EXT_MESH_SHADER_EXTENSION_NAME,
 		vk.KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME,
-		vk.KHR_SPIRV_1_4_EXTENSION_NAME 
+		vk.KHR_SPIRV_1_4_EXTENSION_NAME
 	}
 
-	features_ext_chain: rawptr
-	features_ext_chain = &vk.PhysicalDeviceVulkan14Features {
-		sType = .PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
-		pNext = features_ext_chain,
-	}
-	features_ext_chain = &vk.PhysicalDeviceVulkan13Features {
-		sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-		dynamicRendering = true,
-		synchronization2 = true,
-		pNext = features_ext_chain,
-	}
-	features_ext_chain = &vk.PhysicalDeviceVulkan12Features {
-		sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-		timelineSemaphore = true,
-		pNext = features_ext_chain,
-	}
-	features_ext_chain = &vk.PhysicalDeviceVulkan11Features {
-		sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-		shaderDrawParameters = true,
-		pNext = features_ext_chain,
-	}
-	features_ext_chain = &vk.PhysicalDeviceShaderObjectFeaturesEXT {
-		sType = .PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-		pNext = features_ext_chain,
-		shaderObject = true,
-	}
-	features_ext_chain = &vk.PhysicalDeviceMeshShaderFeaturesEXT{
-		sType = .PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
-		meshShader = true,
-		taskShader = true,
-		pNext = features_ext_chain
-	}
+	enabled_features: DeviceFeatureChain
+	init_device_feature_chain(&enabled_features)
 
 	device_create_info := vk.DeviceCreateInfo {
 		sType                   = .DEVICE_CREATE_INFO,
-		queueCreateInfoCount    = u32(len(queue_create_info)),
-		pQueueCreateInfos       = raw_data(queue_create_info),
+		queueCreateInfoCount    = u32(len(queue_create_infos)),
+		pQueueCreateInfos       = raw_data(queue_create_infos),
 		enabledExtensionCount   = u32(len(extensions)),
 		ppEnabledExtensionNames = raw_data(extensions),
-		pNext                   = features_ext_chain,
+		pNext                   = &enabled_features.mesh_shader,
 	}
 
 	vk_check(vk.CreateDevice(app.vkPhysicalDevice, &device_create_info, nil, &app.vkDevice))
@@ -339,21 +449,25 @@ destroy_depth_buffer :: proc() {
 	log.info("Depth buffer destroyed successfully")
 }
 
+// REQ-FND-SYNC-01: duas timelines — gráfica (valor inicial NUM_FRAMES_IN_FLIGHT)
+// e compute (valor inicial 0; 1 lote = 1 valor, exercitada a partir de VS-01).
 @(private)
 create_sync_objects :: proc() {
 	log.info("Creating sync objects")
-	timeline_semaphore_create_info := vk.SemaphoreTypeCreateInfo {
-		sType         = .SEMAPHORE_TYPE_CREATE_INFO,
-		semaphoreType = .TIMELINE,
-		initialValue  = NUM_FRAMES_IN_FLIGHT,
+	create_timeline :: proc(device: vk.Device, initial: u64, semaphore: ^vk.Semaphore) {
+		type_info := vk.SemaphoreTypeCreateInfo {
+			sType         = .SEMAPHORE_TYPE_CREATE_INFO,
+			semaphoreType = .TIMELINE,
+			initialValue  = initial,
+		}
+		info := vk.SemaphoreCreateInfo {
+			sType = .SEMAPHORE_CREATE_INFO,
+			pNext = &type_info,
+		}
+		vk_check(vk.CreateSemaphore(device, &info, nil, semaphore))
 	}
-	timeline_semaphore_info := vk.SemaphoreCreateInfo {
-		sType = .SEMAPHORE_CREATE_INFO,
-		pNext = &timeline_semaphore_create_info,
-	}
-	vk_check(
-		vk.CreateSemaphore(app.vkDevice, &timeline_semaphore_info, nil, &app.timelineSemaphore),
-	)
+	create_timeline(app.vkDevice, NUM_FRAMES_IN_FLIGHT, &app.timelineSemaphore)
+	create_timeline(app.vkDevice, 0, &app.computeTimelineSemaphore)
 	log.info("Sync objects created successfully")
 }
 
@@ -361,7 +475,97 @@ create_sync_objects :: proc() {
 destroy_sync_objects :: proc() {
 	log.info("Destroying sync objects")
 	vk.DestroySemaphore(app.vkDevice, app.timelineSemaphore, nil)
+	vk.DestroySemaphore(app.vkDevice, app.computeTimelineSemaphore, nil)
 	log.info("Sync objects destroyed successfully")
+}
+
+// REQ-FND-DESC-01: set 0 = recursos globais (bindings 0..16, storage buffers),
+// visível a compute e task/mesh; pipeline layouts com push constants de 88 B.
+DESCRIPTOR_SET_BINDING_COUNT :: 17
+PUSH_CONSTANTS_SIZE :: 88
+
+@(private)
+create_descriptor_layouts :: proc() {
+	log.info("Creating descriptor set and pipeline layouts")
+
+	properties: vk.PhysicalDeviceProperties
+	vk.GetPhysicalDeviceProperties(app.vkPhysicalDevice, &properties)
+	if properties.limits.maxDescriptorSetStorageBuffers < DESCRIPTOR_SET_BINDING_COUNT {
+		log.panicf(
+			"Dispositivo suporta apenas {} storage buffers por descriptor set (necessários {})",
+			properties.limits.maxDescriptorSetStorageBuffers,
+			DESCRIPTOR_SET_BINDING_COUNT,
+		)
+	}
+	if properties.limits.maxPushConstantsSize < PUSH_CONSTANTS_SIZE {
+		log.panicf(
+			"Dispositivo suporta apenas {} B de push constants (necessários {} B)",
+			properties.limits.maxPushConstantsSize,
+			PUSH_CONSTANTS_SIZE,
+		)
+	}
+
+	shader_stages := vk.ShaderStageFlags{.COMPUTE, .TASK_EXT, .MESH_EXT, .FRAGMENT}
+	bindings: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorSetLayoutBinding
+	for &binding, i in bindings {
+		binding = {
+			binding         = u32(i),
+			descriptorType  = .STORAGE_BUFFER,
+			descriptorCount = 1,
+			stageFlags      = shader_stages,
+		}
+	}
+	set_layout_info := vk.DescriptorSetLayoutCreateInfo {
+		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		bindingCount = len(bindings),
+		pBindings    = raw_data(&bindings),
+	}
+	vk_check(
+		vk.CreateDescriptorSetLayout(app.vkDevice, &set_layout_info, nil, &app.descriptorSetLayout),
+	)
+
+	set_layouts := []vk.DescriptorSetLayout{app.descriptorSetLayout}
+	graphics_push_range := vk.PushConstantRange {
+		stageFlags = {.TASK_EXT, .MESH_EXT, .FRAGMENT},
+		offset     = 0,
+		size       = PUSH_CONSTANTS_SIZE,
+	}
+	graphics_layout_info := vk.PipelineLayoutCreateInfo {
+		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
+		setLayoutCount         = u32(len(set_layouts)),
+		pSetLayouts            = raw_data(set_layouts),
+		pushConstantRangeCount = 1,
+		pPushConstantRanges    = &graphics_push_range,
+	}
+	vk_check(
+		vk.CreatePipelineLayout(app.vkDevice, &graphics_layout_info, nil, &app.graphicsPipelineLayout),
+	)
+
+	compute_push_range := vk.PushConstantRange {
+		stageFlags = {.COMPUTE},
+		offset     = 0,
+		size       = PUSH_CONSTANTS_SIZE,
+	}
+	compute_layout_info := vk.PipelineLayoutCreateInfo {
+		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
+		setLayoutCount         = u32(len(set_layouts)),
+		pSetLayouts            = raw_data(set_layouts),
+		pushConstantRangeCount = 1,
+		pPushConstantRanges    = &compute_push_range,
+	}
+	vk_check(
+		vk.CreatePipelineLayout(app.vkDevice, &compute_layout_info, nil, &app.computePipelineLayout),
+	)
+	log.info("Descriptor set and pipeline layouts created successfully")
+}
+
+@(private)
+destroy_descriptor_layouts :: proc() {
+	log.info("Destroying descriptor set and pipeline layouts")
+	vk.DestroyPipelineLayout(app.vkDevice, app.computePipelineLayout, nil)
+	vk.DestroyPipelineLayout(app.vkDevice, app.graphicsPipelineLayout, nil)
+	vk.DestroyDescriptorSetLayout(app.vkDevice, app.descriptorSetLayout, nil)
+	log.info("Descriptor set and pipeline layouts destroyed successfully")
 }
 
 @(private)
@@ -426,40 +630,84 @@ destroy_frame_data :: proc() {
 	log.info("Frame data destroyed successfully")
 }
 
+// REQ-FND-DEV-01: seleção por verificação explícita de extensões, features e filas.
+// Cada candidato rejeitado tem os itens faltantes nomeados no log.
 @(private)
-select_physical_device :: proc() -> vk.PhysicalDevice {
+select_physical_device :: proc() -> bool {
 	device_count: u32
 	vk_check(vk.EnumeratePhysicalDevices(app.vkInstance, &device_count, nil))
-	log.assert(device_count > 0, "No GPUs found")
+	if device_count == 0 {
+		log.error("Nenhuma GPU Vulkan encontrada")
+		return false
+	}
 	devices := make([]vk.PhysicalDevice, device_count, context.temp_allocator)
 	vk_check(vk.EnumeratePhysicalDevices(app.vkInstance, &device_count, raw_data(devices)))
 
-	selected_device: vk.PhysicalDevice = nil
+	for candidate in devices {
+		properties: vk.PhysicalDeviceProperties
+		vk.GetPhysicalDeviceProperties(candidate, &properties)
+		name := string(cstring(&properties.deviceName[0]))
 
-	candidate_loop: for candidate in devices {
+		missing := make([dynamic]string, context.temp_allocator)
+		collect_missing_extensions(candidate, &missing)
+		features := query_device_features(candidate)
+		collect_missing_features(&features, &missing)
 
-		queue_families := list_queue_families(candidate)
-
-		for family, i in queue_families {
-			suitable := is_queue_family_suitable(candidate, u32(i), family)
-
-			if suitable {
-				app.queues[.Graphics] = QueueTuple {
-					queue       = {},
-					familyIndex = u32(i),
-				}
-				app.queues[.Compute] = QueueTuple {
-					queue       = {},
-					familyIndex = u32(i),
-				}
-				selected_device = candidate
-				break candidate_loop
-			}
+		graphics_family, compute_family, queues_ok := find_queue_families(candidate)
+		if !queues_ok {
+			append(&missing, "fila gráfica com suporte a present")
 		}
+
+		if len(missing) > 0 {
+			log.errorf("Dispositivo rejeitado: {} — faltando: {}", name, missing[:])
+			continue
+		}
+
+		app.vkPhysicalDevice = candidate
+		app.queues[.Graphics] = QueueTuple{familyIndex = u32(graphics_family)}
+		app.queues[.Compute] = QueueTuple{familyIndex = u32(compute_family)}
+		log.infof("Dispositivo selecionado: {} (todas as capabilities obrigatórias presentes)", name)
+		// REQ-FND-DEV-04: fallback registrado quando não há família de compute dedicada.
+		if compute_family == graphics_family {
+			log.warn("Sem família de compute dedicada; fila de compute compartilha a família gráfica")
+		} else {
+			log.infof("Fila de compute dedicada na família {}", compute_family)
+		}
+		return true
 	}
 
-	log.assert(selected_device != nil, "No suitable GPU found")
-	return selected_device
+	return false
+}
+
+// Gráfica: GRAPHICS + COMPUTE + present. Compute (REQ-FND-DEV-04): prefere família
+// dedicada (COMPUTE sem GRAPHICS); fallback para a família gráfica.
+@(private)
+find_queue_families :: proc(device: vk.PhysicalDevice) -> (graphics, compute: int, ok: bool) {
+	graphics = -1
+	compute = -1
+	queue_families := list_queue_families(device)
+	for family, i in queue_families {
+		support_present: b32
+		vk_check(
+			vk.GetPhysicalDeviceSurfaceSupportKHR(device, u32(i), app.vkSurface, &support_present),
+		)
+		if graphics == -1 &&
+		   .GRAPHICS in family.queueFlags &&
+		   .COMPUTE in family.queueFlags &&
+		   support_present {
+			graphics = i
+		}
+		if compute == -1 && .COMPUTE in family.queueFlags && .GRAPHICS not_in family.queueFlags {
+			compute = i
+		}
+	}
+	if graphics == -1 {
+		return -1, -1, false
+	}
+	if compute == -1 {
+		compute = graphics
+	}
+	return graphics, compute, true
 }
 
 @(private)
@@ -473,57 +721,6 @@ list_queue_families :: proc(device: vk.PhysicalDevice) -> []vk.QueueFamilyProper
 		raw_data(queue_families),
 	)
 	return queue_families
-}
-
-@(private)
-is_queue_family_suitable :: proc(
-	physical_device: vk.PhysicalDevice,
-	family_index: u32,
-	family: vk.QueueFamilyProperties,
-) -> b32 {
-	support_present: b32 = false
-	vk_check(
-		vk.GetPhysicalDeviceSurfaceSupportKHR(
-			physical_device,
-			family_index,
-			app.vkSurface,
-			&support_present,
-		),
-	)
-
-	return (.GRAPHICS in family.queueFlags) && (.COMPUTE in family.queueFlags) && support_present
-}
-
-@(private)
-build_feature_chain :: proc() -> rawptr {
-	features_ext_chain: rawptr
-	features_ext_chain = &vk.PhysicalDeviceVulkan14Features {
-		sType = .PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
-		pNext = features_ext_chain,
-	}
-	features_ext_chain = &vk.PhysicalDeviceVulkan13Features {
-		sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-		dynamicRendering = true,
-		synchronization2 = true,
-		pNext = features_ext_chain,
-	}
-	features_ext_chain = &vk.PhysicalDeviceVulkan12Features {
-		sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-		timelineSemaphore = true,
-		pNext = features_ext_chain,
-	}
-	features_ext_chain = &vk.PhysicalDeviceVulkan11Features {
-		sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-		shaderDrawParameters = true,
-		pNext = features_ext_chain,
-	}
-	features_ext_chain = &vk.PhysicalDeviceShaderObjectFeaturesEXT {
-		sType = .PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-		pNext = features_ext_chain,
-		shaderObject = true,
-	}
-
-	return features_ext_chain
 }
 
 @(private)

@@ -38,8 +38,18 @@ VoxEngine :: struct {
 
 	// sync
 	timelineSemaphore:         vk.Semaphore,
+	computeTimelineSemaphore:  vk.Semaphore,
 	currentTimelineValue:      u64,
 	nextTimelineValue:         u64,
+
+	// descriptors
+	descriptorSetLayout:       vk.DescriptorSetLayout,
+	graphicsPipelineLayout:    vk.PipelineLayout,
+	computePipelineLayout:     vk.PipelineLayout,
+
+	// estado
+	validationLayersEnabled:   bool,
+	swapchainNeedsRecreate:    bool,
 
 	// time
 	deltaTime:                 f64,
@@ -72,15 +82,20 @@ CreateEngine :: proc(widht: u32 = 800, height: u32 = 600) {
 	create_depth_buffer()
 	create_sync_objects()
 	create_frame_data()
+	create_descriptor_layouts()
 	log.info("Engine created successfully")
 }
 
+// REQ-FND-SYNC-02: nenhum recurso destruído em uso — DeviceWaitIdle antes de tudo,
+// destruição na ordem inversa da criação.
 DestroyEngine :: proc() {
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+	destroy_descriptor_layouts()
 	destroy_frame_data()
 	destroy_sync_objects()
 	destroy_depth_buffer()
-	destroy_vma_allocator()
 	destroy_swap_chain()
+	destroy_vma_allocator()
 	destroy_vulkan_device()
 	destroy_vulkan_surface()
 	destroy_vulkan_instance()
@@ -99,20 +114,48 @@ Update :: proc() {
 	app.nextTimelineValue += 1
 }
 
-AcquireNextImage :: proc() -> SwapChainFrameData {
+// REQ-FND-FRM-03: recria swapchain e depth buffer quando sinalizado (callback de
+// resize ou acquire/present fora de data). Retorna false enquanto a janela estiver
+// minimizada (extent 0×0) — o chamador pula o frame.
+recreate_swapchain :: proc() -> bool {
+	width, height := glfw.GetFramebufferSize(app.glfwWindow)
+	if width == 0 || height == 0 {
+		return false
+	}
+	app.swapchainNeedsRecreate = false
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+	destroy_depth_buffer()
+	destroy_swap_chain()
+	create_swap_chain()
+	create_depth_buffer()
+	return true
+}
+
+// Retorna ok=false quando o frame deve ser pulado (janela minimizada ou swapchain
+// recriada/fora de data) — nunca encerra o processo por swapchain obsoleta.
+AcquireNextImage :: proc() -> (frame: SwapChainFrameData, ok: bool) {
+	if app.swapchainNeedsRecreate {
+		if !recreate_swapchain() {
+			return {}, false
+		}
+	}
+
 	image_index: u32
-	vk_check(
-		vk.AcquireNextImageKHR(
-			app.vkDevice,
-			app.presentation.vkSwapChain,
-			max(u64),
-			app.frameData[app.frameIndex].vkAcquireSemaphore,
-			0,
-			&image_index,
-		),
+	result := vk.AcquireNextImageKHR(
+		app.vkDevice,
+		app.presentation.vkSwapChain,
+		max(u64),
+		app.frameData[app.frameIndex].vkAcquireSemaphore,
+		0,
+		&image_index,
 	)
+	if result == .ERROR_OUT_OF_DATE_KHR || result == .SUBOPTIMAL_KHR {
+		app.swapchainNeedsRecreate = true
+		return {}, false
+	}
+	vk_check(result)
 	app.presentation.imageIndex = image_index
-	return app.presentation.frames[image_index]
+	return app.presentation.frames[image_index], true
 }
 
 AcquireFrameResource :: proc() -> ^FrameResource {
@@ -131,7 +174,12 @@ Present :: proc() {
 		pImageIndices      = &image_index,
 		swapchainCount     = 1,
 	}
-	vk_check(vk.QueuePresentKHR(presentQueue, &present_info))
+	result := vk.QueuePresentKHR(presentQueue, &present_info)
+	if result == .ERROR_OUT_OF_DATE_KHR || result == .SUBOPTIMAL_KHR {
+		app.swapchainNeedsRecreate = true
+	} else {
+		vk_check(result)
+	}
 }
 
 WaitTimelineSemaphore :: proc() -> u64 {
@@ -180,8 +228,8 @@ initGlfw :: proc() {
 			context = app.runtimeContext
 			app.windowWidth = u32(width)
 			app.windowHeight = u32(height)
-			destroy_swap_chain()
-			create_swap_chain()
+			// REQ-FND-FRM-03: recriação adiada para o loop, após o dispositivo ficar idle.
+			app.swapchainNeedsRecreate = true
 		},
 	)
 

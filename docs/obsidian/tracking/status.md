@@ -9,19 +9,19 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Indicador | Quantidade |
 | --- | ---: |
 | Specs registradas | 5 |
-| Specs aprovadas | 0 |
+| Specs aprovadas | 1 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 0 |
+| Implementações concluídas | 1 |
 | Validações verificadas | 0 |
 
-Os cinco documentos existentes estão em `rascunho`: possuem estrutura inicial, mas ainda não estão em elaboração ativa nem aprovados.
+Quatro documentos estão em `rascunho`; VS-00 está `aprovada` com implementação `concluida` e validação `em-validacao` (faltam: rejeição forçada de dispositivo, resize e shutdown limpo no smoke test manual).
 
 ## Tracking das especificações
 
 | ID | Especificação | Spec | Implementação | Validação | Depende de | Bloqueio |
 | --- | --- | --- | --- | --- | --- | --- |
-| VS-00 | [[VS-00-fundacao-vulkan|Fundação Vulkan]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | — | — |
+| VS-00 | [[VS-00-fundacao-vulkan|Fundação Vulkan]] | `aprovada` | `concluida` | `em-validacao` | — | — |
 | VS-01 | [[VS-01-streaming-generate-pack|Streaming, generate e pack]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-00 | — |
 | VS-02 | [[VS-02-task-mesh-templates|Task/mesh e templates]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-01 | — |
 | VS-03 | [[VS-03-edicao-e1|Edição E1]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-02 | — |
