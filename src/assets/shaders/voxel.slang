@@ -465,7 +465,7 @@ void build_brick_mesh(
     // ------------------------- Emissão de vértices -------------------------
     float3 voxel_min_world = float3(payload.chunk_world_origin + voxel_coord);
     for (uint i = 0; i < tmpl.vertex_count; i++) {
-        float3 local_pos = template_vertices[tmpl.vertex_offset + i];
+        float3 local_pos = template_vertices[tmpl.vertex_offset + i].xyz;
         local_pos = rotate_vertex_yaw(local_pos, def.rotation);
 
         MeshVertex v;

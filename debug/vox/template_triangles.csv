@@ -1,0 +1,13 @@
+﻿Binding Name,Buffer Name,Set-Binding,Type,Size
+push_constants,--,--,Push Constants,88 B
+temporary_dense_chunks,Buffer_37,0 - 0,Storage Buffer,6.29 MB
+generation_jobs,Buffer_39,0 - 1,Storage Buffer,1.54 KB
+occupancy_pool,Buffer_41,0 - 2,Storage Buffer,17.9 MB
+material_plane_pool,Buffer_42,0 - 3,Storage Buffer,134 MB
+chunk_headers,Buffer_44,0 - 4,Storage Buffer,8.45 MB
+special_voxel_records,Buffer_45,0 - 5,Storage Buffer,12.6 MB
+visible_chunks,Buffer_48,0 - 6,Storage Buffer,393 KB
+global_block_registry,Buffer_47,0 - 7,Storage Buffer,12.3 KB
+mesh_templates,Buffer_49,0 - 10,Storage Buffer,8.19 KB
+template_vertices,Buffer_50,0 - 11,Storage Buffer,12.3 KB
+template_triangles,Buffer_51,0 - 12,Storage Buffer,4.1 KB

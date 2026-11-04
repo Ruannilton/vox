@@ -51,7 +51,7 @@ main :: proc() {
 
 	voxel_engine := engine.ve_init()
 	defer engine.ve_destroy(voxel_engine)
-	camera = camera_create(glm.vec3{32, 32, -10}, glm.vec3{0, -90, 0}, 45.0)
+	camera = camera_create(glm.vec3{32, 5, 32}, glm.vec3{0, -90, 0}, 45.0)
 	projection := glm.mat4Perspective(
 		glm.radians(camera.fov),
 		f32(engine.app.presentation.width) / f32(engine.app.presentation.height),

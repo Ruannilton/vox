@@ -365,8 +365,8 @@ voxel_gpu_init :: proc() {
 		{.STORAGE_BUFFER, .TRANSFER_DST},
 	)
 	voxel_gpu.template_vertices = gpu_buffer_create(
-		vk.DeviceSize(1024 * 3 * size_of(f32)),
-		{.STORAGE_BUFFER, .TRANSFER_DST},
+		vk.DeviceSize(1024 * 4 * size_of(f32)), // stride 16 B (std430 float4)
+		{.STORAGE_BUFFER, .TRANSFER_SRC, .TRANSFER_DST},
 	)
 	voxel_gpu.template_triangles = gpu_buffer_create(
 		vk.DeviceSize(1024 * size_of(u32)),
@@ -592,6 +592,57 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	}
 	slot := record.storage_slot_index
 
+	// Regressão (VS-02): o shader lê template_vertices como float4 (stride
+	// 16 B, std430). Compara o conteúdo do buffer com os built-ins —
+	// historicamente o upload usava stride 12 e o shader lia vértices
+	// desalinhados (faces malformadas).
+	{
+		vtx_size := vk.DeviceSize(16 * 4 * size_of(f32))
+		vtx_rb, vtx_mapped := gpu_buffer_create_host(vtx_size, {.TRANSFER_DST})
+		vk_check(vk.DeviceWaitIdle(app.vkDevice))
+		cmd := voxel_gpu.compute_command_buffers[0]
+		vk_check(vk.ResetCommandBuffer(cmd, {}))
+		vk_check(
+			vk.BeginCommandBuffer(
+				cmd,
+				&vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}},
+			),
+		)
+		vk.CmdCopyBuffer(cmd, voxel_gpu.template_vertices.handle, vtx_rb.handle, 1, &vk.BufferCopy{size = vtx_size})
+		vk_check(vk.EndCommandBuffer(cmd))
+		vk_check(
+			vk.QueueSubmit2(
+				app.queues[.Compute].queue,
+				1,
+				&vk.SubmitInfo2 {
+					sType                  = .SUBMIT_INFO_2,
+					commandBufferInfoCount = 1,
+					pCommandBufferInfos    = &vk.CommandBufferSubmitInfo {
+						sType         = .COMMAND_BUFFER_SUBMIT_INFO,
+						commandBuffer = cmd,
+					},
+				},
+				{},
+			),
+		)
+		vk_check(vk.DeviceWaitIdle(app.vkDevice))
+
+		gpu_vertices := cast([^][4]f32)vtx_mapped
+		vtx_errors := 0
+		for v, i in BUILTIN_CUBE_VERTICES {
+			if gpu_vertices[i].xyz != v { vtx_errors += 1 }
+		}
+		for v, i in BUILTIN_PLANT_VERTICES {
+			if gpu_vertices[8 + i].xyz != v { vtx_errors += 1 }
+		}
+		if vtx_errors == 0 {
+			log.info("DEBUG READBACK OK: template_vertices (16 vértices, stride 16) == built-ins")
+		} else {
+			log.errorf("DEBUG READBACK FALHOU: template_vertices — {} vértices divergentes", vtx_errors)
+		}
+		gpu_buffer_destroy(&vtx_rb)
+	}
+
 	header_size := vk.DeviceSize(size_of(ChunkHeader))
 	occupancy_size := vk.DeviceSize(OCCUPANCY_WORDS_PER_CHUNK * size_of(u32))
 	planes_size := vk.DeviceSize(MATERIAL_WORDS_PER_CHUNK * size_of(u32))
@@ -765,9 +816,10 @@ upload_builtin_templates :: proc() {
 		},
 	}
 
-	vertices: [16][3]f32
-	copy(vertices[0:8], cube_verts[:])
-	copy(vertices[8:16], plant_verts[:])
+	// std430: o shader lê float4 (stride 16 B) — upload com w=0 de padding.
+	vertices: [16][4]f32
+	for v, i in cube_verts do vertices[i] = {v[0], v[1], v[2], 0}
+	for v, i in plant_verts do vertices[8 + i] = {v[0], v[1], v[2], 0}
 	triangles: [16]u32
 	copy(triangles[0:12], cube_tris[:])
 	copy(triangles[12:16], plant_tris[:4])

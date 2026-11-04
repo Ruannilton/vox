@@ -1,4 +1,5 @@
 bin/
 *.exe
 *.spv
-*/Odin-Documentation/__pycache__/
+*/Odin-Documentation/
+*__pycache__/

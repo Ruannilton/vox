@@ -163,8 +163,10 @@ struct MeshVertex {
 [[vk::binding(8, 0)]] Sampler2DArray                         block_albedo_textures;
 [[vk::binding(9, 0)]] Sampler2DArray                         block_pbr_textures; // dummy nesta fatia (ADR-B7)
 // CAMINHO B: tabela de templates + pools de geometria (escritos no load pela CPU)
+// ATENÇÃO: template_vertices é float4 (stride 16 B no std430) — a CPU grava
+// cada vértice com 4 floats (w ignorado). Nunca usar float3 aqui.
 [[vk::binding(10, 0)]] StructuredBuffer<MeshTemplate>        mesh_templates;
-[[vk::binding(11, 0)]] StructuredBuffer<float3>              template_vertices;
+[[vk::binding(11, 0)]] StructuredBuffer<float4>              template_vertices;
 [[vk::binding(12, 0)]] StructuredBuffer<uint>                template_triangles;
 
 // ----------------------------------------------------------------------------
