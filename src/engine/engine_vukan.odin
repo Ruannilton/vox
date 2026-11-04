@@ -479,8 +479,9 @@ destroy_sync_objects :: proc() {
 	log.info("Sync objects destroyed successfully")
 }
 
-// REQ-FND-DESC-01: set 0 = recursos globais (bindings 0..16, storage buffers),
-// visível a compute e task/mesh; pipeline layouts com push constants de 88 B.
+// REQ-FND-DESC-01: set 0 = recursos globais (bindings 0..16; storage buffers,
+// exceto 8/9 = texturas combinadas desde a VS-02), visível a compute e
+// task/mesh/fragment; pipeline layouts com push constants de 88 B.
 DESCRIPTOR_SET_BINDING_COUNT :: 17
 PUSH_CONSTANTS_SIZE :: 88
 
@@ -515,6 +516,9 @@ create_descriptor_layouts :: proc() {
 			stageFlags      = shader_stages,
 		}
 	}
+	// VS-02 (REQ-PIPE-02): bindings 8/9 são texturas (albedo/PBR), não buffers.
+	bindings[8].descriptorType = .COMBINED_IMAGE_SAMPLER
+	bindings[9].descriptorType = .COMBINED_IMAGE_SAMPLER
 	set_layout_info := vk.DescriptorSetLayoutCreateInfo {
 		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		bindingCount = len(bindings),

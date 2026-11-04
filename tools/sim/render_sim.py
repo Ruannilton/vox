@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+"""Simulacao da renderizacao task/mesh (VS-02, REQ-SIM-03).
+
+Espelha src/assets/shaders/common.slang + select_bricks/build_brick_mesh
+(voxel.slang). A leitura de bloco usa o grid denso diretamente: pack_sim.py
+ja validou decode == denso, entao aqui o que interessa e a geometria.
+
+Cobre: orcamento 256v/192t por grupo (AC-01), selecao de bricks e estouro do
+payload, face_mask com redirecionamento B2 (AC-02), dois chunks adjacentes sem
+faces internas duplicadas (AC-02), rotacao yaw 0..3 vs ROTATED_FACE e tag 7
+nunca culpada (AC-03).
+"""
+
+CHUNK_SIZE = 32
+CHUNK_VOXEL_COUNT = 32 ** 3
+BRICK_SIZE = (4, 2, 4)
+BRICKS_PER_CHUNK = 1024
+VOXELS_PER_BRICK = 32
+MESH_VERTEX_MAXIMUM = 256
+MESH_TRIANGLE_MAXIMUM = 192
+CULL_FACE_NEVER = 7
+NEIGHBOR_SLOT_INVALID = 0xFFFFFFFF
+TASK_PAYLOAD_BRICK_CAPACITY = 2048
+CHUNK_FLAG_EMPTY = 1
+
+FACE_NORMALS = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+ROTATED_FACE = [
+    0, 1, 2, 3, 4, 5,  # r=0
+    5, 4, 2, 3, 0, 1,  # r=1
+    1, 0, 2, 3, 5, 4,  # r=2
+    4, 5, 2, 3, 1, 0,  # r=3
+]
+
+
+# --- helpers (espelham common.slang) ---
+
+def brick_index_from_coordinate(c):
+    return c[0] + 8 * (c[2] + 8 * c[1])
+
+
+def brick_coordinate_from_index(i):
+    return (i & 7, i >> 6, (i >> 3) & 7)
+
+
+def bit_index_from_local_coordinate(c):
+    return c[0] + 4 * (c[2] + 4 * c[1])
+
+
+def local_coordinate_from_bit_index(i):
+    return (i & 3, i >> 4, (i >> 2) & 3)
+
+
+def dense_index_from_coordinate(c):
+    return c[0] | (c[2] << 5) | (c[1] << 10)
+
+
+def coordinate_from_dense_index(i):
+    return (i & 31, i >> 10, (i >> 5) & 31)
+
+
+def rotate_vertex_yaw(p, r):
+    r &= 3
+    if r == 1:
+        return (p[2], p[1], 1.0 - p[0])
+    if r == 2:
+        return (1.0 - p[0], p[1], 1.0 - p[2])
+    if r == 3:
+        return (1.0 - p[2], p[1], p[0])
+    return p
+
+
+def triangle_survives_culling(packed_tri, rotation, face_mask):
+    cull_face = (packed_tri >> 24) & 7
+    if cull_face == CULL_FACE_NEVER:
+        return True
+    rotated_face = ROTATED_FACE[(rotation & 3) * 6 + cull_face]
+    return (face_mask & (1 << rotated_face)) != 0
+
+
+def pack_triangle(v0, v1, v2, cull_face):
+    return (v0 & 0xFF) | ((v1 & 0xFF) << 8) | ((v2 & 0xFF) << 16) | ((cull_face & 7) << 24)
+
+
+# --- templates (espelham voxel_gpu.odin: 0 = ar, 1 = cubo, 2 = planta) ---
+
+CUBE_VERTICES = [
+    (0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0),
+    (0, 0, 1), (1, 0, 1), (0, 1, 1), (1, 1, 1),
+]
+CUBE_TRIANGLES = [  # (v0, v1, v2, face) — winding CCW visto de fora
+    (1, 3, 7, 0), (1, 7, 5, 0),  # +X
+    (0, 4, 6, 1), (0, 6, 2, 1),  # -X
+    (2, 7, 3, 2), (2, 6, 7, 2),  # +Y
+    (0, 1, 5, 3), (0, 5, 4, 3),  # -Y
+    (4, 5, 7, 4), (4, 7, 6, 4),  # +Z
+    (0, 3, 1, 5), (0, 2, 3, 5),  # -Z
+]
+PLANT_VERTICES = [
+    (0, 0, 0), (1, 0, 1), (1, 1, 1), (0, 1, 0),
+    (1, 0, 0), (0, 0, 1), (0, 1, 1), (1, 1, 0),
+]
+PLANT_TRIANGLES = [
+    (0, 1, 2, CULL_FACE_NEVER), (0, 2, 3, CULL_FACE_NEVER),
+    (4, 5, 6, CULL_FACE_NEVER), (4, 6, 7, CULL_FACE_NEVER),
+]
+# Template sintetico pesado: 32 vertices, 24 triangulos todos tag NEVER.
+HEAVY_VERTICES = [(x / 3.0, y / 3.0, z / 3.0) for x in range(4) for y in range(4) for z in range(2)][:32]
+HEAVY_TRIANGLES = [(i % 32, (i + 1) % 32, (i + 2) % 32, CULL_FACE_NEVER) for i in range(24)]
+
+
+class Template:
+    def __init__(self, vertices, triangles):
+        self.vertices = vertices
+        self.triangles = triangles
+        self.vertex_count = len(vertices)
+        self.triangle_count = len(triangles)
+        self.has_flush_faces = any(t[3] != CULL_FACE_NEVER for t in triangles)
+        # compute_worst_case_tris (voxel_types.odin)
+        never = sum(1 for t in triangles if t[3] == CULL_FACE_NEVER)
+        faces = [0] * 6
+        for t in triangles:
+            if t[3] != CULL_FACE_NEVER:
+                faces[t[3]] += 1
+        self.worst_case_tris = never + sum(max(faces[a], faces[a + 1]) for a in (0, 2, 4))
+        self.packed = [pack_triangle(*t) for t in triangles]
+
+
+TEMPLATES = {
+    0: Template([], []),                  # ar
+    1: Template(CUBE_VERTICES, CUBE_TRIANGLES),
+    2: Template(PLANT_VERTICES, PLANT_TRIANGLES),
+    3: Template(HEAVY_VERTICES, HEAVY_TRIANGLES),
+}
+
+
+class BlockDef:
+    def __init__(self, template_index, rotation=0):
+        self.template_index = template_index
+        self.rotation = rotation
+
+
+# --- chunks simulados: slot -> {dense, origin, neighbors} ---
+
+def make_chunk(origin, fill):
+    return {
+        "dense": [fill(coordinate_from_dense_index(i)) for i in range(CHUNK_VOXEL_COUNT)],
+        "origin": origin,
+        "neighbors": [NEIGHBOR_SLOT_INVALID] * 6,
+        "subdivisions": None,  # preenchido por pack_subdivisions
+    }
+
+
+def is_solid(chunks, slot, coord):
+    return chunks[slot]["dense"][dense_index_from_coordinate(coord)] != 0
+
+
+def is_voxel_solid(chunks, slot, coord, neighbor_slots):
+    if all(0 <= c < CHUNK_SIZE for c in coord):
+        return is_solid(chunks, slot, coord)
+    c = list(coord)
+    neighbor_slot = NEIGHBOR_SLOT_INVALID
+    if c[0] < 0:
+        neighbor_slot = neighbor_slots[1]; c[0] += CHUNK_SIZE
+    elif c[0] >= CHUNK_SIZE:
+        neighbor_slot = neighbor_slots[0]; c[0] -= CHUNK_SIZE
+    elif c[1] < 0:
+        neighbor_slot = neighbor_slots[3]; c[1] += CHUNK_SIZE
+    elif c[1] >= CHUNK_SIZE:
+        neighbor_slot = neighbor_slots[2]; c[1] -= CHUNK_SIZE
+    elif c[2] < 0:
+        neighbor_slot = neighbor_slots[5]; c[2] += CHUNK_SIZE
+    else:
+        neighbor_slot = neighbor_slots[4]; c[2] -= CHUNK_SIZE
+    if neighbor_slot == NEIGHBOR_SLOT_INVALID:
+        return False
+    if not all(0 <= v < CHUNK_SIZE for v in c):
+        return False
+    return is_solid(chunks, neighbor_slot, tuple(c))
+
+
+def compute_visible_face_mask(chunks, slot, coord, neighbor_slots, camera_position):
+    origin = chunks[slot]["origin"]
+    voxel_min_world = tuple(origin[i] + coord[i] for i in range(3))
+    face_mask = 0
+    for face_index in range(6):
+        n = FACE_NORMALS[face_index]
+        neighbor_coord = tuple(coord[i] + n[i] for i in range(3))
+        if is_voxel_solid(chunks, slot, neighbor_coord, neighbor_slots):
+            continue
+        axis = face_index >> 1
+        is_positive = (face_index & 1) == 0
+        plane = voxel_min_world[axis] + (1.0 if is_positive else 0.0)
+        sees = camera_position[axis] > plane if is_positive else camera_position[axis] < plane
+        if sees:
+            face_mask |= 1 << face_index
+    return face_mask
+
+
+# --- pack (apenas a parte de subdivisao — o resto e coberto por pack_sim) ---
+
+def pack_subdivisions(chunk, registry):
+    subdivisions = [0] * BRICKS_PER_CHUNK
+    for brick_idx in range(BRICKS_PER_CHUNK):
+        bc = brick_coordinate_from_index(brick_idx)
+        part_verts = [0, 0, 0, 0]
+        part_tris = [0, 0, 0, 0]
+        for bit_idx in range(VOXELS_PER_BRICK):
+            lc = local_coordinate_from_bit_index(bit_idx)
+            coord = (bc[0] * 4 + lc[0], bc[1] * 2 + lc[1], bc[2] * 4 + lc[2])
+            block_id = chunk["dense"][dense_index_from_coordinate(coord)]
+            if block_id != 0:
+                tmpl = TEMPLATES[registry[block_id].template_index]
+                if tmpl.triangle_count > 0:
+                    part = bit_idx >> 3
+                    part_verts[part] += tmpl.vertex_count
+                    part_tris[part] += tmpl.worst_case_tris
+        half_verts = max(part_verts[0] + part_verts[1], part_verts[2] + part_verts[3])
+        half_tris = max(part_tris[0] + part_tris[1], part_tris[2] + part_tris[3])
+        total_verts = sum(part_verts)
+        total_tris = sum(part_tris)
+        subdivision = 0
+        if total_verts > MESH_VERTEX_MAXIMUM or total_tris > MESH_TRIANGLE_MAXIMUM:
+            subdivision = 1
+            if half_verts > MESH_VERTEX_MAXIMUM or half_tris > MESH_TRIANGLE_MAXIMUM:
+                subdivision = 2
+        subdivisions[brick_idx] = subdivision
+    chunk["subdivisions"] = subdivisions
+    return subdivisions
+
+
+# --- task shader (select_bricks) ---
+
+def select_bricks(chunk):
+    """Retorna (payload, selecionados); payload truncado na capacidade."""
+    if all(b == 0 for b in chunk["dense"]):
+        return None, 0  # CHUNK_FLAG_EMPTY: task retorna sem DispatchMesh
+    payload = []
+    selected = 0
+    for brick_idx in range(BRICKS_PER_CHUNK):
+        bc = brick_coordinate_from_index(brick_idx)
+        occupied = any(
+            chunk["dense"][dense_index_from_coordinate((bc[0] * 4 + lc[0], bc[1] * 2 + lc[1], bc[2] * 4 + lc[2]))] != 0
+            for lc in (local_coordinate_from_bit_index(b) for b in range(VOXELS_PER_BRICK))
+        )
+        if not occupied:
+            continue
+        subdivision = chunk["subdivisions"][brick_idx]
+        for part in range(1 << subdivision):
+            selected += 1
+            if len(payload) < TASK_PAYLOAD_BRICK_CAPACITY:
+                payload.append(brick_idx | (part << 10) | (subdivision << 12))
+    return payload, selected
+
+
+# --- mesh shader (build_brick_mesh, somente contagens) ---
+
+def mesh_group_counts(entry, chunks, slot, registry, camera_position):
+    brick_idx = entry & 1023
+    part = (entry >> 10) & 3
+    subdivision_log2 = (entry >> 12) & 3
+    voxels_in_group = VOXELS_PER_BRICK >> subdivision_log2
+    total_v = 0
+    total_t = 0
+    bc = brick_coordinate_from_index(brick_idx)
+    chunk = chunks[slot]
+    for i in range(voxels_in_group):
+        voxel_slot = part * voxels_in_group + i
+        lc = local_coordinate_from_bit_index(voxel_slot)
+        coord = (bc[0] * 4 + lc[0], bc[1] * 2 + lc[1], bc[2] * 4 + lc[2])
+        block_id = chunk["dense"][dense_index_from_coordinate(coord)]
+        if block_id == 0:
+            continue
+        definition = registry[block_id]
+        tmpl = TEMPLATES[definition.template_index]
+        if tmpl.triangle_count == 0:
+            continue
+        face_mask = 0
+        if tmpl.has_flush_faces:
+            face_mask = compute_visible_face_mask(chunks, slot, coord, chunk["neighbors"], camera_position)
+        t_cnt = sum(1 for tri in tmpl.packed if triangle_survives_culling(tri, definition.rotation, face_mask))
+        if t_cnt > 0:
+            total_v += tmpl.vertex_count
+            total_t += t_cnt
+    return total_v, total_t
+
+
+# --- checks ---
+
+PASS, FAIL = 0, 0
+
+
+def check(name, condition):
+    global PASS, FAIL
+    if condition:
+        PASS += 1
+    else:
+        FAIL += 1
+        print(f"  FALHOU: {name}")
+
+
+CAMERAS_6 = [
+    (1e6, 16, 16), (-1e6, 16, 16),
+    (16, 1e6, 16), (16, -1e6, 16),
+    (16, 16, 1e6), (16, 16, -1e6),
+]
+
+
+def scenario_budget():
+    print("[cenario] orcamento 256v/192t por construcao (cubo, planta, pesado)")
+    registry = {1: BlockDef(1), 2: BlockDef(2), 3: BlockDef(3)}
+    for block_id, label in ((1, "cubo"), (2, "planta"), (3, "pesado")):
+        chunks = {0: make_chunk((0, 0, 0), lambda c, b=block_id: b)}
+        pack_subdivisions(chunks[0], registry)
+        payload, _ = select_bricks(chunks[0])
+        check(f"{label}: payload nao vazio", payload)
+        worst_v = 0
+        worst_t = 0
+        for entry in payload:
+            for camera in CAMERAS_6:
+                v, t = mesh_group_counts(entry, chunks, 0, registry, camera)
+                worst_v = max(worst_v, v)
+                worst_t = max(worst_t, t)
+        check(f"{label}: vertices <= {MESH_VERTEX_MAXIMUM} (pior {worst_v})", worst_v <= MESH_VERTEX_MAXIMUM)
+        check(f"{label}: triangulos <= {MESH_TRIANGLE_MAXIMUM} (pior {worst_t})", worst_t <= MESH_TRIANGLE_MAXIMUM)
+    # pesado no teto exato: 8 voxels x (32v, 24t) = 256/192
+    chunks = {0: make_chunk((0, 0, 0), lambda c: 3)}
+    pack_subdivisions(chunks[0], registry)
+    check("pesado: subdivisao 2 em todos os bricks", all(s == 2 for s in chunks[0]["subdivisions"]))
+    check("pesado: 8 voxels x 32v = 256 no teto", TEMPLATES[3].vertex_count * 8 == MESH_VERTEX_MAXIMUM)
+    check("pesado: 8 voxels x 24t = 192 no teto", TEMPLATES[3].worst_case_tris * 8 == MESH_TRIANGLE_MAXIMUM)
+
+
+def scenario_selection():
+    print("[cenario] selecao de bricks, chunk vazio e estouro do payload")
+    registry = {1: BlockDef(1)}
+
+    empty = make_chunk((0, 0, 0), lambda c: 0)
+    pack_subdivisions(empty, registry)
+    payload, selected = select_bricks(empty)
+    check("chunk vazio: sem dispatch", payload is None and selected == 0)
+
+    # bricks 0, 5 e 1000 ocupados (canto do brick 0 basta)
+    def sparse(c):
+        bc = (c[0] // 4, c[1] // 2, c[2] // 4)
+        return 1 if brick_index_from_coordinate(bc) in (0, 5, 1000) else 0
+    chunk = make_chunk((0, 0, 0), sparse)
+    pack_subdivisions(chunk, registry)
+    payload, selected = select_bricks(chunk)
+    check("3 bricks ocupados -> 3 grupos", selected == 3 and len(payload) == 3)
+    bricks = sorted(e & 1023 for e in payload)
+    check("grupos apontam os bricks certos", bricks == [0, 5, 1000])
+    check("entry roundtrip (brick|parte|subdivisao)",
+          all(((e & 1023) | (((e >> 10) & 3) << 10) | (((e >> 12) & 3) << 12)) == e for e in payload))
+    check("subdivisao 0 para cubos esparsos", all(((e >> 12) & 3) == 0 for e in payload))
+
+    # todos os bricks pesados x4: 4096 grupos > capacidade -> trunca sem falhar
+    registry_heavy = {3: BlockDef(3)}
+    full = make_chunk((0, 0, 0), lambda c: 3)
+    pack_subdivisions(full, registry_heavy)
+    payload, selected = select_bricks(full)
+    check("selecionados = 1024 x 4", selected == 4096)
+    check("payload truncado na capacidade", len(payload) == TASK_PAYLOAD_BRICK_CAPACITY)
+    check("dispatch = min(selecionados, capacidade)", min(selected, TASK_PAYLOAD_BRICK_CAPACITY) == 2048)
+
+
+def scenario_b2():
+    print("[cenario] fronteira B2: redirecionamento e faces internas")
+    registry = {1: BlockDef(1)}
+    chunks = {
+        0: make_chunk((0, 0, 0), lambda c: 1),
+        1: make_chunk((32, 0, 0), lambda c: 1),
+    }
+    for c in chunks.values():
+        pack_subdivisions(c, registry)
+    chunks[0]["neighbors"][0] = 1  # +X de A = B
+    chunks[1]["neighbors"][1] = 0  # -X de B = A
+    camera = (16, 1e6, 16)  # muito acima: mascara so depende dos vizinhos laterais
+
+    # voxel na fronteira de A (x=31): face +X suprimida pelo vizinho solido
+    for y in range(0, CHUNK_SIZE, 5):
+        for z in range(0, CHUNK_SIZE, 5):
+            mask_a = compute_visible_face_mask(chunks, 0, (31, y, z), chunks[0]["neighbors"], camera)
+            check(f"A(31,{y},{z}): face +X culpada", (mask_a & 1) == 0)
+            mask_b = compute_visible_face_mask(chunks, 1, (0, y, z), chunks[1]["neighbors"], camera)
+            check(f"B(0,{y},{z}): face -X culpada", (mask_b & 2) == 0)
+
+    # sem vizinho publicado (NEIGHBOR_SLOT_INVALID): a face de fronteira volta
+    chunks[0]["neighbors"][0] = NEIGHBOR_SLOT_INVALID
+    mask_a = compute_visible_face_mask(chunks, 0, (31, 0, 0), chunks[0]["neighbors"], (1e6, 16, 16))
+    check("vizinho invalido: face +X reaparece (camera em +X)", (mask_a & 1) == 1)
+    mask_a = compute_visible_face_mask(chunks, 0, (31, 0, 0), chunks[0]["neighbors"], (-1e6, 16, 16))
+    check("camera do outro lado: face +X nao emitida", (mask_a & 1) == 0)
+    chunks[0]["neighbors"][0] = 1
+
+    # contagem total de triangulos internos no plano x=32, dos dois lados
+    internal = 0
+    for slot, x in ((0, 31), (1, 0)):
+        for y in range(CHUNK_SIZE):
+            for z in range(CHUNK_SIZE):
+                mask = compute_visible_face_mask(chunks, slot, (x, y, z), chunks[slot]["neighbors"], camera)
+                for tri in TEMPLATES[1].packed:
+                    cull = (tri >> 24) & 7
+                    if cull in (0, 1) and triangle_survives_culling(tri, 0, mask):
+                        internal += 1
+    check("zero faces internas no plano x=32 (dois chunks)", internal == 0)
+
+
+def scenario_rotation():
+    print("[cenario] rotacao yaw 0..3 vs ROTATED_FACE e tag 7")
+    # vertices permanecem em [0,1]^3 sob qualquer yaw
+    for r in range(4):
+        for v in CUBE_VERTICES + PLANT_VERTICES:
+            p = rotate_vertex_yaw(tuple(float(x) for x in v), r)
+            check(f"r={r} {v} em [0,1]^3", all(0.0 <= c <= 1.0 for c in p))
+
+    # normal geometrica do triangulo rotacionado == FACE_NORMALS[ROTATED_FACE]
+    def normal_of(v0, v1, v2):
+        a = tuple(v1[i] - v0[i] for i in range(3))
+        b = tuple(v2[i] - v0[i] for i in range(3))
+        n = (
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        )
+        return tuple(int(round(x)) for x in n)
+
+    mismatches = 0
+    for r in range(4):
+        for v0, v1, v2, cull in CUBE_TRIANGLES:
+            rotated = [rotate_vertex_yaw(tuple(float(x) for x in CUBE_VERTICES[i]), r) for i in (v0, v1, v2)]
+            n = normal_of(*rotated)
+            expected = FACE_NORMALS[ROTATED_FACE[r * 6 + cull]]
+            if n != expected:
+                mismatches += 1
+    check("48 triangulos x 4 rotacoes: normal == ROTATED_FACE", mismatches == 0)
+
+    # tag 7: planta totalmente cercada (face_mask = 0) ainda emite tudo
+    registry = {2: BlockDef(2)}
+    chunks = {0: make_chunk((0, 0, 0), lambda c: 2)}
+    pack_subdivisions(chunks[0], registry)
+    interior = (16, 16, 16)
+    mask = compute_visible_face_mask(chunks, 0, interior, chunks[0]["neighbors"], (16, 1e6, 16))
+    check("voxel cercado: face_mask == 0", mask == 0)
+    surviving = sum(1 for tri in TEMPLATES[2].packed if triangle_survives_culling(tri, 0, mask))
+    check("planta (tag 7) nunca culpada: 4/4 triangulos", surviving == 4)
+
+    # cubo cercado nao emite nada
+    registry = {1: BlockDef(1)}
+    chunks = {0: make_chunk((0, 0, 0), lambda c: 1)}
+    pack_subdivisions(chunks[0], registry)
+    v, t = mesh_group_counts(0, chunks, 0, registry, (16, 1e6, 16))  # brick 0: interior em y
+    check("brick interior de cubos: 0 vertices, 0 triangulos", (v, t) == (0, 0))
+
+    # rotacao afeta o culling: face +X do cubo com r=1 passa a responder a -Z
+    mask = 1 << 5  # so -Z visivel
+    tri_px = pack_triangle(1, 3, 7, 0)
+    check("r=0: face +X nao sobrevive com mascara -Z", not triangle_survives_culling(tri_px, 0, mask))
+    check("r=1: face +X rotacionada sobrevive com mascara -Z", triangle_survives_culling(tri_px, 1, mask))
+
+
+def main():
+    scenario_budget()
+    scenario_selection()
+    scenario_b2()
+    scenario_rotation()
+    print(f"\n{PASS} passaram, {FAIL} falharam")
+    raise SystemExit(1 if FAIL else 0)
+
+
+if __name__ == "__main__":
+    main()

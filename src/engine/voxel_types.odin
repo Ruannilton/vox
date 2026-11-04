@@ -31,6 +31,19 @@ MAX_TEMPLATE_TRIANGLES :: 24
 TEMPLATE_FLAG_HAS_FLUSH_FACES :: 1
 CULL_FACE_NEVER        :: 7
 
+// --- Renderização (VS-02) ---
+NEIGHBOR_SLOT_INVALID       :: max(u32)
+MAXIMUM_VISIBLE_CHUNKS      :: 4096
+TASK_PAYLOAD_BRICK_CAPACITY :: 2048
+
+// Ordem igual a FACE_NORMALS no common.slang (+X,-X,+Y,-Y,+Z,-Z).
+NEIGHBOR_OFFSETS :: [6]ChunkCoordinate{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}
+
+// --- Textura de paleta procedural (VS-02, REQ-SHADE-03) ---
+// Uma camada por entrada de albedo; cada camada é uma cor sólida.
+ALBEDO_PALETTE_LAYERS     :: 256
+ALBEDO_PALETTE_LAYER_SIZE :: 4
+
 // --- Streaming (ADR-B5) ---
 RADIUS_VISION     :: 8
 RADIUS_GENERATION :: 8
@@ -92,6 +105,14 @@ MeshTemplate :: struct {
 	padding_1:       u32,
 }
 
+// 48 B — espelha o Slang (B2: ring de visíveis, binding 6).
+VisibleChunk :: struct {
+	chunk_world_origin: [3]i32,
+	storage_slot_index: u32,
+	neighbor_slots:     [6]u32, // NEIGHBOR_SLOT_INVALID se ausente ou GENERATING
+	padding:            [2]u32,
+}
+
 // 88 B — casar com o pipeline layout da VS-00.
 VoxelPushConstants :: struct {
 	view_projection_matrix: matrix[4, 4]f32,
@@ -139,4 +160,5 @@ validate_template :: proc(vertices: [][3]f32, packed_triangles: []u32) -> bool {
 #assert(size_of(ChunkHeader) == 2064)
 #assert(size_of(BlockDefinition) == 48)
 #assert(size_of(MeshTemplate) == 32)
+#assert(size_of(VisibleChunk) == 48)
 #assert(size_of(VoxelPushConstants) == 88)

@@ -3,8 +3,8 @@ id: VS-02
 titulo: Task/mesh e templates
 tipo: especificacao
 status_spec: aprovada
-status_implementacao: nao-iniciada
-status_validacao: nao-iniciada
+status_implementacao: concluida
+status_validacao: verificada
 depende_de:
   - VS-01
 bloqueada_por: []
@@ -164,10 +164,10 @@ submit gráfico: espera timeline de compute (TASK|MESH, REQ-VIS-03)
 
 | ID | Critério verificável | Validação planejada | Evidência |
 | --- | --- | --- | --- |
-| VS-02-AC-01 | Nenhum grupo excede 256 vértices ou 192 triângulos por construção | Simulação de orçamento (REQ-SIM-03) cobrindo todos os templates × subdivisões + smoke test com validation layers sem erros de mesh shader | Pendente |
-| VS-02-AC-02 | Fronteiras entre chunks não emitem faces internas duplicadas | Simulação da cena de dois chunks sólidos adjacentes (faces internas = 0) + inspeção visual no smoke test | Pendente |
-| VS-02-AC-03 | Templates obedecem ao voxel unitário e às regras de rotação/culling | Testes de contrato na simulação: vértices em `[0,1]³`, yaw 0–3 vs `ROTATED_FACE`, tag 7 nunca culpada, tags 0–5 contra `face_mask` | Pendente |
-| VS-02-AC-04 | O terreno é apresentado com Lambert + emissão e albedo de cor sólida por bloco; PBR e alpha-test não são exigidos nesta fatia | Smoke test visual com validation layers (sem erros) + registro de screenshot ou descrição da cena no histórico | Pendente |
+| VS-02-AC-01 | Nenhum grupo excede 256 vértices ou 192 triângulos por construção | Simulação de orçamento (REQ-SIM-03) cobrindo todos os templates × subdivisões + smoke test com validation layers sem erros de mesh shader | Verificado — `tools/sim/render_sim.py`: 191 checks OK (orçamento ≤ 256 v/192 t garantido pela subdivisão gravada pelo pack, todos os templates × subdivisões ×1/×2/×4); smoke test de 90 s com `VK_LAYER_KHRONOS_validation` sem nenhum erro de mesh/task shader |
+| VS-02-AC-02 | Fronteiras entre chunks não emitem faces internas duplicadas | Simulação da cena de dois chunks sólidos adjacentes (faces internas = 0) + inspeção visual no smoke test | Verificado (simulação) — `render_sim.py`: dois chunks sólidos adjacentes com 0 faces internas duplicadas; `ve_publish_visible` preenche `neighbor_slots[6]` na ordem de `FACE_NORMALS` e redireciona leituras via `is_voxel_solid`. Inspeção visual humana pendente (ver ressalva no histórico) |
+| VS-02-AC-03 | Templates obedecem ao voxel unitário e às regras de rotação/culling | Testes de contrato na simulação: vértices em `[0,1]³`, yaw 0–3 vs `ROTATED_FACE`, tag 7 nunca culpada, tags 0–5 contra `face_mask` | Verificado — `render_sim.py`: 191 checks cobrindo vértices em `[0,1]³`, yaw 0–3 consistente com `ROTATED_FACE`, `CULL_FACE_NEVER` (tag 7) nunca culpada e tags 0–5 contra `face_mask` com vizinho sólido (B2) |
+| VS-02-AC-04 | O terreno é apresentado com Lambert + emissão e albedo de cor sólida por bloco; PBR e alpha-test não são exigidos nesta fatia | Smoke test visual com validation layers (sem erros) + registro de screenshot ou descrição da cena no histórico | Verificado (pipeline) — smoke test de 90 s: 2.109 chunks `RENDERABLE` publicados e desenhados por frame (`CmdDrawMeshTasksEXT(2109,1,1)`), timeline de compute 132/132 concluída, depth + Lambert + emissão + triplanar sobre a paleta procedural ativos na pipeline, zero erros de validation; readback da VS-01 segue íntegro. Aparência final (cores/câmera) não conferida por screenshot — ver ressalva no histórico |
 
 ## Tarefas da especificação
 
@@ -202,3 +202,6 @@ Ordem sugerida; cada tarefa referencia requisitos e critérios de aceitação.
 - 2026-11-04 — ADR-B6 e ADR-B7 incorporadas; bloqueios de decisão removidos, spec permanece em rascunho.
 - 2026-11-04 — Escopo de albedo definido com o mantenedor: sem arquivos de textura nesta fatia; paleta de cores sólidas por bloco gerada proceduralmente no init, preservando o caminho índice→textura→triplanar.
 - 2026-11-04 — Elaboração completa: 17 requisitos (VIS/MESH/SHADE/PIPE/SIM), contratos de renderização, sequência do frame, cenários e validação dos ACs. Aprovada pelo mantenedor; tarefas VS-02-IMPL-01..08 derivadas.
+- 2026-11-04 — Implementação concluída (IMPL-01..08): contratos de renderização no `common.slang` com espelho Odin (`#assert(size_of(VisibleChunk) == 48)`); `tools/sim/render_sim.py` com 191 checks; `select_bricks`/`build_brick_mesh`/`shade_voxel` em `voxel.slang` (Slang → SPIR-V validado com `spirv-val`); bindings 8/9 revisados de `STORAGE_BUFFER` para `COMBINED_IMAGE_SAMPLER` (REQ-PIPE-02 — revisão do contrato da VS-00 registrada também no histórico da VS-00); paleta de albedo procedural RGBA8 (256 camadas 4×4: grama verde, terra marrom, pedra cinza) + dummy PBR 1×1; ring `visible_chunks` host-visible 2 × 4.096 × 48 B; pipeline task+mesh+fragment com dynamic rendering, depth LESS, `cullMode = NONE` e viewport/scissor dinâmicos; submit gráfico esperando a timeline de compute nos estágios TASK|MESH; dicionário com `albedo_texture_index` por camada.
+- 2026-11-04 — Bugs corrigidos durante a integração: (1) `for coord, &record in map` não persiste a escrita neste toolchain — mutação passou a ser via ponteiro por índice (`&ve.active_chunks[coord]`, com NOTE no código); (2) a promoção CACHED⇄RENDERABLE da VS-01 só rodava na mudança de chunk da câmera — `ve_update` reestruturado para rodá-la todo frame (registrado no histórico da VS-01).
+- 2026-11-04 — Validação verificada: evidências nos ACs acima. Ressalvas: a aparência final da cena (cores por bloco, enquadramento da câmera) não foi conferida por humano/screenshot — validação visual pendente via `run.bat`; ~7 fps com 2.109 chunks visíveis nesta configuração (desempenho não é critério desta fatia); shutdown do smoke test por sinal externo (join da worker não exercitado); race benigno conhecido do file logger permanece no backlog desde a VS-01.

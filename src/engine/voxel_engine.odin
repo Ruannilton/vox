@@ -236,82 +236,124 @@ retire_generating_slot :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record:
 	append(&ve.free_storage_slots, record.storage_slot_index)
 }
 
+// VS-02 (REQ-VIS-01/02, ADR-B2): reconstrói a lista de visíveis do frame no
+// ring host-visible. Thread principal; chamada após WaitTimelineSemaphore, que
+// garante que a GPU já terminou de ler esta posição do ring.
+ve_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
+	offset := int(frame_index) * MAXIMUM_VISIBLE_CHUNKS
+	count: u32 = 0
+	for coord, record in ve.active_chunks {
+		if record.state != .RENDERABLE do continue
+		if count >= MAXIMUM_VISIBLE_CHUNKS do break
+
+		entry := VisibleChunk {
+			chunk_world_origin = {coord.x * CHUNK_SIZE, coord.y * CHUNK_SIZE, coord.z * CHUNK_SIZE},
+			storage_slot_index = record.storage_slot_index,
+		}
+		for neighbor_offset, i in NEIGHBOR_OFFSETS {
+			entry.neighbor_slots[i] = NEIGHBOR_SLOT_INVALID
+			neighbor_coord := coord + neighbor_offset
+			if neighbor_coord in ve.active_chunks {
+				neighbor_record := ve.active_chunks[neighbor_coord]
+				// Só é seguro ler se a geração já concluiu: slot em
+				// GENERATING contém lixo e pode estar sendo escrito
+				// pela fila de compute neste instante.
+				if neighbor_record.state != .GENERATING {
+					entry.neighbor_slots[i] = neighbor_record.storage_slot_index
+				}
+			}
+		}
+		voxel_gpu.visible_chunks_mapped[offset + int(count)] = entry
+		count += 1
+	}
+	return count
+}
+
 // Streaming com histerese (thread principal). ADR-B5: visão 8, geração 8,
 // descarga 16 — como visão = geração, todo chunk concluído vira RENDERABLE.
+// A promoção CACHED ⇄ RENDERABLE roda TODO frame (a conclusão de lotes não
+// depende da câmera se mover); descarga e novas requisições, só quando o
+// chunk da câmera muda.
 ve_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 	ve_service_completions(ve)
 
 	camera_chunk := chunk_coordinate_from_world(camera_position)
-	if camera_chunk == ve.last_camera_chunk do return
-	ve.last_camera_chunk = camera_chunk
+	if camera_chunk != ve.last_camera_chunk {
+		ve.last_camera_chunk = camera_chunk
 
-	sync.mutex_lock(&ve.queue_mutex)
-	ve.priority_camera_chunk = camera_chunk
-	sync.mutex_unlock(&ve.queue_mutex)
+		sync.mutex_lock(&ve.queue_mutex)
+		ve.priority_camera_chunk = camera_chunk
+		sync.mutex_unlock(&ve.queue_mutex)
 
-	// 1. Descarrega os distantes (raio 16)
-	to_unload := make([dynamic]ChunkCoordinate, context.temp_allocator)
-	for coord in ve.active_chunks {
-		if calculate_squared_distance(camera_chunk, coord) > i64(RADIUS_UNLOAD) * RADIUS_UNLOAD {
-			append(&to_unload, coord)
-		}
-	}
-	for coord in to_unload {
-		record := ve.active_chunks[coord]
-		if record.state == .GENERATING {
-			// B1: NUNCA devolver o slot direto — a GPU pode estar prestes a
-			// escrever nele (lote em voo) ou a tarefa pode estar pendente.
-			retire_generating_slot(ve, coord, record)
-		} else {
-			append(&ve.retiring_slots, RetiringSlot{record.storage_slot_index, app.currentTimelineValue})
-		}
-		delete_key(&ve.active_chunks, coord)
-	}
-
-	// 2. Visibilidade (raio 8)
-	for coord, &record in ve.active_chunks {
-		is_visible := calculate_squared_distance(camera_chunk, coord) <= i64(RADIUS_VISION) * RADIUS_VISION
-		if record.state == .CACHED && is_visible {
-			record.state = .RENDERABLE
-		} else if record.state == .RENDERABLE && !is_visible {
-			record.state = .CACHED
-		}
-	}
-
-	// 3. Pede novos (raio 8), com identidade anti-ABA por alocação
-	new_tasks := make([dynamic]GenerationTask, context.temp_allocator)
-	slots_exhausted := false
-	for x in -RADIUS_GENERATION ..= RADIUS_GENERATION {
-		for y in -RADIUS_GENERATION ..= RADIUS_GENERATION {
-			for z in -RADIUS_GENERATION ..= RADIUS_GENERATION {
-				coord := camera_chunk + ChunkCoordinate{i32(x), i32(y), i32(z)}
-				if calculate_squared_distance(camera_chunk, coord) > i64(RADIUS_GENERATION) * RADIUS_GENERATION do continue
-				if coord in ve.active_chunks do continue
-
-				if len(ve.free_storage_slots) == 0 {
-					slots_exhausted = true
-					continue
-				}
-				slot := pop(&ve.free_storage_slots)
-				ve.slot_generations[slot] += 1
-				generation := ve.slot_generations[slot]
-				ve.active_chunks[coord] = ChunkRecord{.GENERATING, slot, generation}
-				append(&new_tasks, GenerationTask{
-					coordinate         = coord,
-					storage_slot_index = slot,
-					generation         = generation,
-					mirror_ring_slot   = -1,
-				})
+		// 1. Descarrega os distantes (raio 16)
+		to_unload := make([dynamic]ChunkCoordinate, context.temp_allocator)
+		for coord in ve.active_chunks {
+			if calculate_squared_distance(camera_chunk, coord) > i64(RADIUS_UNLOAD) * RADIUS_UNLOAD {
+				append(&to_unload, coord)
 			}
 		}
+		for coord in to_unload {
+			record := ve.active_chunks[coord]
+			if record.state == .GENERATING {
+				// B1: NUNCA devolver o slot direto — a GPU pode estar prestes a
+				// escrever nele (lote em voo) ou a tarefa pode estar pendente.
+				retire_generating_slot(ve, coord, record)
+			} else {
+				append(&ve.retiring_slots, RetiringSlot{record.storage_slot_index, app.currentTimelineValue})
+			}
+			delete_key(&ve.active_chunks, coord)
+		}
+
+		// 2. Pede novos (raio 8), com identidade anti-ABA por alocação
+		new_tasks := make([dynamic]GenerationTask, context.temp_allocator)
+		slots_exhausted := false
+		for x in -RADIUS_GENERATION ..= RADIUS_GENERATION {
+			for y in -RADIUS_GENERATION ..= RADIUS_GENERATION {
+				for z in -RADIUS_GENERATION ..= RADIUS_GENERATION {
+					coord := camera_chunk + ChunkCoordinate{i32(x), i32(y), i32(z)}
+					if calculate_squared_distance(camera_chunk, coord) > i64(RADIUS_GENERATION) * RADIUS_GENERATION do continue
+					if coord in ve.active_chunks do continue
+
+					if len(ve.free_storage_slots) == 0 {
+						slots_exhausted = true
+						continue
+					}
+					slot := pop(&ve.free_storage_slots)
+					ve.slot_generations[slot] += 1
+					generation := ve.slot_generations[slot]
+					ve.active_chunks[coord] = ChunkRecord{.GENERATING, slot, generation}
+					append(&new_tasks, GenerationTask{
+						coordinate         = coord,
+						storage_slot_index = slot,
+						generation         = generation,
+						mirror_ring_slot   = -1,
+					})
+				}
+			}
+		}
+		if slots_exhausted {
+			log.warn("Pool de slots de chunk esgotado; novas requisições aguardam reciclagem")
+		}
+		if len(new_tasks) > 0 {
+			sync.mutex_lock(&ve.queue_mutex)
+			append(&ve.pending_tasks, ..new_tasks[:])
+			sync.cond_signal(&ve.queue_condition)
+			sync.mutex_unlock(&ve.queue_mutex)
+		}
 	}
-	if slots_exhausted {
-		log.warn("Pool de slots de chunk esgotado; novas requisições aguardam reciclagem")
-	}
-	if len(new_tasks) > 0 {
-		sync.mutex_lock(&ve.queue_mutex)
-		append(&ve.pending_tasks, ..new_tasks[:])
-		sync.cond_signal(&ve.queue_condition)
-		sync.mutex_unlock(&ve.queue_mutex)
+
+	// 3. Visibilidade (raio 8) — todo frame: lotes concluem de forma
+	// assíncrona mesmo com a câmera parada.
+	// NOTA: `for coord, &record in map` NÃO persiste a escrita neste
+	// toolchain — mutar sempre via ponteiro por índice (ve.active_chunks[coord]).
+	for coord, record in ve.active_chunks {
+		is_visible := calculate_squared_distance(camera_chunk, coord) <= i64(RADIUS_VISION) * RADIUS_VISION
+		if record.state == .CACHED && is_visible {
+			rec := &ve.active_chunks[coord]
+			rec.state = .RENDERABLE
+		} else if record.state == .RENDERABLE && !is_visible {
+			rec := &ve.active_chunks[coord]
+			rec.state = .CACHED
+		}
 	}
 }

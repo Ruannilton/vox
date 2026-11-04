@@ -1,7 +1,8 @@
 // ============================================================================
-// voxel.slang — VS-01: generate_voxels + pack_chunk
+// voxel.slang — VS-01: generate_voxels + pack_chunk; VS-02: task/mesh/fragment
 // Constantes, layouts e bindings: common.slang (fonte única de verdade).
 // Simulação bit-a-bit do pack: tools/sim/pack_sim.py (959 checks).
+// Simulação da renderização: tools/sim/render_sim.py (191 checks).
 // ============================================================================
 import common;
 
@@ -285,4 +286,219 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
     for (uint i = thread; i < PALETTE_SIZE_MAXIMUM; i += PACK_THREADS) {
         chunk_headers[slot].refcount[i] = shared_refcount[i];
     }
+}
+
+// ----------------------------------------------------------------------------
+// VS-02 ESTÁGIO 3: TASK SHADER — seleção de bricks por chunk visível
+// 1 workgroup (128 threads) por chunk visível; payload com grupos
+// (brick | parte<<10 | subdivisão<<12). Simulação: tools/sim/render_sim.py.
+// ----------------------------------------------------------------------------
+groupshared TaskPayload shared_payload;
+groupshared uint shared_selected_brick_count;
+
+[shader("amplification")]
+[numthreads(128, 1, 1)]
+void select_bricks(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) {
+    uint thread = local_id.x;
+    VisibleChunk chunk = visible_chunks[push_constants.visible_chunk_offset + group_id.x];
+
+    if (thread == 0) {
+        shared_selected_brick_count = 0;
+        shared_payload.storage_slot_index = chunk.storage_slot_index;
+        shared_payload.chunk_world_origin = chunk.chunk_world_origin;
+        [unroll]
+        for (uint face = 0; face < 6; face++) {
+            shared_payload.neighbor_slots[face] = chunk.neighbor_slots[face];
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    ChunkHeader header = chunk_headers[chunk.storage_slot_index];
+    if ((header.flags & CHUNK_FLAG_EMPTY) != 0) {
+        return;
+    }
+
+    uint occupancy_base = chunk.storage_slot_index * OCCUPANCY_WORDS_PER_CHUNK;
+
+    uint step_count = BRICKS_PER_CHUNK / 128;
+    for (uint step = 0; step < step_count; step++) {
+        uint brick_index = thread + step * 128;
+        uint occupancy_word = occupancy_pool[occupancy_base + brick_index];
+
+        // TODO: culling de frustum por brick (bounds do brick vs frustum).
+        if (occupancy_word != 0) {
+            // CAMINHO B: lê o nível de subdivisão decidido pelo pack.
+            uint subd_word = occupancy_pool[occupancy_base + SUBDIVISION_WORD_BASE + (brick_index >> 4u)];
+            uint subdivision = (subd_word >> ((brick_index & 15u) * 2u)) & 3u;
+            uint parts = 1u << subdivision;
+
+            for (uint part = 0; part < parts; part++) {
+                uint position;
+                InterlockedAdd(shared_selected_brick_count, 1, position);
+                if (position < TASK_PAYLOAD_BRICK_CAPACITY) {
+                    shared_payload.brick_indices[position] =
+                        brick_index | (part << 10u) | (subdivision << 12u);
+                }
+                // Payload cheio (patológico: todos os bricks pesados x4):
+                // os excedentes são descartados neste frame.
+            }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (thread == 0) {
+        uint dispatch_count = min(shared_selected_brick_count, TASK_PAYLOAD_BRICK_CAPACITY);
+        DispatchMesh(dispatch_count, 1, 1, shared_payload);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// VS-02 ESTÁGIO 4: MESH SHADER — montagem da geometria a partir de templates
+// 32 threads; orçamento 256v/192t garantido pela subdivisão do pack (regra 5).
+// ----------------------------------------------------------------------------
+groupshared uint shared_v_count[VOXELS_PER_BRICK];
+groupshared uint shared_t_count[VOXELS_PER_BRICK];
+groupshared uint shared_face_mask[VOXELS_PER_BRICK];
+groupshared uint shared_total_v;
+groupshared uint shared_total_t;
+
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(32, 1, 1)]
+void build_brick_mesh(
+    uint3 group_id : SV_GroupID,
+    uint3 local_id : SV_GroupThreadID,
+    in payload TaskPayload payload,
+    out indices uint3 tris[MESH_TRIANGLE_MAXIMUM],
+    out vertices MeshVertex verts[MESH_VERTEX_MAXIMUM]
+) {
+    uint slot = payload.storage_slot_index;
+
+    // CAMINHO B: decodifica o grupo (brick + parte, conforme subdivisão do pack)
+    uint entry            = payload.brick_indices[group_id.x];
+    uint brick_idx        = entry & 1023u;
+    uint part             = (entry >> 10u) & 3u;
+    uint subdivision_log2 = (entry >> 12u) & 3u;
+    uint voxels_in_group  = VOXELS_PER_BRICK >> subdivision_log2;
+    bool active           = local_id.x < voxels_in_group;
+    uint voxel_slot       = part * voxels_in_group + min(local_id.x, voxels_in_group - 1u);
+    int3 voxel_coord      = brick_coordinate_from_index(brick_idx) * BRICK_SIZE + local_coordinate_from_bit_index(voxel_slot);
+
+    uint v_cnt = 0u;
+    uint t_cnt = 0u;
+    uint face_mask = 0u;
+    MeshTemplate tmpl = {};
+    BlockDefinition def = {};
+    uint block_id = 0u;
+
+    if (active) {
+        ChunkHeader header = chunk_headers[slot];
+        block_id = read_block_identifier(slot, header, voxel_coord);
+        def = global_block_registry[block_id];
+        tmpl = mesh_templates[def.mesh_template_index];
+
+        if (tmpl.triangle_count > 0u) {
+            // Culling de faces só é necessário para templates com triângulos
+            // colados em faces do voxel (bit HAS_FLUSH_FACES).
+            if ((tmpl.flags & TEMPLATE_FLAG_HAS_FLUSH_FACES) != 0u) {
+                face_mask = compute_visible_face_mask(slot, voxel_coord,
+                    payload.chunk_world_origin, push_constants.camera_position,
+                    payload.neighbor_slots);
+            }
+
+            for (uint t = 0; t < tmpl.triangle_count; t++) {
+                uint packed_tri = template_triangles[tmpl.triangle_offset + t];
+                if (triangle_survives_culling(packed_tri, def.rotation, face_mask)) {
+                    t_cnt++;
+                }
+            }
+            // Sem triângulos sobreviventes: nenhum vértice é emitido.
+            if (t_cnt > 0u) v_cnt = tmpl.vertex_count;
+        }
+    }
+
+    shared_v_count[local_id.x] = v_cnt;
+    shared_t_count[local_id.x] = t_cnt;
+    shared_face_mask[local_id.x] = face_mask;
+    GroupMemoryBarrierWithGroupSync();
+
+    // Prefixo exclusivo sequencial (32 elementos; threads inativas contribuem 0).
+    // Totais vão para escalares dedicados para não destruir o prefixo do voxel 0.
+    if (local_id.x == 0) {
+        uint v_acc = 0u, t_acc = 0u;
+        for (uint i = 0; i < VOXELS_PER_BRICK; i++) {
+            uint vc = shared_v_count[i], tc = shared_t_count[i];
+            shared_v_count[i] = v_acc; shared_t_count[i] = t_acc;
+            v_acc += vc; t_acc += tc;
+        }
+        shared_total_v = v_acc;
+        shared_total_t = t_acc;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    uint first_v = shared_v_count[local_id.x];
+    uint first_t = shared_t_count[local_id.x];
+
+    SetMeshOutputCounts(shared_total_v, shared_total_t);
+
+    if (!active || v_cnt == 0u) return;
+
+    // ------------------------- Emissão de vértices -------------------------
+    float3 voxel_min_world = float3(payload.chunk_world_origin + voxel_coord);
+    for (uint i = 0; i < tmpl.vertex_count; i++) {
+        float3 local_pos = template_vertices[tmpl.vertex_offset + i];
+        local_pos = rotate_vertex_yaw(local_pos, def.rotation);
+
+        MeshVertex v;
+        v.world_position = voxel_min_world + local_pos;
+        v.clip_position = mul(push_constants.view_projection_matrix, float4(v.world_position, 1.0));
+        v.block_id = block_id;
+        verts[first_v + i] = v;
+    }
+
+    // ------------------------- Emissão de triângulos ------------------------
+    uint mask = shared_face_mask[local_id.x];
+    uint t_cur = first_t;
+    for (uint t = 0; t < tmpl.triangle_count; t++) {
+        uint packed_tri = template_triangles[tmpl.triangle_offset + t];
+        if (!triangle_survives_culling(packed_tri, def.rotation, mask)) continue;
+
+        uint3 tri = uint3(packed_tri & 0xFFu, (packed_tri >> 8u) & 0xFFu, (packed_tri >> 16u) & 0xFFu);
+        tris[t_cur++] = tri + first_v;
+    }
+}
+
+// ----------------------------------------------------------------------------
+// VS-02 ESTÁGIO 5: FRAGMENT — Lambert + emissão, triplanar, normais por
+// derivadas (ADR-B7: sem PBR). Albedo = paleta procedural de cores sólidas
+// (binding 8); binding 9 existe mas não é amostrado nesta fatia.
+// ----------------------------------------------------------------------------
+float3 sample_triplanar_albedo(float3 world_pos, float3 world_normal, uint texture_index) {
+    float3 blend_weights = abs(world_normal);
+    blend_weights = blend_weights / (blend_weights.x + blend_weights.y + blend_weights.z);
+
+    float3 x_projection = block_albedo_textures.Sample(float3(world_pos.zy, float(texture_index))).rgb;
+    float3 y_projection = block_albedo_textures.Sample(float3(world_pos.xz, float(texture_index))).rgb;
+    float3 z_projection = block_albedo_textures.Sample(float3(world_pos.xy, float(texture_index))).rgb;
+
+    return x_projection * blend_weights.x + y_projection * blend_weights.y + z_projection * blend_weights.z;
+}
+
+[shader("fragment")]
+float4 shade_voxel(MeshVertex input) : SV_Target {
+    BlockDefinition def = global_block_registry[input.block_id];
+
+    float3 normal_x = ddx(input.world_position);
+    float3 normal_y = ddy(input.world_position);
+    float3 normal = normalize(cross(normal_x, normal_y));
+
+    float3 albedo = sample_triplanar_albedo(input.world_position, normal, def.albedo_texture_index);
+
+    // ADR-B7: Lambert + emissão; Cook-Torrance e SSAO ficam no backlog.
+    float3 light_dir = normalize(float3(0.5, 0.8, 0.3));
+    float diffuse = max(dot(normal, light_dir), 0.0);
+    float3 ambient = float3(0.2);
+    float3 final_color = albedo * (ambient + diffuse) + def.emission_color;
+
+    return float4(final_color, 1.0);
 }

@@ -58,6 +58,14 @@ main :: proc() {
 		0.5,
 		500.0,
 	)
+	// glm produz clip space OpenGL (y para cima, z em [-1,1]); Vulkan quer y
+	// para baixo e z em [0,1]. Aplicado por último: vp_final = FIX * vp.
+	GL_TO_VK_CLIP :: matrix[4, 4]f32{
+		1, 0, 0, 0,
+		0, -1, 0, 0,
+		0, 0, 0.5, 0.5,
+		0, 0, 0, 1,
+	}
 
 	glfw.SetInputMode(engine.app.glfwWindow, glfw.CURSOR, glfw.CURSOR_DISABLED)
 	last_x, last_y = glfw.GetCursorPos(engine.app.glfwWindow)
@@ -113,7 +121,7 @@ main :: proc() {
 
 		signal_value := engine.WaitTimelineSemaphore()
 		view := camera_view(&camera)
-		vp := projection * view
+		vp := GL_TO_VK_CLIP * projection * view
 
 		frame_resource := engine.AcquireFrameResource()
 		swapchain_frame, acquired := engine.AcquireNextImage()
@@ -122,6 +130,18 @@ main :: proc() {
 			// e desfaz a reserva da timeline para não abrir lacuna na sequência.
 			engine.CancelFrameReservation()
 			continue
+		}
+
+		// VS-02: reconstrói os visíveis desta posição do ring (o slot já foi
+		// liberado pela espera da timeline gráfica acima).
+		visible_count := engine.ve_publish_visible(voxel_engine, engine.app.frameIndex)
+		if engine.app.tick == 240 {
+			// VS-02 AC-04: evidência de que o draw está emitindo trabalho.
+			log.infof(
+				"DEBUG RENDER: {} chunks visíveis, timeline de compute em {}",
+				visible_count,
+				voxel_engine.highest_completed_compute_value,
+			)
 		}
 
 
@@ -198,8 +218,8 @@ main :: proc() {
 		
 		vk.CmdBeginRendering(cmd, &rendering_info)
 
-	//	engine.record_mesh_shader_pipeline(&mesh_pipeline, cmd, vp)
-		
+		engine.voxel_render_record(cmd, vp, camera.position, visible_count, engine.app.frameIndex)
+
 		vk.CmdEndRendering(cmd)
 
 		transition_present_barrier := vk.ImageMemoryBarrier2 {
@@ -229,6 +249,16 @@ main :: proc() {
 			semaphore = frame_resource.vkAcquireSemaphore,
 			stageMask = {.COLOR_ATTACHMENT_OUTPUT},
 		}
+		// VS-02 (REQ-VIS-03): task/mesh só leem a ocupação após os lotes de
+		// compute concluídos sinalizarem a timeline.
+		compute_wait_info := vk.SemaphoreSubmitInfo {
+			sType     = .SEMAPHORE_SUBMIT_INFO,
+			semaphore = engine.app.computeTimelineSemaphore,
+			value     = voxel_engine.highest_completed_compute_value,
+			stageMask = {.TASK_SHADER_EXT, .MESH_SHADER_EXT},
+		}
+		wait_infos := [2]vk.SemaphoreSubmitInfo{acquire_wait_info, compute_wait_info}
+		wait_count: u32 = voxel_engine.highest_completed_compute_value > 0 ? 2 : 1
 		semaphore_signals := []vk.SemaphoreSubmitInfo {
 			{
 				sType = .SEMAPHORE_SUBMIT_INFO,
@@ -250,8 +280,8 @@ main :: proc() {
 			sType                    = .SUBMIT_INFO_2,
 			commandBufferInfoCount   = 1,
 			pCommandBufferInfos      = &command_submit_info,
-			waitSemaphoreInfoCount   = 1,
-			pWaitSemaphoreInfos      = &acquire_wait_info,
+			waitSemaphoreInfoCount   = wait_count,
+			pWaitSemaphoreInfos      = &wait_infos[0],
 			signalSemaphoreInfoCount = cast(u32)len(semaphore_signals),
 			pSignalSemaphoreInfos    = raw_data(semaphore_signals),
 		}

@@ -24,16 +24,29 @@ VoxelGpu :: struct {
 	chunk_headers:          GpuBuffer,
 	special_voxel_records:  GpuBuffer,
 	block_registry:         GpuBuffer,
+	visible_chunks:         GpuBuffer, // ring 2×4096 × 48 B (host-visible, VS-02)
+	visible_chunks_mapped:  [^]VisibleChunk,
 	mesh_templates:         GpuBuffer,
 	template_vertices:      GpuBuffer,
 	template_triangles:     GpuBuffer,
-	dummy_buffer:           GpuBuffer, // bindings ainda não usados (6, 8, 9, 13-16)
+	dummy_buffer:           GpuBuffer, // bindings ainda não usados (6, 13-16)
+
+	// VS-02: texturas (bindings 8/9) — paleta procedural de cores sólidas +
+	// dummy PBR (ADR-B7).
+	albedo_palette_image:      vk.Image,
+	albedo_palette_allocation: vma.Allocation,
+	albedo_palette_view:       vk.ImageView,
+	pbr_dummy_image:           vk.Image,
+	pbr_dummy_allocation:      vma.Allocation,
+	pbr_dummy_view:            vk.ImageView,
+	texture_sampler:           vk.Sampler,
 
 	descriptor_pool:        vk.DescriptorPool,
 	descriptor_set:         vk.DescriptorSet,
 	shader_module:          vk.ShaderModule,
 	generation_pipeline:    vk.Pipeline,
 	packing_pipeline:       vk.Pipeline,
+	mesh_pipeline:          vk.Pipeline, // VS-02: task/mesh/fragment
 
 	compute_command_pool:    vk.CommandPool,
 	compute_command_buffers: [MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT]vk.CommandBuffer,
@@ -92,6 +105,191 @@ upload_to_device_buffer :: proc(data: rawptr, size: vk.DeviceSize, dst: vk.Buffe
 	}
 	vk_check(vk.QueueSubmit2(app.queues[.Compute].queue, 1, &submit_info, {}))
 	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+}
+
+// VS-02 (REQ-SHADE-03): cria uma imagem 2D array RGBA8 compartilhada entre as
+// filas de compute (upload no init) e gráfica (amostragem no fragment).
+@(private)
+gpu_image_2d_array_create :: proc(
+	width, height, layers: u32,
+) -> (
+	image: vk.Image,
+	allocation: vma.Allocation,
+) {
+	families := [2]u32{app.queues[.Graphics].familyIndex, app.queues[.Compute].familyIndex}
+	image_info := vk.ImageCreateInfo {
+		sType       = .IMAGE_CREATE_INFO,
+		imageType   = .D2,
+		format      = .R8G8B8A8_UNORM,
+		extent      = {width = width, height = height, depth = 1},
+		mipLevels   = 1,
+		arrayLayers = layers,
+		samples     = {._1},
+		tiling      = .OPTIMAL,
+		usage       = {.SAMPLED, .TRANSFER_DST},
+	}
+	if families[0] != families[1] {
+		image_info.sharingMode = .CONCURRENT
+		image_info.queueFamilyIndexCount = 2
+		image_info.pQueueFamilyIndices = &families[0]
+	}
+	allocation_info := vma.AllocationCreateInfo {
+		usage = .AUTO,
+	}
+	vk_check(vma.CreateImage(app.vmaAllocator, image_info, allocation_info, &image, &allocation, nil))
+	return
+}
+
+@(private)
+gpu_image_2d_array_view_create :: proc(image: vk.Image, layers: u32) -> (view: vk.ImageView) {
+	vk_check(
+		vk.CreateImageView(
+			app.vkDevice,
+			&vk.ImageViewCreateInfo {
+				sType = .IMAGE_VIEW_CREATE_INFO,
+				image = image,
+				viewType = .D2_ARRAY,
+				format = .R8G8B8A8_UNORM,
+				subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
+			},
+			nil,
+			&view,
+		),
+	)
+	return
+}
+
+// Upload de pixels RGBA8 para uma imagem 2D array via staging, com as duas
+// transições de layout, num submit único na fila de compute (só no init).
+@(private)
+upload_to_device_image :: proc(pixels: rawptr, size: vk.DeviceSize, dst: vk.Image, width, height, layers: u32) {
+	staging, staging_mapped := gpu_buffer_create_host(size, {.TRANSFER_SRC})
+	mem.copy(staging_mapped, pixels, int(size))
+	defer gpu_buffer_destroy(&staging)
+
+	cmd := voxel_gpu.compute_command_buffers[0]
+	vk_check(vk.ResetCommandBuffer(cmd, {}))
+	vk_check(
+		vk.BeginCommandBuffer(
+			cmd,
+			&vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}},
+		),
+	)
+
+	to_transfer := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		image = dst,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
+		oldLayout = .UNDEFINED,
+		newLayout = .TRANSFER_DST_OPTIMAL,
+		srcStageMask = {.COPY},
+		dstStageMask = {.COPY},
+		dstAccessMask = {.TRANSFER_WRITE},
+	}
+	vk.CmdPipelineBarrier2(
+		cmd,
+		&vk.DependencyInfo{sType = .DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = &to_transfer},
+	)
+
+	region := vk.BufferImageCopy {
+		imageSubresource = {aspectMask = {.COLOR}, layerCount = layers},
+		imageExtent      = {width = width, height = height, depth = 1},
+	}
+	vk.CmdCopyBufferToImage(cmd, staging.handle, dst, .TRANSFER_DST_OPTIMAL, 1, &region)
+
+	// A família de compute não aceita estágios gráficos; a transição de layout
+	// não exige dstStage de leitura — o DeviceWaitIdle do init ordena o uso
+	// posterior pela fila gráfica.
+	to_read := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		image = dst,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
+		oldLayout = .TRANSFER_DST_OPTIMAL,
+		newLayout = .SHADER_READ_ONLY_OPTIMAL,
+		srcStageMask = {.COPY},
+		srcAccessMask = {.TRANSFER_WRITE},
+		dstStageMask = {.COPY},
+	}
+	vk.CmdPipelineBarrier2(
+		cmd,
+		&vk.DependencyInfo{sType = .DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = &to_read},
+	)
+	vk_check(vk.EndCommandBuffer(cmd))
+
+	vk_check(
+		vk.QueueSubmit2(
+			app.queues[.Compute].queue,
+			1,
+			&vk.SubmitInfo2 {
+				sType = .SUBMIT_INFO_2,
+				commandBufferInfoCount = 1,
+				pCommandBufferInfos = &vk.CommandBufferSubmitInfo {
+					sType = .COMMAND_BUFFER_SUBMIT_INFO,
+					commandBuffer = cmd,
+				},
+			},
+			{},
+		),
+	)
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+}
+
+// VS-02: paleta de cores sólidas por entrada de albedo (sem arquivos de
+// asset) + dummy PBR do mesmo tipo para validar o binding 9 (ADR-B7).
+@(private)
+upload_palette_textures :: proc() {
+	LAYER :: ALBEDO_PALETTE_LAYER_SIZE
+	LAYERS :: ALBEDO_PALETTE_LAYERS
+
+	voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation =
+		gpu_image_2d_array_create(LAYER, LAYER, LAYERS)
+	voxel_gpu.albedo_palette_view = gpu_image_2d_array_view_create(voxel_gpu.albedo_palette_image, LAYERS)
+
+	voxel_gpu.pbr_dummy_image, voxel_gpu.pbr_dummy_allocation = gpu_image_2d_array_create(1, 1, 1)
+	voxel_gpu.pbr_dummy_view = gpu_image_2d_array_view_create(voxel_gpu.pbr_dummy_image, 1)
+
+	vk_check(
+		vk.CreateSampler(
+			app.vkDevice,
+			&vk.SamplerCreateInfo {
+				sType = .SAMPLER_CREATE_INFO,
+				magFilter = .LINEAR,
+				minFilter = .LINEAR,
+				addressModeU = .REPEAT,
+				addressModeV = .REPEAT,
+				addressModeW = .REPEAT,
+				maxLod = 0.0,
+			},
+			nil,
+			&voxel_gpu.texture_sampler,
+		),
+	)
+
+	// Cores: fallback cinza; 0 = ar (nunca amostrado); 1 = grama; 2 = terra;
+	// 3 = pedra. O índice do bloco no dicionário aponta para a camada.
+	colors: [LAYERS][3]u8
+	for &c in colors do c = {128, 128, 128}
+	colors[0] = {0, 0, 0}
+	colors[1] = {89, 191, 64} // grama: verde
+	colors[2] = {128, 89, 51} // terra: marrom
+	colors[3] = {140, 140, 148} // pedra: cinza
+
+	pixels: [LAYERS * LAYER * LAYER][4]u8
+	for layer in 0 ..< LAYERS {
+		base := layer * LAYER * LAYER
+		for texel in 0 ..< LAYER * LAYER {
+			pixels[base + texel] = {colors[layer][0], colors[layer][1], colors[layer][2], 255}
+		}
+	}
+	upload_to_device_image(
+		&pixels[0],
+		vk.DeviceSize(size_of(pixels)),
+		voxel_gpu.albedo_palette_image,
+		LAYER, LAYER, LAYERS,
+	)
+
+	black := [4]u8{0, 0, 0, 255}
+	upload_to_device_image(&black, vk.DeviceSize(4), voxel_gpu.pbr_dummy_image, 1, 1, 1)
 }
 
 voxel_gpu_init :: proc() {
@@ -155,6 +353,13 @@ voxel_gpu_init :: proc() {
 		vk.DeviceSize(BLOCK_REGISTRY_CAPACITY * size_of(BlockDefinition)),
 		{.STORAGE_BUFFER, .TRANSFER_DST},
 	)
+	// VS-02 (REQ-VIS-01): ring de visíveis, reconstruído pela CPU a cada frame.
+	visible_mapped: rawptr
+	voxel_gpu.visible_chunks, visible_mapped = gpu_buffer_create_host(
+		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * MAXIMUM_VISIBLE_CHUNKS * size_of(VisibleChunk)),
+		{.STORAGE_BUFFER},
+	)
+	voxel_gpu.visible_chunks_mapped = cast([^]VisibleChunk)visible_mapped
 	voxel_gpu.mesh_templates = gpu_buffer_create(
 		vk.DeviceSize(MESH_TEMPLATE_CAPACITY * size_of(MeshTemplate)),
 		{.STORAGE_BUFFER, .TRANSFER_DST},
@@ -171,6 +376,7 @@ voxel_gpu_init :: proc() {
 
 	upload_builtin_templates()
 	upload_block_registry()
+	upload_palette_textures()
 
 	// --- pipelines de compute (generate + pack) ---
 	shader_code := load_file("./voxel.spv", context.temp_allocator)
@@ -228,18 +434,21 @@ voxel_gpu_init :: proc() {
 		),
 	)
 
-	// --- descriptor set (layout da VS-00: 17 bindings storage buffer) ---
-	pool_size := vk.DescriptorPoolSize {
-		type            = .STORAGE_BUFFER,
-		descriptorCount = DESCRIPTOR_SET_BINDING_COUNT,
+	// VS-02: pipeline gráfica task/mesh/fragment (mesmo módulo).
+	voxel_render_pipeline_create()
+
+	// --- descriptor set (layout da VS-00, com 8/9 revisados pela VS-02) ---
+	pool_sizes := [2]vk.DescriptorPoolSize {
+		{type = .STORAGE_BUFFER, descriptorCount = DESCRIPTOR_SET_BINDING_COUNT},
+		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = 2},
 	}
 	vk_check(
 		vk.CreateDescriptorPool(
 			app.vkDevice,
 			&vk.DescriptorPoolCreateInfo {
 				sType         = .DESCRIPTOR_POOL_CREATE_INFO,
-				poolSizeCount = 1,
-				pPoolSizes    = &pool_size,
+				poolSizeCount = len(pool_sizes),
+				pPoolSizes    = &pool_sizes[0],
 				maxSets       = 1,
 			},
 			nil,
@@ -267,10 +476,9 @@ voxel_gpu_init :: proc() {
 		3  = voxel_gpu.material_plane_pool.handle,
 		4  = voxel_gpu.chunk_headers.handle,
 		5  = voxel_gpu.special_voxel_records.handle,
-		6  = voxel_gpu.dummy_buffer.handle, // visible_chunks (VS-02)
+		6  = voxel_gpu.visible_chunks.handle,
 		7  = voxel_gpu.block_registry.handle,
-		8  = voxel_gpu.dummy_buffer.handle, // texturas albedo (VS-02)
-		9  = voxel_gpu.dummy_buffer.handle, // texturas PBR (VS-02)
+		// 8/9 = texturas (VS-02), escritas como COMBINED_IMAGE_SAMPLER abaixo
 		10 = voxel_gpu.mesh_templates.handle,
 		11 = voxel_gpu.template_vertices.handle,
 		12 = voxel_gpu.template_triangles.handle,
@@ -281,9 +489,11 @@ voxel_gpu_init :: proc() {
 	}
 	buffer_infos: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorBufferInfo
 	writes: [DESCRIPTOR_SET_BINDING_COUNT]vk.WriteDescriptorSet
+	write_count := 0
 	for buffer, i in binding_buffers {
+		if i == 8 || i == 9 do continue // texturas, abaixo
 		buffer_infos[i] = {buffer = buffer, offset = 0, range = vk.DeviceSize(vk.WHOLE_SIZE)}
-		writes[i] = {
+		writes[write_count] = {
 			sType           = .WRITE_DESCRIPTOR_SET,
 			dstSet          = voxel_gpu.descriptor_set,
 			dstBinding      = u32(i),
@@ -292,8 +502,26 @@ voxel_gpu_init :: proc() {
 			descriptorCount = 1,
 			pBufferInfo     = &buffer_infos[i],
 		}
+		write_count += 1
 	}
-	vk.UpdateDescriptorSets(app.vkDevice, len(writes), raw_data(&writes), 0, nil)
+	// VS-02 (REQ-PIPE-02): bindings 8/9 são COMBINED_IMAGE_SAMPLER.
+	image_infos := [2]vk.DescriptorImageInfo {
+		{sampler = voxel_gpu.texture_sampler, imageView = voxel_gpu.albedo_palette_view, imageLayout = .SHADER_READ_ONLY_OPTIMAL},
+		{sampler = voxel_gpu.texture_sampler, imageView = voxel_gpu.pbr_dummy_view, imageLayout = .SHADER_READ_ONLY_OPTIMAL},
+	}
+	for binding in 8 ..= 9 {
+		writes[write_count] = {
+			sType           = .WRITE_DESCRIPTOR_SET,
+			dstSet          = voxel_gpu.descriptor_set,
+			dstBinding      = u32(binding),
+			dstArrayElement = 0,
+			descriptorType  = .COMBINED_IMAGE_SAMPLER,
+			descriptorCount = 1,
+			pImageInfo      = &image_infos[binding - 8],
+		}
+		write_count += 1
+	}
+	vk.UpdateDescriptorSets(app.vkDevice, u32(write_count), raw_data(&writes), 0, nil)
 
 	log.info("Recursos GPU do voxel engine inicializados")
 }
@@ -301,6 +529,7 @@ voxel_gpu_init :: proc() {
 voxel_gpu_destroy :: proc() {
 	log.info("Destruindo recursos GPU do voxel engine")
 	vk.DestroyDescriptorPool(app.vkDevice, voxel_gpu.descriptor_pool, nil)
+	vk.DestroyPipeline(app.vkDevice, voxel_gpu.mesh_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.packing_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.generation_pipeline, nil)
 	vk.DestroyShaderModule(app.vkDevice, voxel_gpu.shader_module, nil)
@@ -312,10 +541,17 @@ voxel_gpu_destroy :: proc() {
 	)
 	vk.DestroyCommandPool(app.vkDevice, voxel_gpu.compute_command_pool, nil)
 
+	vk.DestroySampler(app.vkDevice, voxel_gpu.texture_sampler, nil)
+	vk.DestroyImageView(app.vkDevice, voxel_gpu.pbr_dummy_view, nil)
+	vma.DestroyImage(app.vmaAllocator, voxel_gpu.pbr_dummy_image, voxel_gpu.pbr_dummy_allocation)
+	vk.DestroyImageView(app.vkDevice, voxel_gpu.albedo_palette_view, nil)
+	vma.DestroyImage(app.vmaAllocator, voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation)
+
 	gpu_buffer_destroy(&voxel_gpu.dummy_buffer)
 	gpu_buffer_destroy(&voxel_gpu.template_triangles)
 	gpu_buffer_destroy(&voxel_gpu.template_vertices)
 	gpu_buffer_destroy(&voxel_gpu.mesh_templates)
+	gpu_buffer_destroy(&voxel_gpu.visible_chunks)
 	gpu_buffer_destroy(&voxel_gpu.block_registry)
 	gpu_buffer_destroy(&voxel_gpu.special_voxel_records)
 	gpu_buffer_destroy(&voxel_gpu.chunk_headers)
@@ -543,11 +779,13 @@ upload_builtin_templates :: proc() {
 
 // Dicionário mínimo do worldgen da referência: 1 = grama, 2 = terra,
 // 3 = pedra (todos com o template cubo). 0 = ar (não é registrado).
+// VS-02 (REQ-SHADE-03): albedo_texture_index aponta para a camada de cor
+// sólida da paleta procedural (1 = verde, 2 = marrom, 3 = cinza).
 @(private)
 upload_block_registry :: proc() {
 	registry: [BLOCK_REGISTRY_CAPACITY]BlockDefinition
 	for id in 1 ..= 3 {
-		registry[id] = BlockDefinition{mesh_template_index = 1}
+		registry[id] = BlockDefinition{mesh_template_index = 1, albedo_texture_index = u32(id)}
 	}
 	upload_to_device_buffer(&registry, size_of(registry), voxel_gpu.block_registry.handle)
 }
