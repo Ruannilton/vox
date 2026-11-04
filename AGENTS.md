@@ -16,8 +16,12 @@ Constantes e layouts: src/assets/shaders/common.slang é a fonte única de verda
 ## Workflow
 - Mudança de shader → escrever/estender simulação Python em tools/sim/ antes de integrar.
 - Marcar integrações pendentes com TODO(E1)/TODO(B)/TODO(C2) (convenção existente).
-- Não atualizar docs/ sem atualizar o código correspondente e vice-versa
 - Manter documentação do projeto atualizada no formato obsidian dentro do diretorio docs/obsidian/*
+- Especificações e planejamento precedem o código; documentação de comportamento integrado deve mudar junto com o código correspondente.
+- Registrar especificações em docs/obsidian/especificacoes/ usando modelos/modelo-especificacao.md.
+- Registrar decisões arquiteturais em docs/obsidian/decisoes/ usando modelos/modelo-decisao.md e indexá-las em decisoes/00-indice.md.
+- Manter o frontmatter da spec, docs/obsidian/tracking/status.md e docs/obsidian/tracking/dependencias.md sincronizados a cada mudança.
+- Só iniciar implementação com spec aprovada e dependências concluídas; só marcar validação verificada com evidência reproduzível.
 
 ## Comandos
 - Build: <preencher>
