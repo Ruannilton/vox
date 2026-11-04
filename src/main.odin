@@ -50,7 +50,7 @@ main :: proc() {
 	defer engine.DestroyEngine()
 
 	voxel_engine := engine.ve_init()
-	defer engine.ve_destroy(&voxel_engine)
+	defer engine.ve_destroy(voxel_engine)
 	camera = camera_create(glm.vec3{32, 32, -10}, glm.vec3{0, -90, 0}, 45.0)
 	projection := glm.mat4Perspective(
 		glm.radians(camera.fov),
@@ -104,8 +104,12 @@ main :: proc() {
 		engine.Update()
 		update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
 
-		engine.ve_update(&voxel_engine, camera.position)
-		engine.ve_dispatch(&voxel_engine)
+		engine.ve_update(voxel_engine, camera.position)
+		if engine.app.tick == 120 {
+			// AC-01: readback de debug — decodifica um chunk real e compara
+			// com a verdade do worldgen (uma única vez).
+			engine.debug_readback_validate(voxel_engine)
+		}
 
 		signal_value := engine.WaitTimelineSemaphore()
 		view := camera_view(&camera)

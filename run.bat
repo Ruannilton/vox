@@ -3,7 +3,7 @@
 setlocal
 
 echo Compilando shaders...
-set "IN_DIR=.src\assets\shaders"
+set "IN_DIR=.\src\assets\shaders"
 set "OUT_DIR=.\bin"
 
 :: Cria o diretório de saída caso não exista
@@ -11,10 +11,13 @@ if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 
 echo Compilando shaders...
 
-:: Percorre todos os arquivos .slang no diretório de entrada
+:: Percorre todos os arquivos .slang do diretório de entrada
+:: (common.slang é biblioteca compartilhada — importada, não compilada sozinha)
 for %%I in ("%IN_DIR%\*.slang") do (
-    echo [BUILD] %%~nxI
-    slangc "%%I" -target spirv -o "%OUT_DIR%\%%~nI.spv"
+    if /I not "%%~nxI"=="common.slang" (
+        echo [BUILD] %%~nxI
+        slangc "%%I" -target spirv -o "%OUT_DIR%\%%~nI.spv"
+    )
 )
 
 echo.

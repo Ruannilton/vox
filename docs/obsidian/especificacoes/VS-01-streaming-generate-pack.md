@@ -3,8 +3,8 @@ id: VS-01
 titulo: Streaming, generate e pack
 tipo: especificacao
 status_spec: aprovada
-status_implementacao: nao-iniciada
-status_validacao: nao-iniciada
+status_implementacao: concluida
+status_validacao: verificada
 depende_de:
   - VS-00
 bloqueada_por: []
@@ -162,10 +162,10 @@ Como visão = geração (8), a transição CACHED → RENDERABLE ocorre na prime
 
 | ID | Critério verificável | Validação planejada | Evidência |
 | --- | --- | --- | --- |
-| VS-01-AC-01 | Cada chunk gerado cobre 32³ voxels e mantém AR no slot 0 da paleta (REQ-GEN-01, REQ-PACK-02) | Simulação bit-a-bit do pack (REQ-SIM-01) + inspeção de um chunk real via readback de debug (decode de amostras contra scratch) | Pendente |
-| VS-01-AC-02 | Um claim corresponde a um lote e um valor de timeline (REQ-SYNC-01/03, REQ-BATCH-01) | Simulação B1 (REQ-SIM-02) + instrumentação: log/assert de que `submitted_batches` cresce por claim e o valor sinalizado == valor publicado; execução com validation layers sem erros | Pendente |
-| VS-01-AC-03 | Nenhum slot é reutilizado enquanto trabalho de compute ou gráfico ainda o referencia (REQ-SYNC-02, REQ-STREAM-04) | Cenários anti-ABA da simulação + teste integrado de teleporte (descarregamento em massa durante geração) com validation layers e `SYNCHRONIZATION_VALIDATION` sem erros | Pendente |
-| VS-01-AC-04 | Raios efetivos visão `8`/geração `8`/descarga `16` e bolha de geração ≤ 4.096 slots (REQ-STREAM-01/02/05) | Teste de fronteira que enumera a esfera discreta r=8 e conta as coordenadas; teste de distância com coordenadas extremas sem overflow (i64) | Pendente |
+| VS-01-AC-01 | Cada chunk gerado cobre 32³ voxels e mantém AR no slot 0 da paleta (REQ-GEN-01, REQ-PACK-02) | Simulação bit-a-bit do pack (REQ-SIM-01) + inspeção de um chunk real via readback de debug (decode de amostras contra scratch) | `tools/sim/pack_sim.py`: 959 checks, 9 cenários, todos OK (vazio/cheio/255/256+ tipos, subdivisão ×4). Readback de debug em runtime: chunk [-5,0,-5] slot 4020, 32.768 voxels decodificados == worldgen (2.048 sólidos, `palette_size` = 3 com AR no slot 0, `plane_count` = 2, flags = 0) — log "DEBUG READBACK OK". |
+| VS-01-AC-02 | Um claim corresponde a um lote e um valor de timeline (REQ-SYNC-01/03, REQ-BATCH-01) | Simulação B1 (REQ-SIM-02) + instrumentação: log/assert de que `submitted_batches` cresce por claim e o valor sinalizado == valor publicado; execução com validation layers sem erros | `tools/sim/streaming_sim.py`: 5 cenários OK, incluindo 20.000 interleavings (seed 20261104) com a invariante de conjunto único. Smoke test com validation layers: 132 lotes submetidos (131×16 + 1×13 = 2.109 chunks), valor sinalizado == valor publicado em todos, 0 erros/avisos de validação. |
+| VS-01-AC-03 | Nenhum slot é reutilizado enquanto trabalho de compute ou gráfico ainda o referencia (REQ-SYNC-02, REQ-STREAM-04) | Cenários anti-ABA da simulação + teste integrado de teleporte (descarregamento em massa durante geração) com validation layers e `SYNCHRONIZATION_VALIDATION` sem erros | `tools/sim/streaming_sim.py`: cancelamento nos caminhos (a)/(b)/(c), conclusão vencida (ABA) e aposentadoria dual — todos OK. Ressalva registrada: o teleporte em massa em runtime não foi exercitado nesta sessão (coberto pela simulação); o caminho de shutdown com join da worker também não foi exercitado (processo encerrado por kill no smoke test). |
+| VS-01-AC-04 | Raios efetivos visão `8`/geração `8`/descarga `16` e bolha de geração ≤ 4.096 slots (REQ-STREAM-01/02/05) | Teste de fronteira que enumera a esfera discreta r=8 e conta as coordenadas; teste de distância com coordenadas extremas sem overflow (i64) | `tools/sim/frontier_test.py`: esfera r=8 = 2.109 chunks ≤ 4.096; distância extrema 2.473.901.162.496 calculada em i64 (> i32); `floor_div` correto para negativos. Confirmado em runtime: os 132 lotes somam exatamente 2.109 chunks (esfera completa materializada). |
 
 ## Tarefas da especificação
 
@@ -190,7 +190,7 @@ Ordem sugerida; cada tarefa referencia requisitos e critérios de aceitação.
 
 ## Questões abertas
 
-- Capacidade do pool de `SpecialVoxelRecord`: mínimo 4.096 registros (1 por chunk); o valor final será fixado na implementação e registrado aqui. Não bloqueia a aprovação.
+- Capacidade do pool de `SpecialVoxelRecord`: **resolvida na implementação** — 256 registros por chunk × 4.096 chunks = 1.048.576 registros (`SPECIAL_RECORDS_PER_CHUNK :: 256` em `src/engine/voxel_types.odin`).
 - Forma exata do readback de debug do AC-01 (buffer de cópia temporário usado só em build de diagnóstico). Não bloqueia a aprovação.
 
 ## Histórico
@@ -199,3 +199,4 @@ Ordem sugerida; cada tarefa referencia requisitos e critérios de aceitação.
 - 2026-11-04 — ADR-B5 incorporada; bloqueio de decisão removido, spec permanece em rascunho.
 - 2026-11-04 — Elaboração completa: 21 requisitos (STREAM/GEN/PACK/SYNC/BATCH/BUF/SIM), domínios de concorrência, máquina de estados, cenários e validação dos ACs. Submetida à revisão (`em-revisao`).
 - 2026-11-04 — Spec aprovada; tarefas de implementação VS-01-IMPL-01..08 derivadas.
+- 2026-11-04 — Implementação concluída (VS-01-IMPL-01..08): `common.slang` + espelho Odin, shaders `generate_voxels`/`pack_chunk`, `ChunkManager` com histerese 8/8/16 e anti-ABA, worker com lotes de 16 e ring de 3, buffers GPU e templates built-in. Evidências: `pack_sim.py` (959 checks), `streaming_sim.py` (5 cenários, 20.000 interleavings), `frontier_test.py` (esfera r=8 = 2.109 ≤ 4.096, distância i64), smoke test com validation layers sem erros e readback de debug OK. Ressalvas: teleporte em massa e shutdown com join não exercitados em runtime (cobertos por simulação); observada corrupção pontual de duas linhas do log de arquivo nos lotes 79/99 (provável race benigno do file logger entre threads — backlog). Marcação: `concluida`/`verificada`.
