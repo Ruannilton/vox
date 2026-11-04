@@ -49,13 +49,14 @@ main :: proc() {
 	engine.CreateEngine()
 	defer engine.DestroyEngine()
 
-
-	camera = camera_create(glm.vec3{0, 0, 30}, glm.vec3{0, -90, 0}, 45.0)
+	voxel_engine := engine.ve_init()
+	defer engine.ve_destroy(&voxel_engine)
+	camera = camera_create(glm.vec3{32, 32, -10}, glm.vec3{0, -90, 0}, 45.0)
 	projection := glm.mat4Perspective(
 		glm.radians(camera.fov),
 		f32(engine.app.presentation.width) / f32(engine.app.presentation.height),
-		0.1,
-		100.0,
+		0.5,
+		500.0,
 	)
 
 	glfw.SetInputMode(engine.app.glfwWindow, glfw.CURSOR, glfw.CURSOR_DISABLED)
@@ -65,19 +66,11 @@ main :: proc() {
 		engine.app.glfwWindow,
 		proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
 			context = engine.app.runtimeContext
-			speed := f32(1000.0 * engine.app.deltaTime)
-			if key == glfw.KEY_W && (action == glfw.PRESS || action == glfw.REPEAT) {
-				camera_move(&camera, speed, 0.0)
-			} else if key == glfw.KEY_S && (action == glfw.PRESS || action == glfw.REPEAT) {
-				camera_move(&camera, -speed, 0.0)
-			} else if key == glfw.KEY_A && (action == glfw.PRESS || action == glfw.REPEAT) {
-				camera_move(&camera, 0.0, -speed)
-			} else if key == glfw.KEY_D && (action == glfw.PRESS || action == glfw.REPEAT) {
-				camera_move(&camera, 0.0, speed)
-			} else if key == glfw.KEY_ESCAPE && action == glfw.PRESS {
+
+			if key == glfw.KEY_ESCAPE && action == glfw.PRESS {
 				glfw.SetWindowShouldClose(engine.app.glfwWindow, true)
+				return
 			}
-			log.info("Camera position: {}", camera.position)
 		},
 	)
 
@@ -100,8 +93,8 @@ main :: proc() {
 		},
 	)
 
-	mesh_pipeline := engine.create_mesh_shader_pipeline()
-	defer engine.destroy_mesh_shader_pipeline(&mesh_pipeline)
+	//mesh_pipeline := engine.create_mesh_shader_pipeline()
+	//defer engine.destroy_mesh_shader_pipeline(&mesh_pipeline)
 
 	log.info("Starting main loop")
 	for !glfw.WindowShouldClose(engine.app.glfwWindow) {
@@ -109,6 +102,11 @@ main :: proc() {
 		glfw.PollEvents()
 
 		engine.Update()
+		update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
+
+		engine.ve_update(&voxel_engine, camera.position)
+		engine.ve_dispatch(&voxel_engine)
+
 		signal_value := engine.WaitTimelineSemaphore()
 		view := camera_view(&camera)
 		vp := projection * view
@@ -144,10 +142,10 @@ main :: proc() {
 				subresourceRange = {aspectMask = {.DEPTH}, levelCount = 1, layerCount = 1},
 				oldLayout = .UNDEFINED,
 				newLayout = .DEPTH_ATTACHMENT_OPTIMAL,
-				srcStageMask = {.ALL_COMMANDS},
-				srcAccessMask = {.MEMORY_READ},
+				srcStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+				srcAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
 				dstStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-				dstAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
+				dstAccessMask = {.DEPTH_STENCIL_ATTACHMENT_READ, .DEPTH_STENCIL_ATTACHMENT_WRITE},
 			},
 		}
 		vk.CmdPipelineBarrier2(
@@ -186,10 +184,11 @@ main :: proc() {
 			pColorAttachments = &color_attachment,
 			pDepthAttachment = &depth_attachment,
 		}
+	//	engine.record_compute_shader_pipeline(&mesh_pipeline, cmd, vp)
+		
 		vk.CmdBeginRendering(cmd, &rendering_info)
 
-
-		engine.record_mesh_shader_pipeline(&mesh_pipeline, cmd, &vp)
+	//	engine.record_mesh_shader_pipeline(&mesh_pipeline, cmd, vp)
 		
 		vk.CmdEndRendering(cmd)
 
@@ -224,7 +223,7 @@ main :: proc() {
 			{
 				sType = .SEMAPHORE_SUBMIT_INFO,
 				semaphore = swapchain_frame.vkPresentSemaphore,
-				stageMask = {.ALL_GRAPHICS},
+				stageMask = {.ALL_COMMANDS},
 			},
 			{
 				sType = .SEMAPHORE_SUBMIT_INFO,
@@ -253,4 +252,27 @@ main :: proc() {
 
 	vk_check(vk.DeviceWaitIdle(engine.app.vkDevice))
 	log.info("Exiting application")
+}
+
+update_camera_movement :: proc(dt: f32) {
+	window := engine.app.glfwWindow
+
+	speed: f32 = 10.0 // unidades por segundo
+	if glfw.GetKey(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS do speed *= 4
+
+	forward, right: f32
+	if glfw.GetKey(window, glfw.KEY_W) == glfw.PRESS do forward += 1
+	if glfw.GetKey(window, glfw.KEY_S) == glfw.PRESS do forward -= 1
+	if glfw.GetKey(window, glfw.KEY_D) == glfw.PRESS do right += 1
+	if glfw.GetKey(window, glfw.KEY_A) == glfw.PRESS do right -= 1
+
+	if forward == 0 && right == 0 do return
+
+	// evita andar mais rápido na diagonal
+	if forward != 0 && right != 0 {
+		forward *= 0.70710678
+		right *= 0.70710678
+	}
+
+	camera_move(&camera, forward * speed * dt, right * speed * dt)
 }

@@ -20,7 +20,7 @@ create_vulkan_instance :: proc() {
 	layers := []cstring{"VK_LAYER_KHRONOS_validation", "VK_LAYER_KHRONOS_shader_object"}
 
 	extensions := slice.concatenate(
-		[][]cstring{glfw.GetRequiredInstanceExtensions(), {vk.EXT_DEBUG_UTILS_EXTENSION_NAME}},
+		[][]cstring{glfw.GetRequiredInstanceExtensions(), {vk.EXT_DEBUG_UTILS_EXTENSION_NAME, vk.EXT_VALIDATION_FEATURES_EXTENSION_NAME}},
 		context.temp_allocator,
 	)
 
@@ -45,8 +45,16 @@ create_vulkan_instance :: proc() {
 		},
 	}
 
+	enabled_features := []vk.ValidationFeatureEnableEXT{.SYNCHRONIZATION_VALIDATION}
+	validation_features := vk.ValidationFeaturesEXT {
+		sType                          = .VALIDATION_FEATURES_EXT,
+		pNext                          = &debug_messenger_info,
+		enabledValidationFeatureCount  = u32(len(enabled_features)),
+		pEnabledValidationFeatures     = raw_data(enabled_features),
+	}
+
 	pNextExtension: rawptr
-	pNextExtension = &debug_messenger_info
+	pNextExtension = &validation_features
 
 	instance_info := vk.InstanceCreateInfo {
 		sType                   = .INSTANCE_CREATE_INFO,
@@ -101,7 +109,7 @@ create_vulkan_device :: proc() {
 	log.info("Selected physical device successfully")
 
 	queue_priorities: f32 = 1.0
-	presenting_queue_create_info := []vk.DeviceQueueCreateInfo {
+	queue_create_info := []vk.DeviceQueueCreateInfo {
 		{
 			sType = .DEVICE_QUEUE_CREATE_INFO,
 			queueFamilyIndex = app.queues[.Graphics].familyIndex,
@@ -109,6 +117,7 @@ create_vulkan_device :: proc() {
 			pQueuePriorities = &queue_priorities,
 		},
 	}
+	
 
 	extensions := []cstring {
 		vk.KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -154,8 +163,8 @@ create_vulkan_device :: proc() {
 
 	device_create_info := vk.DeviceCreateInfo {
 		sType                   = .DEVICE_CREATE_INFO,
-		queueCreateInfoCount    = u32(len(presenting_queue_create_info)),
-		pQueueCreateInfos       = raw_data(presenting_queue_create_info),
+		queueCreateInfoCount    = u32(len(queue_create_info)),
+		pQueueCreateInfos       = raw_data(queue_create_info),
 		enabledExtensionCount   = u32(len(extensions)),
 		ppEnabledExtensionNames = raw_data(extensions),
 		pNext                   = features_ext_chain,
@@ -170,6 +179,12 @@ create_vulkan_device :: proc() {
 		app.queues[.Graphics].familyIndex,
 		0,
 		&app.queues[.Graphics].queue,
+	)
+	vk.GetDeviceQueue(
+		app.vkDevice,
+		app.queues[.Compute].familyIndex,
+		0,
+		&app.queues[.Compute].queue,
 	)
 	log.info("Vulkan device created successfully")
 }
@@ -430,6 +445,10 @@ select_physical_device :: proc() -> vk.PhysicalDevice {
 
 			if suitable {
 				app.queues[.Graphics] = QueueTuple {
+					queue       = {},
+					familyIndex = u32(i),
+				}
+				app.queues[.Compute] = QueueTuple {
 					queue       = {},
 					familyIndex = u32(i),
 				}
