@@ -11,8 +11,8 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 | ADR-B3 | [[ADR-B3-pack-paleta|Pack completo e paleta]] | `aceita` | VS-01, VS-03 |
 | ADR-B4 | [[ADR-B4-batching-compute|Batching de compute]] | `aceita` | VS-01 |
 | ADR-B5 | [[ADR-B5-capacidade-streaming|Capacidade do streaming]] | `aceita` | VS-01 |
-| ADR-B6 | [[ADR-B6-culling-alpha-test|Culling e alpha-test de plantas]] | `pendente` | VS-02 |
-| ADR-B7 | [[ADR-B7-pbr|Escopo do shading PBR]] | `pendente` | VS-02 |
+| ADR-B6 | [[ADR-B6-culling-alpha-test|Culling e alpha-test de plantas]] | `aceita` | VS-02 |
+| ADR-B7 | [[ADR-B7-pbr|Escopo do shading PBR]] | `aceita` | VS-02 |
 | ADR-B8 | [[ADR-B8-distancia-int64|Distância com inteiros de 64 bits]] | `aceita` | VS-01 |
 | ADR-B9 | [[ADR-B9-cobertura-generate|Cobertura completa do generate]] | `aceita` | VS-01 |
 | ADR-CAMINHO-B | [[ADR-CAMINHO-B-templates-malha|Templates de malha data-driven]] | `aceita` | VS-01, VS-02 |
@@ -21,14 +21,12 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 
 ## Resumo
 
-- 12 decisões registradas.
-- 9 decisões aceitas no GOAL.
-- 3 decisões pendentes: ADR-B5, ADR-B6 e ADR-B7.
+- 12 decisões registradas e aceitas.
+- Nenhuma decisão pendente.
 - Nenhuma decisão representa, por si só, implementação concluída ou validação verificada.
 
 ## Bloqueios
 
-- ADR-B5 bloqueia a aprovação de [[VS-01-streaming-generate-pack|VS-01]].
-- ADR-B6 e ADR-B7 bloqueiam a aprovação de [[VS-02-task-mesh-templates|VS-02]].
+Não há bloqueios de aprovação por ADR. As escolhas foram incorporadas a VS-01 e VS-02; ambas permanecem em rascunho até a conclusão dos demais requisitos de especificação.
 
 Novas decisões devem usar [[modelo-decisao|o modelo de ADR]], receber um ID único e ser adicionadas a este índice, ao painel de status e ao grafo quando bloquearem uma spec.

@@ -5,7 +5,7 @@ tipo: decisao
 status: aceita
 specs_afetadas:
   - VS-01
-ultima_atualizacao: 2026-11-03
+ultima_atualizacao: 2026-11-04
 ---
 
 # ADR-B5 — Capacidade do streaming
@@ -37,9 +37,13 @@ Reduzir o raio de geração para 8
 
 ## Consequências
 
-Enquanto pendente, VS-01 pode permanecer em rascunho ou elaboração, mas não pode ser aprovada nem iniciar implementação. Após a decisão, atualizar os critérios de aceitação, constantes normativas e testes de limite da spec.
+- O pool permanece em 4.096 slots.
+- VS-01 adota visão `8`, geração `8` e descarga `16`; não existe faixa adicional entre visão e geração.
+- Os testes de fronteira devem enumerar a bolha de geração e confirmar que ela não excede a capacidade do pool.
+- A decisão não bloqueia mais a aprovação de VS-01.
 
 ## Histórico
 
 - 2026-11-03 — Decisão registrada como pendente a partir do backlog B5 do GOAL.
-- 2026-11-03 — Decisão registrada, reduzir o raio para 8
+- 2026-11-03 — Decisão aceita: reduzir o raio de geração para `8`.
+- 2026-11-04 — Consequências e critérios incorporados a VS-01.

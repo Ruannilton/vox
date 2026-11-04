@@ -5,7 +5,7 @@ tipo: decisao
 status: aceita
 specs_afetadas:
   - VS-02
-ultima_atualizacao: 2026-11-03
+ultima_atualizacao: 2026-11-04
 ---
 
 # ADR-B6 — Culling e alpha-test de plantas
@@ -32,7 +32,10 @@ Adiar a correção
 
 ## Consequências
 
-A decisão altera o escopo, os testes visuais e a configuração do pipeline de [[VS-02-task-mesh-templates|VS-02]]. Independentemente da escolha, triângulos tag 7 não podem ser usados para justificar culling direcional fora do orçamento garantido por subdivisão.
+- `CULL_MODE_NONE` e alpha-test não fazem parte dos critérios de aceitação de VS-02.
+- O template de planta pode ser validado como dado geométrico, mas a limitação visual permanece explícita.
+- B6 permanece como melhoria posterior e não bloqueia VS-02, E1 ou C2.
+- Triângulos tag 7 continuam proibidos de alterar a garantia de orçamento, que depende da subdivisão.
 
 ## Rastreabilidade
 
@@ -41,5 +44,6 @@ A decisão altera o escopo, os testes visuais e a configuração do pipeline de 
 
 ## Histórico
 
-- 2026-11-03 — Decisão registrada como pendente; bloqueia aprovação de VS-02.
-- 2026-11-03 — Decisão registrada como aceita;
+- 2026-11-03 — Decisão registrada como pendente.
+- 2026-11-03 — Decisão aceita: adiar a correção.
+- 2026-11-04 — Escopo e critérios incorporados a VS-02.

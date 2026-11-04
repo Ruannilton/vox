@@ -5,7 +5,7 @@ tipo: decisao
 status: aceita
 specs_afetadas:
   - VS-02
-ultima_atualizacao: 2026-11-03
+ultima_atualizacao: 2026-11-04
 ---
 
 # ADR-B7 — Escopo do shading PBR
@@ -32,7 +32,10 @@ Manter Lambert, vamos seguir com o simples primeiro, PBR é um exemplo de melhor
 
 ## Consequências
 
-A decisão define os testes e o fragment shader exigidos em [[VS-02-task-mesh-templates|VS-02]]. Se adiado, PBR permanece backlog explícito e não bloqueia as fatias E1/C2.
+- VS-02 entrega Lambert + emissão, com triplanar e normais por derivadas.
+- Roughness/metallic podem permanecer no contrato de dados sem serem amostrados nesta fatia.
+- PBR é melhoria futura e não bloqueia VS-02, E1 ou C2.
+- A documentação da fatia não deve denominar o shading inicial como PBR completo.
 
 ## Rastreabilidade
 
@@ -41,5 +44,6 @@ A decisão define os testes e o fragment shader exigidos em [[VS-02-task-mesh-te
 
 ## Histórico
 
-- 2026-11-03 — Decisão registrada como pendente; bloqueia aprovação de VS-02.
-- 2026-11-03 — Decisão registrada como aceita;
+- 2026-11-03 — Decisão registrada como pendente.
+- 2026-11-03 — Decisão aceita: manter Lambert + emissão e adiar PBR.
+- 2026-11-04 — Escopo e critérios incorporados a VS-02.

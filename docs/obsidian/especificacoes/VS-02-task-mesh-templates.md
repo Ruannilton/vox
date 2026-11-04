@@ -7,18 +7,16 @@ status_implementacao: nao-iniciada
 status_validacao: nao-iniciada
 depende_de:
   - VS-01
-bloqueada_por:
-  - ADR-B6
-  - ADR-B7
+bloqueada_por: []
 requisitos: []
-ultima_atualizacao: 2026-11-03
+ultima_atualizacao: 2026-11-04
 ---
 
 # VS-02 — Task/mesh e templates
 
 ## Objetivo
 
-Renderizar os chunks materializados por VS-01 com culling hierárquico, fronteiras entre chunks e geometria genérica orientada por templates.
+Renderizar os chunks materializados por VS-01 com culling hierárquico, fronteiras entre chunks, geometria genérica orientada por templates e shading Lambert + emissão.
 
 ## Rastreabilidade
 
@@ -33,19 +31,25 @@ Renderizar os chunks materializados por VS-01 com culling hierárquico, fronteir
 - Culling coarse/brick e payload de task shader.
 - Templates, vértices, triângulos packed, rotação e tags de culling.
 - Subdivisão de bricks e garantia dos orçamentos de hardware.
-- Built-ins de ar, cubo e planta e shading previsto pelo GOAL.
+- Built-ins de ar, cubo e planta como dados de geometria.
+- Shading Lambert + emissão, com triplanar e normais por derivadas.
 
 ## Não escopo
 
-- Edição, mirror, LOD, Hi-Z, transparência e PBR completo além do escopo aprovado para a fatia.
+- Edição, mirror, LOD, Hi-Z e transparência.
+- Correção visual B6 de plantas: `CULL_MODE_NONE` e alpha-test ficam para trabalho posterior.
+- PBR e amostragem de roughness/metallic, adiados pela ADR-B7.
 
 ## Dependências
 
 - [[VS-01-streaming-generate-pack|VS-01]] concluída antes da implementação.
+- [[ADR-B6-culling-alpha-test|ADR-B6]] e [[ADR-B7-pbr|ADR-B7]] aceitas e incorporadas; não há mais bloqueio de decisão.
 
 ## Interfaces e recursos
 
 A especificar: buffers de visíveis e templates, payload, push constants, bindings, emissão de vértices/triângulos e comportamento para vizinhos ausentes ou em geração.
+
+O dicionário pode transportar roughness/metallic para manter o contrato de dados, mas seu consumo pelo fragment shader não é requisito desta fatia. A presença do template de planta não implica comportamento visual completo enquanto B6 estiver adiado.
 
 ## Cenários mínimos a detalhar
 
@@ -54,6 +58,8 @@ A especificar: buffers de visíveis e templates, payload, push constants, bindin
 - Vizinho ausente ou em geração.
 - Templates com limites máximos e subdivisões de 1, 2 e 4 grupos.
 - Rotação yaw e triângulos interiores/sem culling direcional.
+- Shading Lambert + emissão, sem presumir roughness/metallic amostrados.
+- Plantas verificadas como dados de template, com a limitação visual B6 explicitamente fora do aceite.
 
 ## Critérios de aceitação
 
@@ -62,14 +68,15 @@ A especificar: buffers de visíveis e templates, payload, push constants, bindin
 | VS-02-AC-01 | Nenhum grupo excede 256 vértices ou 192 triângulos por construção | Simulação de orçamento e testes de templates | Pendente |
 | VS-02-AC-02 | Fronteiras entre chunks não emitem faces internas duplicadas | Cena de dois chunks e inspeção visual/dados | Pendente |
 | VS-02-AC-03 | Templates obedecem ao voxel unitário e às regras de rotação/culling | Testes de contrato de carga e simulação | Pendente |
-| VS-02-AC-04 | Terreno gerado por VS-01 é apresentado corretamente | Smoke test visual com validation layers | Pendente |
+| VS-02-AC-04 | O terreno é apresentado com Lambert + emissão; PBR e a correção B6 não são exigidos nesta fatia | Smoke test visual com validation layers | Pendente |
 
 ## Tarefas da especificação
 
 - [ ] Vincular todos os requisitos do GOAL.
 - [ ] Formalizar payload, bindings e contratos de carga.
 - [ ] Definir cenários de culling, fronteira e orçamento.
-- [ ] Delimitar B6/B7 entre escopo desta fatia e backlog.
+- [x] Incorporar ADR-B6: correção visual de plantas adiada.
+- [x] Incorporar ADR-B7: Lambert + emissão nesta fatia; PBR posterior.
 - [ ] Submeter à revisão e obter aprovação.
 
 ## Tarefas de implementação
@@ -78,8 +85,9 @@ Não gerar antes da aprovação desta spec.
 
 ## Questões abertas
 
-- Classificar o alpha-test/CULL_MODE_NONE de B6 e o sombreamento PBR de B7 como aceite desta fatia ou trabalho posterior.
+Nenhuma decisão de ADR pendente. O catálogo de requisitos, as interfaces e os cenários detalhados ainda precisam ser concluídos antes da revisão.
 
 ## Histórico
 
-- 2026-11-03 — Rascunho estrutural criado; conteúdo ainda não aprovado.
+- 2026-11-03 — Rascunho estrutural criado.
+- 2026-11-04 — ADR-B6 e ADR-B7 incorporadas; bloqueios de decisão removidos, spec permanece em rascunho.

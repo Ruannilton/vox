@@ -1,6 +1,6 @@
 # Painel de status
 
-Última revisão geral: 2026-11-03.
+Última revisão geral: 2026-11-04.
 
 Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o frontmatter correspondente no mesmo trabalho.
 
@@ -22,8 +22,8 @@ Os cinco documentos existentes estão em `rascunho`: possuem estrutura inicial, 
 | ID | Especificação | Spec | Implementação | Validação | Depende de | Bloqueio |
 | --- | --- | --- | --- | --- | --- | --- |
 | VS-00 | [[VS-00-fundacao-vulkan|Fundação Vulkan]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | — | — |
-| VS-01 | [[VS-01-streaming-generate-pack|Streaming, generate e pack]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-00 | [[ADR-B5-capacidade-streaming|ADR-B5]] |
-| VS-02 | [[VS-02-task-mesh-templates|Task/mesh e templates]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-01 | [[ADR-B6-culling-alpha-test|ADR-B6]], [[ADR-B7-pbr|ADR-B7]] |
+| VS-01 | [[VS-01-streaming-generate-pack|Streaming, generate e pack]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-00 | — |
+| VS-02 | [[VS-02-task-mesh-templates|Task/mesh e templates]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-01 | — |
 | VS-03 | [[VS-03-edicao-e1|Edição E1]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-02 | — |
 | VS-04 | [[VS-04-mirror-c2|Mirror C2]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-03 | — |
 
@@ -37,9 +37,9 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-B2 | [[ADR-B2-fronteiras-chunks|Fronteiras entre chunks]] | `aceita` | VS-02 |
 | ADR-B3 | [[ADR-B3-pack-paleta|Pack completo e paleta]] | `aceita` | VS-01, VS-03 |
 | ADR-B4 | [[ADR-B4-batching-compute|Batching de compute]] | `aceita` | VS-01 |
-| ADR-B5 | [[ADR-B5-capacidade-streaming|Capacidade do streaming]] | `pendente` | VS-01 |
-| ADR-B6 | [[ADR-B6-culling-alpha-test|Culling e alpha-test]] | `pendente` | VS-02 |
-| ADR-B7 | [[ADR-B7-pbr|Escopo do shading PBR]] | `pendente` | VS-02 |
+| ADR-B5 | [[ADR-B5-capacidade-streaming|Capacidade do streaming]] | `aceita` | VS-01 |
+| ADR-B6 | [[ADR-B6-culling-alpha-test|Culling e alpha-test]] | `aceita` | VS-02 |
+| ADR-B7 | [[ADR-B7-pbr|Escopo do shading PBR]] | `aceita` | VS-02 |
 | ADR-B8 | [[ADR-B8-distancia-int64|Distância com inteiros de 64 bits]] | `aceita` | VS-01 |
 | ADR-B9 | [[ADR-B9-cobertura-generate|Cobertura completa do generate]] | `aceita` | VS-01 |
 | ADR-CAMINHO-B | [[ADR-CAMINHO-B-templates-malha|Templates de malha data-driven]] | `aceita` | VS-01, VS-02 |

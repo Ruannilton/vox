@@ -16,7 +16,7 @@ Este vault organiza a reescrita orientada por especificações. Não exige plugi
 - [[modelo-especificacao|Modelo de especificação]]: estrutura obrigatória para novas specs.
 - [[00-indice|Índice de ADRs]]: 12 decisões registradas, incluindo B1–B9, Caminho B, E1 e C2.
 - [[modelo-decisao|Modelo de decisão]]: estrutura para novas ADRs.
-- [[ADR-B5-capacidade-streaming|ADR-B5]]: bloqueia VS-01; [[ADR-B6-culling-alpha-test|ADR-B6]] e [[ADR-B7-pbr|ADR-B7]] bloqueiam VS-02.
+- Todas as 12 ADRs estão aceitas e não há bloqueios de aprovação por decisão pendente.
 
 ## Fatias planejadas
 

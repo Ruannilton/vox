@@ -7,19 +7,13 @@ As dependências abaixo governam a ordem de aprovação e implementação. Rascu
 ```mermaid
 graph TD
     VS00[VS-00 — Fundação Vulkan]
-    B5[ADR-B5 — Capacidade do streaming]
     VS01[VS-01 — Streaming, generate e pack]
-    B6[ADR-B6 — Culling e alpha-test]
-    B7[ADR-B7 — Escopo PBR]
     VS02[VS-02 — Task/mesh e templates]
     VS03[VS-03 — Edição E1]
     VS04[VS-04 — Mirror C2]
 
     VS00 --> VS01
-    B5 -->|bloqueia aprovação| VS01
     VS01 --> VS02
-    B6 -->|bloqueia aprovação| VS02
-    B7 -->|bloqueia aprovação| VS02
     VS02 --> VS03
     VS03 --> VS04
 ```
@@ -29,13 +23,16 @@ graph TD
 | Item | Depende de | Bloqueada por | Libera |
 | --- | --- | --- | --- |
 | [[VS-00-fundacao-vulkan|VS-00]] | — | — | VS-01 |
-| [[VS-01-streaming-generate-pack|VS-01]] | VS-00 | ADR-B5 para aprovação | VS-02 |
-| [[VS-02-task-mesh-templates|VS-02]] | VS-01 | ADR-B6 e ADR-B7 para aprovação | VS-03 |
+| [[VS-01-streaming-generate-pack|VS-01]] | VS-00 | — | VS-02 |
+| [[VS-02-task-mesh-templates|VS-02]] | VS-01 | — | VS-03 |
 | [[VS-03-edicao-e1|VS-03]] | VS-02 | — | VS-04 |
 | [[VS-04-mirror-c2|VS-04]] | VS-03 | — | Consumidores futuros do mirror |
-| [[ADR-B5-capacidade-streaming|ADR-B5]] | — | Decisão pendente | Aprovação de VS-01 |
-| [[ADR-B6-culling-alpha-test|ADR-B6]] | — | Decisão pendente | Aprovação de VS-02 |
-| [[ADR-B7-pbr|ADR-B7]] | — | Decisão pendente | Aprovação de VS-02 |
+
+## Decisões incorporadas
+
+- ADR-B5: VS-01 usa visão `8`, geração `8`, descarga `16` e 4.096 slots.
+- ADR-B6: a correção visual de plantas é trabalho posterior e não integra o aceite de VS-02.
+- ADR-B7: VS-02 usa Lambert + emissão; PBR é melhoria futura.
 
 ## Dependências transversais a registrar nas specs
 
