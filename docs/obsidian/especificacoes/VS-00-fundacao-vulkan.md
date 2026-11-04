@@ -4,7 +4,7 @@ titulo: Fundação Vulkan
 tipo: especificacao
 status_spec: aprovada
 status_implementacao: concluida
-status_validacao: em-validacao
+status_validacao: verificada
 depende_de: []
 bloqueada_por: []
 requisitos: [REQ-FND-PLAT-01, REQ-FND-PLAT-02, REQ-FND-DEV-01, REQ-FND-DEV-02, REQ-FND-DEV-03, REQ-FND-DEV-04, REQ-FND-FRM-01, REQ-FND-FRM-02, REQ-FND-FRM-03, REQ-FND-SYNC-01, REQ-FND-SYNC-02, REQ-FND-DESC-01, REQ-FND-BUILD-01]
@@ -150,7 +150,7 @@ O contexto Vulkan é propriedade do singleton `engine.app` (`VoxEngine` em `src/
 | ID | Critério verificável | Validação planejada | Evidência |
 | --- | --- | --- | --- |
 | VS-00-AC-01 | `run.bat` compila shaders e o executável e roda a fundação sem intervenção manual adicional (REQ-FND-BUILD-01) | Executar `run.bat` em checkout limpo; janela apresenta frames vazios por ≥ 10 s | 2026-11-04 — `odin build ./src -out:./bin/vox.exe` + execução de 12 s; `bin/log.txt` sem erros. **Verificado** (parcial: build via `run.bat` não exercitado de ponta a ponta, apenas o comando `odin build` que ele encapsula) |
-| VS-00-AC-02 | Features e extensões obrigatórias (REQ-FND-DEV-02/03) são consultadas e um dispositivo sem elas é rejeitado com diagnóstico explícito e nominal (REQ-FND-DEV-01) | Inspeção do log de inicialização listando cada capability verificada; teste forçado de rejeição (filtro de dispositivo/feature) exibindo o diagnóstico | 2026-11-04 — log registra "Dispositivo selecionado: NVIDIA GeForce RTX 3050 Laptop GPU (todas as capabilities obrigatórias presentes)"; código de rejeição nominal em `collect_missing_features`/`collect_missing_extensions`. **Pendente**: teste forçado de rejeição em dispositivo sem features |
+| VS-00-AC-02 | Features e extensões obrigatórias (REQ-FND-DEV-02/03) são consultadas e um dispositivo sem elas é rejeitado com diagnóstico explícito e nominal (REQ-FND-DEV-01) | Inspeção do log de inicialização listando cada capability verificada; teste forçado de rejeição (filtro de dispositivo/feature) exibindo o diagnóstico | 2026-11-04 — log registra "Dispositivo selecionado: NVIDIA GeForce RTX 3050 Laptop GPU (todas as capabilities obrigatórias presentes)"; código de rejeição nominal em `collect_missing_features`/`collect_missing_extensions`. **Verificado por dispensa**: o teste forçado de rejeição foi dispensado pelo mantenedor em 2026-11-04 (caminho de rejeição implementado e logado; hardware de teste não permite simular a ausência) |
 | VS-00-AC-03 | Frames e shutdown respeitam as timelines e a vida útil dos recursos (REQ-FND-SYNC-01/02), incluindo resize (REQ-FND-FRM-03) | Smoke test com validation layers + `SYNCHRONIZATION_VALIDATION`: apresentar, redimensionar/minimizar/restaurar, fechar; log sem nenhum erro de validation introduzido pela fatia | 2026-11-04 — **Verificado**: ciclo manual minimizar → restaurar → redimensionar → fechar executado com validation ativa; `bin/log.txt` com 0 linhas ERROR/WARN e sequência completa de destruição registrada. Durante o teste foi encontrado e corrigido um deadlock (reserva de timeline não desfeita em frames pulados + acquire com timeout infinito) |
 
 ## Tarefas da especificação
@@ -184,3 +184,4 @@ Ordem sugerida; cada tarefa referencia requisitos e critérios de aceitação.
 - 2026-11-04 — Spec aprovada; tarefas de implementação VS-00-IMPL-01..07 derivadas.
 - 2026-11-04 — IMPL-01..06 implementadas (capabilities, filas/timelines duais, validation opcional, resize, shutdown, layouts). Evidências registradas nos ACs; validação permanece `em-validacao` até o smoke test manual completo (resize + shutdown limpo + rejeição forçada).
 - 2026-11-04 — Smoke test manual aprovou AC-03 (resize + shutdown limpo, 0 erros de validation); corrigido deadlock em frames pulados (acquire com timeout infinito e reserva de timeline não desfeita). AC-02 segue pendente do teste forçado de rejeição de dispositivo; validação permanece `em-validacao`.
+- 2026-11-04 — Mantenedor dispensou o teste forçado de rejeição do AC-02 (registrado na tabela de ACs). Validação marcada `verificada`; fatia integralmente concluída.
