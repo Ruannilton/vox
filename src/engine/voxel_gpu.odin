@@ -29,7 +29,10 @@ VoxelGpu :: struct {
 	mesh_templates:         GpuBuffer,
 	template_vertices:      GpuBuffer,
 	template_triangles:     GpuBuffer,
-	dummy_buffer:           GpuBuffer, // bindings ainda não usados (6, 13-16)
+	// VS-02 (correção): fila de trabalho global — ring 2×(estado + itens);
+	// builder compute anexa, draw mesh-only indireto consome (device-local).
+	work_queue:             GpuBuffer,
+	dummy_buffer:           GpuBuffer, // bindings ainda não usados (13-16)
 
 	// VS-02: texturas (bindings 8/9) — paleta procedural de cores sólidas +
 	// dummy PBR (ADR-B7).
@@ -46,7 +49,11 @@ VoxelGpu :: struct {
 	shader_module:          vk.ShaderModule,
 	generation_pipeline:    vk.Pipeline,
 	packing_pipeline:       vk.Pipeline,
-	mesh_pipeline:          vk.Pipeline, // VS-02: task/mesh/fragment
+	// VS-02 (correção): builder + finalize da fila de trabalho (compute
+	// despachado na fila gráfica, antes do render pass).
+	build_work_queue_pipeline:    vk.Pipeline,
+	finalize_work_queue_pipeline: vk.Pipeline,
+	mesh_pipeline:          vk.Pipeline, // VS-02: mesh/fragment (mesh-only)
 
 	compute_command_pool:    vk.CommandPool,
 	compute_command_buffers: [MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT]vk.CommandBuffer,
@@ -372,6 +379,13 @@ voxel_gpu_init :: proc() {
 		vk.DeviceSize(1024 * size_of(u32)),
 		{.STORAGE_BUFFER, .TRANSFER_DST},
 	)
+	// VS-02 (correção): fila de trabalho global — INDIRECT para o
+	// CmdDrawMeshTasksIndirectEXT, TRANSFER_DST para o fill do estado,
+	// TRANSFER_SRC para readbacks de debug.
+	voxel_gpu.work_queue = gpu_buffer_create(
+		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * WORK_QUEUE_SLOT_WORDS * size_of(u32)),
+		{.STORAGE_BUFFER, .INDIRECT_BUFFER, .TRANSFER_DST, .TRANSFER_SRC},
+	)
 	voxel_gpu.dummy_buffer = gpu_buffer_create(vk.DeviceSize(16), {.STORAGE_BUFFER})
 
 	upload_builtin_templates()
@@ -434,7 +448,48 @@ voxel_gpu_init :: proc() {
 		),
 	)
 
-	// VS-02: pipeline gráfica task/mesh/fragment (mesmo módulo).
+	// VS-02 (correção): pipelines compute do builder/finalize da fila de
+	// trabalho + gráfica mesh-only (mesh/fragment), todas do mesmo módulo.
+	build_queue_stage := vk.PipelineShaderStageCreateInfo {
+		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+		stage  = {.COMPUTE},
+		module = voxel_gpu.shader_module,
+		pName  = "build_work_queue",
+	}
+	finalize_queue_stage := vk.PipelineShaderStageCreateInfo {
+		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+		stage  = {.COMPUTE},
+		module = voxel_gpu.shader_module,
+		pName  = "finalize_work_queue",
+	}
+	vk_check(
+		vk.CreateComputePipelines(
+			app.vkDevice,
+			{},
+			1,
+			&vk.ComputePipelineCreateInfo {
+				sType  = .COMPUTE_PIPELINE_CREATE_INFO,
+				stage  = build_queue_stage,
+				layout = app.computePipelineLayout,
+			},
+			nil,
+			&voxel_gpu.build_work_queue_pipeline,
+		),
+	)
+	vk_check(
+		vk.CreateComputePipelines(
+			app.vkDevice,
+			{},
+			1,
+			&vk.ComputePipelineCreateInfo {
+				sType  = .COMPUTE_PIPELINE_CREATE_INFO,
+				stage  = finalize_queue_stage,
+				layout = app.computePipelineLayout,
+			},
+			nil,
+			&voxel_gpu.finalize_work_queue_pipeline,
+		),
+	)
 	voxel_render_pipeline_create()
 
 	// --- descriptor set (layout da VS-00, com 8/9 revisados pela VS-02) ---
@@ -486,6 +541,7 @@ voxel_gpu_init :: proc() {
 		14 = voxel_gpu.dummy_buffer.handle, // voxel_edits (VS-03)
 		15 = voxel_gpu.dummy_buffer.handle, // edit_results (VS-03)
 		16 = voxel_gpu.dummy_buffer.handle, // mirror_export_ring (VS-04)
+		17 = voxel_gpu.work_queue.handle,   // fila de trabalho (VS-02)
 	}
 	buffer_infos: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorBufferInfo
 	writes: [DESCRIPTOR_SET_BINDING_COUNT]vk.WriteDescriptorSet
@@ -530,6 +586,8 @@ voxel_gpu_destroy :: proc() {
 	log.info("Destruindo recursos GPU do voxel engine")
 	vk.DestroyDescriptorPool(app.vkDevice, voxel_gpu.descriptor_pool, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.mesh_pipeline, nil)
+	vk.DestroyPipeline(app.vkDevice, voxel_gpu.finalize_work_queue_pipeline, nil)
+	vk.DestroyPipeline(app.vkDevice, voxel_gpu.build_work_queue_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.packing_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.generation_pipeline, nil)
 	vk.DestroyShaderModule(app.vkDevice, voxel_gpu.shader_module, nil)
@@ -548,6 +606,7 @@ voxel_gpu_destroy :: proc() {
 	vma.DestroyImage(app.vmaAllocator, voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation)
 
 	gpu_buffer_destroy(&voxel_gpu.dummy_buffer)
+	gpu_buffer_destroy(&voxel_gpu.work_queue)
 	gpu_buffer_destroy(&voxel_gpu.template_triangles)
 	gpu_buffer_destroy(&voxel_gpu.template_vertices)
 	gpu_buffer_destroy(&voxel_gpu.mesh_templates)

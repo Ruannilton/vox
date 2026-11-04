@@ -34,9 +34,15 @@ CULL_FACE_NEVER        :: 7
 // --- Renderização (VS-02) ---
 NEIGHBOR_SLOT_INVALID       :: max(u32)
 MAXIMUM_VISIBLE_CHUNKS      :: 4096
-// Payload: 2 entradas de 14 bits por word (ver common.slang).
-TASK_PAYLOAD_WORDS          :: 2048
-TASK_PAYLOAD_BRICK_CAPACITY :: 4096
+// Fila de trabalho global (correção pós-validação: substitui o payload
+// task→mesh, que chegava zerado neste ambiente; ver common.slang).
+// Item de 32 bits por slot do ring (2 frames): [8 words de estado][itens].
+WORK_ITEM_CAPACITY           :: MAXIMUM_VISIBLE_CHUNKS * BRICKS_PER_CHUNK
+WORK_QUEUE_STATE_WORDS       :: 8
+WORK_QUEUE_APPEND_COUNT_WORD :: 0
+WORK_QUEUE_OVERFLOW_WORD     :: 1
+WORK_QUEUE_INDIRECT_X_WORD   :: 2
+WORK_QUEUE_SLOT_WORDS        :: WORK_QUEUE_STATE_WORDS + WORK_ITEM_CAPACITY
 
 // Ordem igual a FACE_NORMALS no common.slang (+X,-X,+Y,-Y,+Z,-Z).
 NEIGHBOR_OFFSETS :: [6]ChunkCoordinate{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}

@@ -45,6 +45,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-CAMINHO-B | [[ADR-CAMINHO-B-templates-malha|Templates de malha data-driven]] | `aceita` | VS-01, VS-02 |
 | ADR-E1 | [[ADR-E1-edicao-bufferizada|Edição bufferizada por journal]] | `aceita` | VS-03, VS-04 |
 | ADR-C2 | [[ADR-C2-mirror-cpu|Mirror CPU denso com export direto]] | `aceita` | VS-04 |
+| ADR-B10 | [[ADR-B10-fila-trabalho-global|Fila de trabalho global no lugar do payload]] | `aceita` | VS-02 |
 
 ## Vocabulário de status
 

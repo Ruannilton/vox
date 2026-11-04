@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""Simulacao da renderizacao task/mesh (VS-02, REQ-SIM-03).
+"""Simulacao da renderizacao mesh (VS-02, REQ-SIM-03).
 
-Espelha src/assets/shaders/common.slang + select_bricks/build_brick_mesh
-(voxel.slang). A leitura de bloco usa o grid denso diretamente: pack_sim.py
-ja validou decode == denso, entao aqui o que interessa e a geometria.
+Espelha src/assets/shaders/common.slang + build_work_queue/finalize_work_queue/
+build_brick_mesh (voxel.slang). A leitura de bloco usa o grid denso
+diretamente: pack_sim.py ja validou decode == denso, entao aqui o que
+interessa e a geometria.
 
-Cobre: orcamento 256v/192t por grupo (AC-01), selecao de bricks e estouro do
-payload, face_mask com redirecionamento B2 (AC-02), dois chunks adjacentes sem
-faces internas duplicadas (AC-02), rotacao yaw 0..3 vs ROTATED_FACE e tag 7
-nunca culpada (AC-03).
+Arquitetura SEM payload task->mesh (correcao pos-validacao): um builder
+compute na fila grafica seleciona grupos (brick|parte|subdivisao) por chunk
+visivel e anexa itens de 32 bits numa fila global em storage buffer; o draw e
+mesh-only indireto (vkCmdDrawMeshTasksIndirectEXT, um único comando com
+x = contagem de itens) e cada workgroup le o seu item por SV_GroupID.
+
+Cobre: orcamento 256v/192t por grupo (AC-01), selecao de bricks, lotacao da
+fila e clamp do finalize, face_mask com redirecionamento B2 (AC-02), dois
+chunks adjacentes sem faces internas duplicadas (AC-02), rotacao yaw 0..3 vs
+ROTATED_FACE e tag 7 nunca culpada (AC-03).
 """
 
 CHUNK_SIZE = 32
@@ -20,10 +27,18 @@ MESH_VERTEX_MAXIMUM = 256
 MESH_TRIANGLE_MAXIMUM = 192
 CULL_FACE_NEVER = 7
 NEIGHBOR_SLOT_INVALID = 0xFFFFFFFF
-# Payload: 2 entradas de 14 bits (brick 10b | parte 2b | subdivisao 2b) por word.
-# 2048 words = 4096 entradas = pior caso exato (1024 bricks x 4 partes).
-TASK_PAYLOAD_WORDS = 2048
-TASK_PAYLOAD_BRICK_CAPACITY = 4096
+# Fila de trabalho global (substitui o payload): item de 32 bits com
+# visible_index (12b) | brick (10b) | parte (2b) | subdivisao (2b).
+# Capacidade global = 4096 visiveis x 1024 bricks (templates atuais nunca
+# subdividem; overflow sinalizado na word de estado, nunca silencioso).
+MAXIMUM_VISIBLE_CHUNKS = 4096
+WORK_QUEUE_STATE_WORDS = 8
+WORK_QUEUE_APPEND_COUNT_WORD = 0
+WORK_QUEUE_OVERFLOW_WORD = 1
+WORK_QUEUE_INDIRECT_X_WORD = 2
+WORK_ITEM_CAPACITY = MAXIMUM_VISIBLE_CHUNKS * BRICKS_PER_CHUNK
+WORK_QUEUE_SLOT_WORDS = WORK_QUEUE_STATE_WORDS + WORK_ITEM_CAPACITY
+NUM_FRAMES_IN_FLIGHT = 2
 BRICKS_PER_CHUNK_AXIS = (8, 16, 8)
 CHUNK_FLAG_EMPTY = 1
 
@@ -232,7 +247,7 @@ def pack_subdivisions(chunk, registry):
     return subdivisions
 
 
-# --- task shader (select_bricks) ---
+# --- ocupacao de bricks (helpers do builder; B2 espelha common.slang) ---
 
 def brick_occupancy_word(chunks, slot, brick_coord):
     """Word de 32 bits com a ocupacao dos voxels do brick."""
@@ -283,51 +298,62 @@ def is_brick_occluded(chunks, slot, brick_coord, neighbor_slots):
     return True
 
 
-def pack_brick_entry(brick_idx, part, subdivision):
-    return brick_idx | (part << 10) | (subdivision << 12)
+# --- builder compute (build_work_queue) ---
+
+def pack_work_item(visible_index, brick_idx, part, subdivision):
+    """Item de 32 bits da fila global (decodificado pelo mesh shader)."""
+    return (visible_index & 0xFFF) | ((brick_idx & 1023) << 12) | ((part & 3) << 22) | ((subdivision & 3) << 24)
 
 
-def pack_payload_words(entries):
-    words = [0] * TASK_PAYLOAD_WORDS
-    for pos, entry in enumerate(entries):
-        words[pos >> 1] |= entry << ((pos & 1) * 14)
-    return words
+def unpack_work_item(item):
+    return (item & 0xFFF, (item >> 12) & 1023, (item >> 22) & 3, (item >> 24) & 3)
 
 
-def unpack_payload_words(words, count):
-    return [(words[pos >> 1] >> ((pos & 1) * 14)) & 0x3FFF for pos in range(count)]
+def work_queue_base_words(visible_chunk_offset):
+    """Derivacao do slot do ring (2 frames) — espelha common.slang."""
+    return (visible_chunk_offset // MAXIMUM_VISIBLE_CHUNKS) * WORK_QUEUE_SLOT_WORDS
 
 
-def select_bricks(chunks, slot):
-    """Retorna (entries, selecionados); entries truncado na capacidade."""
-    chunk = chunks[slot]
-    if all(b == 0 for b in chunk["dense"]):
-        return None, 0  # CHUNK_FLAG_EMPTY: task retorna sem DispatchMesh
-    entries = []
-    selected = 0
-    for brick_idx in range(BRICKS_PER_CHUNK):
-        occupancy = brick_occupancy_word(chunks, slot, brick_coordinate_from_index(brick_idx))
-        if occupancy == 0:
-            continue
-        # Culling de brick ocluso: cheio + 6 vizinhos cheios = zero faces.
-        if occupancy == FULL_BRICK and is_brick_occluded(
-            chunks, slot, brick_coordinate_from_index(brick_idx), chunk["neighbors"]
-        ):
-            continue
-        subdivision = chunk["subdivisions"][brick_idx]
-        for part in range(1 << subdivision):
-            selected += 1
-            if len(entries) < TASK_PAYLOAD_BRICK_CAPACITY:
-                entries.append(pack_brick_entry(brick_idx, part, subdivision))
-    return entries, selected
+def build_work_queue(chunks, visible_slots):
+    """Espelha o builder: 1 workgroup por chunk visivel; append atomico global
+    (a ordem entre chunks e corrida — aqui serializamos na ordem da lista).
+    Retorna (items, total, overflow)."""
+    items = []
+    total = 0
+    overflow = False
+    for visible_index, slot in enumerate(visible_slots):
+        chunk = chunks[slot]
+        if all(b == 0 for b in chunk["dense"]):
+            continue  # CHUNK_FLAG_EMPTY: workgroup nao anexa nada
+        for brick_idx in range(BRICKS_PER_CHUNK):
+            occupancy = brick_occupancy_word(chunks, slot, brick_coordinate_from_index(brick_idx))
+            if occupancy == 0:
+                continue
+            # Culling de brick ocluso: cheio + 6 vizinhos cheios = zero faces.
+            if occupancy == FULL_BRICK and is_brick_occluded(
+                chunks, slot, brick_coordinate_from_index(brick_idx), chunk["neighbors"]
+            ):
+                continue
+            subdivision = chunk["subdivisions"][brick_idx]
+            for part in range(1 << subdivision):
+                total += 1
+                if len(items) < WORK_ITEM_CAPACITY:
+                    items.append(pack_work_item(visible_index, brick_idx, part, subdivision))
+                else:
+                    overflow = True
+    return items, total, overflow
+
+
+def finalize_work_queue(append_count):
+    """Espelha finalize_work_queue: x do draw indireto = min(count, capacidade)."""
+    return min(append_count, WORK_ITEM_CAPACITY), 1, 1
 
 
 # --- mesh shader (build_brick_mesh, somente contagens) ---
 
-def mesh_group_counts(entry, chunks, slot, registry, camera_position):
-    brick_idx = entry & 1023
-    part = (entry >> 10) & 3
-    subdivision_log2 = (entry >> 12) & 3
+def mesh_group_counts(item, chunks, visible_slots, registry, camera_position):
+    visible_index, brick_idx, part, subdivision_log2 = unpack_work_item(item)
+    slot = visible_slots[visible_index]
     voxels_in_group = VOXELS_PER_BRICK >> subdivision_log2
     total_v = 0
     total_t = 0
@@ -381,13 +407,13 @@ def scenario_budget():
     for block_id, label in ((1, "cubo"), (2, "planta"), (3, "pesado")):
         chunks = {0: make_chunk((0, 0, 0), lambda c, b=block_id: b)}
         pack_subdivisions(chunks[0], registry)
-        payload, _ = select_bricks(chunks, 0)
-        check(f"{label}: payload nao vazio", payload)
+        items, _, _ = build_work_queue(chunks, [0])
+        check(f"{label}: fila nao vazia", items)
         worst_v = 0
         worst_t = 0
-        for entry in payload:
+        for item in items:
             for camera in CAMERAS_6:
-                v, t = mesh_group_counts(entry, chunks, 0, registry, camera)
+                v, t = mesh_group_counts(item, chunks, [0], registry, camera)
                 worst_v = max(worst_v, v)
                 worst_t = max(worst_t, t)
         check(f"{label}: vertices <= {MESH_VERTEX_MAXIMUM} (pior {worst_v})", worst_v <= MESH_VERTEX_MAXIMUM)
@@ -401,13 +427,13 @@ def scenario_budget():
 
 
 def scenario_selection():
-    print("[cenario] selecao de bricks, chunk vazio e capacidade do payload")
+    print("[cenario] selecao de bricks, chunk vazio e capacidade da fila")
     registry = {1: BlockDef(1)}
 
     chunks = {0: make_chunk((0, 0, 0), lambda c: 0)}
     pack_subdivisions(chunks[0], registry)
-    payload, selected = select_bricks(chunks, 0)
-    check("chunk vazio: sem dispatch", payload is None and selected == 0)
+    items, total, _ = build_work_queue(chunks, [0])
+    check("chunk vazio: workgroup nao anexa nada", items == [] and total == 0)
 
     # bricks 0, 5 e 1000 ocupados (canto do brick 0 basta)
     def sparse(c):
@@ -415,45 +441,62 @@ def scenario_selection():
         return 1 if brick_index_from_coordinate(bc) in (0, 5, 1000) else 0
     chunks = {0: make_chunk((0, 0, 0), sparse)}
     pack_subdivisions(chunks[0], registry)
-    payload, selected = select_bricks(chunks, 0)
-    check("3 bricks ocupados -> 3 grupos", selected == 3 and len(payload) == 3)
-    bricks = sorted(e & 1023 for e in payload)
+    items, total, _ = build_work_queue(chunks, [0])
+    check("3 bricks ocupados -> 3 grupos", total == 3 and len(items) == 3)
+    bricks = sorted(unpack_work_item(e)[1] for e in items)
     check("grupos apontam os bricks certos", bricks == [0, 5, 1000])
-    check("entry roundtrip (brick|parte|subdivisao)",
-          all(((e & 1023) | (((e >> 10) & 3) << 10) | (((e >> 12) & 3) << 12)) == e for e in payload))
-    check("subdivisao 0 para cubos esparsos", all(((e >> 12) & 3) == 0 for e in payload))
+    check("item roundtrip (visivel|brick|parte|subdivisao)",
+          all(pack_work_item(*unpack_work_item(e)) == e for e in items))
+    check("subdivisao 0 para cubos esparsos", all(unpack_work_item(e)[3] == 0 for e in items))
 
-    # capacidade 4096 = pior caso exato: 1024 bricks x 4 partes (subdivisao 2),
-    # mesmo que o culling de oclusao nao remova nada (todos com vizinho aberto)
-    check("capacidade cobre o pior caso sem culling", TASK_PAYLOAD_BRICK_CAPACITY >= 1024 * 4)
+    # capacidade global cobre o pior caso dos templates atuais: 4096 chunks
+    # visiveis x 1024 bricks (cubos/plantas nunca subdividem)
+    check("capacidade global = visiveis x bricks", WORK_ITEM_CAPACITY == 4096 * 1024)
+    # um chunk pesado isolado (1024 bricks x 4 partes) cabe com folga na fila
+    check("chunk pesado isolado cabe na fila", 1024 * 4 <= WORK_ITEM_CAPACITY)
 
 
-def scenario_payload_packing():
-    print("[cenario] empacotamento 2x14 bits por word do payload")
-    entries = [
-        pack_brick_entry(0, 0, 0),          # entrada zero (indistingue de word zerada)
-        pack_brick_entry(1023, 3, 2),       # maximo: 14 bits cheios
-        pack_brick_entry(1, 0, 0),
-        pack_brick_entry(517, 2, 1),
-        pack_brick_entry(64, 1, 2),
+def scenario_work_item_packing():
+    print("[cenario] empacotamento do item de 32 bits e layout da fila")
+    cases = [
+        (0, 0, 0, 0),                    # item zero
+        (4095, 1023, 3, 2),              # maximos por campo
+        (1, 1, 0, 0),
+        (2109, 517, 2, 1),
+        (64, 64, 1, 2),
     ]
-    check("entrada cabe em 14 bits", all(e < (1 << 14) for e in entries))
-    words = pack_payload_words(entries)
-    check("N entradas ocupam ceil(N/2) words",
-          words[: (len(entries) + 1) // 2] and all(
-              w == 0 for w in words[(len(entries) + 1) // 2:]
-          ))
-    check("roundtrip pack/unpack", unpack_payload_words(words, len(entries)) == entries)
-    check("metades nao vazam: entrada 0 nao corrompe a vizinha",
-          unpack_payload_words(pack_payload_words([0, pack_brick_entry(1023, 3, 2)]), 2)
-          == [0, pack_brick_entry(1023, 3, 2)])
+    check("campos cabem nos bits (12|10|2|2)",
+          all(v < 4096 and b < 1024 and p < 4 and s < 4 for v, b, p, s in cases))
+    check("roundtrip pack/unpack",
+          all(unpack_work_item(pack_work_item(*c)) == c for c in cases))
+    check("campos nao vazam entre si",
+          unpack_work_item(pack_work_item(0, 1023, 0, 0)) == (0, 1023, 0, 0))
+    check("item cabe em 32 bits sem sinal",
+          all(pack_work_item(*c) < (1 << 26) for c in cases))
+
+    # layout do slot do ring: estado (8 words) + itens; 2 frames
+    check("base do frame 0 = 0", work_queue_base_words(0) == 0)
+    check("base do frame 1 = slot inteiro",
+          work_queue_base_words(MAXIMUM_VISIBLE_CHUNKS) == WORK_QUEUE_SLOT_WORDS)
+    check("slot = estado + capacidade",
+          WORK_QUEUE_SLOT_WORDS == WORK_QUEUE_STATE_WORDS + WORK_ITEM_CAPACITY)
+    check("words de estado reservadas",
+          WORK_QUEUE_APPEND_COUNT_WORD == 0 and WORK_QUEUE_OVERFLOW_WORD == 1
+          and WORK_QUEUE_INDIRECT_X_WORD == 2)
+
+    # finalize: clamp do append_count no x do draw indireto
+    check("finalize: sem overflow", finalize_work_queue(123) == (123, 1, 1))
+    check("finalize: clamp na capacidade",
+          finalize_work_queue(WORK_ITEM_CAPACITY + 999) == (WORK_ITEM_CAPACITY, 1, 1))
+    check("finalize: fila vazia", finalize_work_queue(0) == (0, 1, 1))
+
     # worldgen real: chunk cheio de cubos cabe inteiro apos culling de oclusao
     registry = {1: BlockDef(1)}
     chunks = {0: make_chunk((0, 0, 0), lambda c: 1)}
     pack_subdivisions(chunks[0], registry)
-    payload, selected = select_bricks(chunks, 0)
-    check("chunk cheio de cubos: selecionados <= capacidade", selected <= TASK_PAYLOAD_BRICK_CAPACITY)
-    check("chunk cheio de cubos: nenhum grupo descartado", len(payload) == selected)
+    items, total, overflow = build_work_queue(chunks, [0])
+    check("chunk cheio de cubos: selecionados <= capacidade", total <= WORK_ITEM_CAPACITY)
+    check("chunk cheio de cubos: nenhum grupo descartado", len(items) == total and not overflow)
 
 
 def scenario_occlusion_culling():
@@ -463,13 +506,13 @@ def scenario_occlusion_culling():
     # chunk cheio isolado: vizinhos invalidos => faces da casca preservadas
     chunks = {0: make_chunk((0, 0, 0), lambda c: 1)}
     pack_subdivisions(chunks[0], registry)
-    payload, selected = select_bricks(chunks, 0)
+    items, total, _ = build_work_queue(chunks, [0])
     # casca = 1024 - interior (6 x 14 x 6 = 504) = 520 bricks
     # (cubo cheio: 32v x 8 = 256 e 32 x 6t = 192 = teto exato => subdivisao 0)
-    check("chunk isolado: so a casca selecionada (520 bricks, subdivisao 0)", selected == 520)
+    check("chunk isolado: so a casca selecionada (520 bricks, subdivisao 0)", total == 520)
 
     # todo brick descartado emite ZERO geometria, para qualquer camera
-    selected_entries = set(payload)
+    selected_items = set(items)
     culled = 0
     culling_sound = True
     for brick_idx in range(BRICKS_PER_CHUNK):
@@ -479,15 +522,15 @@ def scenario_occlusion_culling():
             continue
         culled += 1
         for part in range(4):
-            entry = pack_brick_entry(brick_idx, part, 2)
-            if entry in selected_entries:
+            item = pack_work_item(0, brick_idx, part, 2)
+            if item in selected_items:
                 culling_sound = False
             for camera in CAMERAS_6:
-                v, t = mesh_group_counts(entry, chunks, 0, registry, camera)
+                v, t = mesh_group_counts(item, chunks, [0], registry, camera)
                 if (v, t) != (0, 0):
                     culling_sound = False
     check("504 bricks interiores culpados", culled == 504)
-    check("nenhum brick ocluso entra no payload nem emitiria geometria (6 cameras)", culling_sound)
+    check("nenhum brick ocluso entra na fila nem emitiria geometria (6 cameras)", culling_sound)
 
     # dois chunks adjacentes: bricks da face compartilhada viram interiores
     chunks = {
@@ -498,12 +541,12 @@ def scenario_occlusion_culling():
         pack_subdivisions(c, registry)
     chunks[0]["neighbors"][0] = 1  # +X de A = B
     chunks[1]["neighbors"][1] = 0  # -X de B = A
-    payload_a, selected_a = select_bricks(chunks, 0)
-    payload_b, selected_b = select_bricks(chunks, 1)
+    _, total_a, _ = build_work_queue(chunks, [0])
+    _, total_b, _ = build_work_queue(chunks, [1])
     # da face compartilhada (8x16 = 128 bricks), so os que nao tocam outra
     # face aberta viram interiores: 14 x 6 = 84 por lado (520 - 84 = 436)
     check("fronteira +X: 84 bricks internos da face compartilhada culpados",
-          selected_a == 436 and selected_b == 436)
+          total_a == 436 and total_b == 436)
 
     # geometria preservada na uniao: todo brick culpado emitiria zero faces
     for slot in (0, 1):
@@ -514,7 +557,7 @@ def scenario_occlusion_culling():
             if not is_brick_occluded(chunks, slot, bc, chunks[slot]["neighbors"]):
                 continue
             for camera in CAMERAS_6:
-                v, t = mesh_group_counts(pack_brick_entry(brick_idx, 0, 2), chunks, slot, registry, camera)
+                v, t = mesh_group_counts(pack_work_item(0, brick_idx, 0, 2), chunks, [slot], registry, camera)
                 if (v, t) != (0, 0):
                     check(f"uniao: brick {brick_idx} do slot {slot} emitiria geometria", False)
     check("uniao de 2 chunks: culling nao remove geometria visivel", True)
@@ -613,7 +656,7 @@ def scenario_rotation():
     registry = {1: BlockDef(1)}
     chunks = {0: make_chunk((0, 0, 0), lambda c: 1)}
     pack_subdivisions(chunks[0], registry)
-    v, t = mesh_group_counts(0, chunks, 0, registry, (16, 1e6, 16))  # brick 0: interior em y
+    v, t = mesh_group_counts(pack_work_item(0, 0, 0, 0), chunks, [0], registry, (16, 1e6, 16))  # brick 0: faces visiveis so para a camera
     check("brick interior de cubos: 0 vertices, 0 triangulos", (v, t) == (0, 0))
 
     # rotacao afeta o culling: face +X do cubo com r=1 passa a responder a -Z
@@ -626,7 +669,7 @@ def scenario_rotation():
 def main():
     scenario_budget()
     scenario_selection()
-    scenario_payload_packing()
+    scenario_work_item_packing()
     scenario_occlusion_culling()
     scenario_b2()
     scenario_rotation()

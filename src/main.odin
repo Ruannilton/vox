@@ -216,7 +216,11 @@ main :: proc() {
 		}
 	//	engine.record_compute_shader_pipeline(&mesh_pipeline, cmd, vp)
 		
-		vk.CmdBeginRendering(cmd, &rendering_info)
+		// VS-02 (correção): builder da fila de trabalho roda na fila gráfica ANTES
+	// do render pass — o draw indireto consome os resultados via barreiras.
+	engine.voxel_render_prepare(cmd, vp, camera.position, visible_count, engine.app.frameIndex)
+
+	vk.CmdBeginRendering(cmd, &rendering_info)
 
 		engine.voxel_render_record(cmd, vp, camera.position, visible_count, engine.app.frameIndex)
 
@@ -249,13 +253,14 @@ main :: proc() {
 			semaphore = frame_resource.vkAcquireSemaphore,
 			stageMask = {.COLOR_ATTACHMENT_OUTPUT},
 		}
-		// VS-02 (REQ-VIS-03): task/mesh só leem a ocupação após os lotes de
-		// compute concluídos sinalizarem a timeline.
+		// VS-02 (REQ-VIS-03): o builder (compute na fila gráfica) e o mesh só
+		// leem a ocupação após os lotes de compute concluídos sinalizarem a
+		// timeline.
 		compute_wait_info := vk.SemaphoreSubmitInfo {
 			sType     = .SEMAPHORE_SUBMIT_INFO,
 			semaphore = engine.app.computeTimelineSemaphore,
 			value     = voxel_engine.highest_completed_compute_value,
-			stageMask = {.TASK_SHADER_EXT, .MESH_SHADER_EXT},
+			stageMask = {.COMPUTE_SHADER, .MESH_SHADER_EXT},
 		}
 		wait_infos := [2]vk.SemaphoreSubmitInfo{acquire_wait_info, compute_wait_info}
 		wait_count: u32 = voxel_engine.highest_completed_compute_value > 0 ? 2 : 1

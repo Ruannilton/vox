@@ -47,15 +47,25 @@ static const uint MAX_TEMPLATE_TRIANGLES = 24; // pior-caso por voxel; x4 => 8*2
 static const uint TEMPLATE_FLAG_HAS_FLUSH_FACES = 1;
 static const uint CULL_FACE_NEVER = 7; // triângulo nunca culpado (interior/diagonal)
 
-// VS-02: publicação de visíveis e payload do task shader.
+// VS-02: publicação de visíveis e fila de trabalho global. CORREÇÃO pós-
+// validação: o payload task→mesh chega sempre zerado neste ambiente (driver
+// NVIDIA 1.4.351 / RTX 3050 — ver docs/obsidian/decisoes), então o transporte
+// builder→mesh é um buffer de itens, não o payload.
 static const uint NEIGHBOR_SLOT_INVALID       = 0xFFFFFFFFu;
 static const uint MAXIMUM_VISIBLE_CHUNKS      = 4096;
-// Payload: 2 entradas de 14 bits (brick 10b | parte 2b | subdivisão 2b) por
-// word — 2048 words ≈ 8,2 KiB < 16 KiB, capacidade 4096 entradas = pior caso
-// exato (1024 bricks × 4 partes). Não usa tipos de 16 bits (shaderInt16 não
-// é habilitado).
-static const uint TASK_PAYLOAD_WORDS          = 2048;
-static const uint TASK_PAYLOAD_BRICK_CAPACITY = 4096;
+// Item de 32 bits: visible_index (12b) | brick (10b)<<12 | parte (2b)<<22 |
+// subdivisão (2b)<<24. Capacidade global = 4096 visíveis × 1024 bricks (os
+// templates atuais nunca subdividem; overflow sinalizado na word de estado,
+// nunca silencioso).
+static const uint WORK_ITEM_CAPACITY          = MAXIMUM_VISIBLE_CHUNKS * BRICKS_PER_CHUNK;
+// Por slot do ring (2 frames): [8 words de estado][WORK_ITEM_CAPACITY itens].
+// Estado: word 0 = append_count (zerada por vkCmdFillBuffer a cada frame),
+// word 1 = flag de overflow, words 2..4 = x,y,z do draw indireto.
+static const uint WORK_QUEUE_STATE_WORDS       = 8;
+static const uint WORK_QUEUE_APPEND_COUNT_WORD = 0;
+static const uint WORK_QUEUE_OVERFLOW_WORD     = 1;
+static const uint WORK_QUEUE_INDIRECT_X_WORD   = 2;
+static const uint WORK_QUEUE_SLOT_WORDS        = WORK_QUEUE_STATE_WORDS + WORK_ITEM_CAPACITY;
 
 // ----------------------------------------------------------------------------
 // Estruturas (espelhadas em src/engine — std430)
@@ -129,16 +139,11 @@ struct VisibleChunk {
     uint _padding[2];
 };
 
-// VS-02: payload task→mesh. Cada word carrega 2 entradas de 14 bits:
-// brick (10 bits) | parte<<10 | subdivisão<<12; entrada i está na metade
-// (i&1)*14 da word i>>1. Words não escritas permanecem zeradas (o task
-// shader zera antes de selecionar).
-struct TaskPayload {
-    uint storage_slot_index;
-    int3 chunk_world_origin;
-    uint neighbor_slots[6];
-    uint brick_indices[TASK_PAYLOAD_WORDS];
-};
+// VS-02: empacota o item de trabalho de 32 bits da fila global (decodificado
+// pelo mesh shader; espelhado em tools/sim/render_sim.py).
+uint pack_work_item(uint visible_index, uint brick_index, uint part, uint subdivision) {
+    return (visible_index & 0xFFFu) | ((brick_index & 1023u) << 12u) | ((part & 3u) << 22u) | ((subdivision & 3u) << 24u);
+}
 
 // VS-02: saída do mesh shader.
 struct MeshVertex {
@@ -150,7 +155,7 @@ struct MeshVertex {
 [[vk::push_constant]] PushConstants push_constants;
 
 // ----------------------------------------------------------------------------
-// Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9 = VS-02; 13–16 = VS-03/VS-04)
+// Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–16 = VS-03/VS-04)
 // ----------------------------------------------------------------------------
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint>               temporary_dense_chunks;
 [[vk::binding(1, 0)]] StructuredBuffer<ChunkGenerationJob>   generation_jobs;
@@ -168,6 +173,15 @@ struct MeshVertex {
 [[vk::binding(10, 0)]] StructuredBuffer<MeshTemplate>        mesh_templates;
 [[vk::binding(11, 0)]] StructuredBuffer<float4>              template_vertices;
 [[vk::binding(12, 0)]] StructuredBuffer<uint>                template_triangles;
+// VS-02 (correção): fila de trabalho global — builder compute anexa itens e
+// o draw mesh-only indireto consome. Ring de 2 slots derivado do
+// visible_chunk_offset (sem novos push constants).
+[[vk::binding(17, 0)]] RWStructuredBuffer<uint>                work_queue;
+
+// Base (em words) do slot do ring da fila de trabalho neste frame.
+uint work_queue_base_words() {
+    return (push_constants.visible_chunk_offset / MAXIMUM_VISIBLE_CHUNKS) * WORK_QUEUE_SLOT_WORDS;
+}
 
 // ----------------------------------------------------------------------------
 // Funções auxiliares de coordenadas

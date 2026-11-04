@@ -21,8 +21,8 @@ Renderizar os chunks materializados por VS-01 com task/mesh shaders, fronteiras 
 ## Rastreabilidade
 
 - GOAL: [Arquitetura — Etapas 4 e 5](../../arquitetura.md) e [Manual Técnico — Pipeline de renderização e Caminho B](../../manual-tecnico.md).
-- Referência: entry points `select_bricks` (task), `build_brick_mesh` (mesh) e `shade_voxel` (fragment) em `docs/examples/voxel.slang`; publicação de `visible_chunks`, `neighbor_slots` e o submit gráfico com espera da timeline de compute em `docs/examples/voxel.odin`.
-- Decisões: [[ADR-B2-fronteiras-chunks|ADR-B2]], [[ADR-B6-culling-alpha-test|ADR-B6]], [[ADR-B7-pbr|ADR-B7]] e [[ADR-CAMINHO-B-templates-malha|ADR-CAMINHO-B]].
+- Referência: entry points `build_brick_mesh` (mesh) e `shade_voxel` (fragment) em `docs/examples/voxel.slang`; publicação de `visible_chunks`, `neighbor_slots` e o submit gráfico com espera da timeline de compute em `docs/examples/voxel.odin`. O transporte por payload task→mesh da referência foi substituído pela fila de trabalho global ([[ADR-B10-fila-trabalho-global|ADR-B10]]).
+- Decisões: [[ADR-B2-fronteiras-chunks|ADR-B2]], [[ADR-B6-culling-alpha-test|ADR-B6]], [[ADR-B7-pbr|ADR-B7]], [[ADR-CAMINHO-B-templates-malha|ADR-CAMINHO-B]] e [[ADR-B10-fila-trabalho-global|ADR-B10]].
 - Fundação: [[VS-01-streaming-generate-pack|VS-01]] fornece chunks `RENDERABLE` com ocupação, paleta, planos, headers e subdivisão por brick prontos; templates built-in (ar/cubo/planta) e dicionário de blocos já carregados nos bindings 7 e 10–12; `highest_completed_compute_value` publicado pelo handler de conclusão.
 
 ## Requisitos
@@ -31,12 +31,12 @@ Renderizar os chunks materializados por VS-01 com task/mesh shaders, fronteiras 
 
 - **REQ-VIS-01** — `visible_chunks` reconstruído pela CPU a cada frame num ring de `NUM_FRAMES_IN_FLIGHT` (2) posições, `VisibleChunk` de 48 B por entrada, capacidade 4.096 por posição (`MAXIMUM_VISIBLE_CHUNKS`). Somente chunks `RENDERABLE` são publicados, até a capacidade; excedentes esperam o frame seguinte sem falhar.
 - **REQ-VIS-02** — Fronteiras (ADR-B2): `neighbor_slots[6]` preenchidos por frame na ordem de `FACE_NORMALS` (+X, −X, +Y, −Y, +Z, −Z). Vizinho ausente ou `GENERATING` recebe `NEIGHBOR_SLOT_INVALID` (`0xFFFFFFFF`) e é tratado como ar pelo shader; a geometria se autocorrige no frame em que o vizinho concluir. O shader redireciona leituras de ocupação fora do chunk ao vizinho correspondente (`is_voxel_solid`).
-- **REQ-VIS-03** — O submit gráfico espera a timeline de compute com o valor `highest_completed_compute_value` (lido sem bloqueio) nos estágios `TASK_SHADER_EXT | MESH_SHADER_EXT`: a ocupação publicada pelos lotes concluídos é visível antes de task/mesh. Quando o valor é 0, a espera é omitida.
-- **REQ-VIS-04** — Culling de vazio: o task shader retorna sem `DispatchMesh` para chunks com `CHUNK_FLAG_EMPTY`; bricks com word de ocupação zero são pulados. Culling de oclusão: brick cheio (32/32 voxels sólidos) com os 6 bricks vizinhos cheios — consultados com redirecionamento B2 pelos `neighbor_slots`, vizinho inválido = conservador (não culpa) — não tem face exposta e é pulado. Culling de frustum por brick fica no backlog (TODO na referência).
+- **REQ-VIS-03** — O submit gráfico espera a timeline de compute com o valor `highest_completed_compute_value` (lido sem bloqueio) nos estágios `COMPUTE_SHADER | MESH_SHADER_EXT`: a ocupação publicada pelos lotes concluídos é visível antes do builder da fila de trabalho (compute na fila gráfica) e do mesh shader. Quando o valor é 0, a espera é omitida.
+- **REQ-VIS-04** — Culling de vazio: o builder da fila de trabalho retorna sem anexar itens para chunks com `CHUNK_FLAG_EMPTY`; bricks com word de ocupação zero são pulados. Culling de oclusão: brick cheio (32/32 voxels sólidos) com os 6 bricks vizinhos cheios — consultados com redirecionamento B2 pelos `neighbor_slots`, vizinho inválido = conservador (não culpa) — não tem face exposta e é pulado. Culling de frustum por brick fica no backlog (TODO na referência).
 
 ### Task/mesh e templates (Caminho B)
 
-- **REQ-MESH-01** — Task shader `[numthreads(128,1,1)]`, um workgroup por chunk visível (`group_id.x` indexa `visible_chunks` a partir de `visible_chunk_offset`). Seleciona grupos `(brick | parte | subdivisão)` no payload: entradas de 14 bits empacotadas 2 por word (`brick_indices` = 2.048 words, capacidade 4.096 entradas = pior caso exato de 1.024 bricks × 4 partes — payload ≈ 8,2 KiB < 16 KiB) e despacha `DispatchMesh(min(selecionados, capacidade), 1, 1)`; a capacidade cobre o pior caso por construção e o guarda de truncamento é apenas defensivo.
+- **REQ-MESH-01** — Builder da fila de trabalho (compute `[numthreads(128,1,1)]` na fila gráfica, gravado antes do render pass), um workgroup por chunk visível (`group_id.x` indexa `visible_chunks` a partir de `visible_chunk_offset`). Seleciona grupos `(brick | parte | subdivisão)` e anexa **itens de 32 bits** (`visible_index 12b | brick 10b | parte 2b | subdivisão 2b`) no buffer global `work_queue` (binding 17): um `InterlockedAdd` por chunk sobre o contador de append, scan exclusivo local em groupshared para os offsets por brick e rederivação determinística na fase de escrita. Um segundo compute de 1 thread (`finalize_work_queue`) fecha o comando indireto com `x = min(append_count, WORK_ITEM_CAPACITY)`, `y = z = 1`; overflow é sinalizado numa word de estado dedicada, nunca silencioso. A capacidade global (4.096 visíveis × 1.024 bricks) cobre por construção o caso dos templates atuais, que nunca subdividem.
 - **REQ-MESH-02** — Mesh shader `[numthreads(32,1,1)]`, topologia triângulo, `MESH_VERTEX_MAXIMUM = 256` / `MESH_TRIANGLE_MAXIMUM = 192` por grupo, garantidos por construção (subdivisão gravada pelo pack — regra 5 do AGENTS.md, sem depender de culling direcional). Prefixo exclusivo de vértices/triângulos por voxel e `SetMeshOutputCounts` com os totais.
 - **REQ-MESH-03** — Emissão orientada a template: vértices em `[0,1]³` transladados para o voxel; rotação yaw em passos de 90° (`rotate_vertex_yaw`, `ROTATED_FACE`); tags de culling 0–5 testadas contra a `face_mask` do voxel (vizinho sólido via B2 + câmera do lado de fora do plano); tag 7 (`CULL_FACE_NEVER`) nunca é culpada. Voxel sem triângulo sobrevivente não emite vértices.
 - **REQ-MESH-04** — `MeshVertex` carrega `clip_position` (VP × mundo), `world_position` e `block_id`; o fragment resolve o `BlockDefinition` pelo `block_id`.
@@ -50,9 +50,9 @@ Renderizar os chunks materializados por VS-01 com task/mesh shaders, fronteiras 
 
 ### Pipeline e recursos
 
-- **REQ-PIPE-01** — Pipeline gráfica task+mesh+fragment (EXT_mesh_shader, features já habilitadas na VS-00) com dynamic rendering: formato de cor da swapchain, depth test/write habilitados, sem vertex input, `cullMode = NONE` (o culling direcional acontece no shader por tags; a correção visual completa de plantas — alpha-test — permanece adiada pela ADR-B6).
+- **REQ-PIPE-01** — Pipeline gráfica mesh+fragment (mesh-only, EXT_mesh_shader, features já habilitadas na VS-00) com dynamic rendering: formato de cor da swapchain, depth test/write habilitados, sem vertex input, `cullMode = NONE` (o culling direcional acontece no shader por tags; a correção visual completa de plantas — alpha-test — permanece adiada pela ADR-B6).
 - **REQ-PIPE-02** — Revisão do contrato de descritores da VS-00: bindings 8 e 9 passam de `STORAGE_BUFFER` (dummy) para `COMBINED_IMAGE_SAMPLER`; stage flags já cobrem task/mesh/fragment. Demais bindings inalterados. A revisão é registrada no histórico da VS-00 na implementação.
-- **REQ-PIPE-03** — Um `CmdDrawMeshTasksEXT(visible_count, 1, 1)` por frame dentro do render pass existente; frame sem visíveis não despacha. `visible_chunk_offset = frame_atual × MAXIMUM_VISIBLE_CHUNKS`.
+- **REQ-PIPE-03** — Um `vkCmdDrawMeshTasksIndirectEXT` por frame dentro do render pass existente, com **um único** `VkDrawMeshTasksIndirectCommandEXT` lido do estado do `work_queue` (`x` = contagem de itens com clamp do finalize, `y = z = 1`; fila vazia ⇒ `x = 0`, no-op). **Não** usar a variante `IndirectCount`: ela executaria N comandos de 12 B lidos da região de itens (derrubou o dispositivo na integração — ver histórico). Frame sem visíveis não despacha. `visible_chunk_offset = frame_atual × MAXIMUM_VISIBLE_CHUNKS`.
 - **REQ-PIPE-04** — Viewport e scissor dinâmicos acompanhando a swapchain; recriação da swapchain (resize/minimizar) não exige recriar a pipeline.
 
 ### Simulação
@@ -62,7 +62,7 @@ Renderizar os chunks materializados por VS-01 com task/mesh shaders, fronteiras 
 ## Escopo
 
 - Publicação de chunks visíveis e seis vizinhos.
-- Culling coarse/brick (via flags e words de ocupação) e payload de task shader.
+- Culling coarse/brick (via flags e words de ocupação) e fila de trabalho global builder→mesh (substituindo o payload de task shader, ADR-B10).
 - Templates, vértices, triângulos packed, rotação e tags de culling.
 - Subdivisão de bricks e garantia dos orçamentos de hardware.
 - Built-ins de ar, cubo e planta como dados de geometria (carregados na VS-01).
@@ -89,16 +89,18 @@ Renderizar os chunks materializados por VS-01 com task/mesh shaders, fronteiras 
 | Contrato | Layout | Observação |
 | --- | --- | --- |
 | `VisibleChunk` | 48 B: `chunk_world_origin[3]i32`, `storage_slot_index` u32, `neighbor_slots[6]` u32, `padding[2]` u32 | Binding 6; escrito pela CPU por frame |
-| `TaskPayload` | `storage_slot_index` u32, `chunk_world_origin[3]i32`, `neighbor_slots[6]` u32, `brick_indices[2048]` u32 | ≈ 8,2 KiB < 16 KiB; 2 entradas de 14 bits por word: `brick \| parte<<10 \| subdivisão<<12` (capacidade 4.096 = pior caso exato) |
+| Item da fila de trabalho | u32: `visible_index (12b) \| brick (10b)<<12 \| parte (2b)<<22 \| subdivisão (2b)<<24` | Binding 17; escrito pelo builder, decodificado pelo mesh shader |
+| Estado do `work_queue` | 8 words por slot do ring: append_count, overflow, x/y/z do comando indireto (+3 reservadas) | Zerado por `vkCmdFillBuffer` a cada frame; base = `frame % 2` × `WORK_QUEUE_SLOT_WORDS` |
 | `MeshVertex` | `clip_position` float4, `world_position` float3, `block_id` u32 | Saída do mesh shader |
-| Constantes | `NEIGHBOR_SLOT_INVALID`, `FACE_NORMALS`, `ROTATED_FACE`, `CULL_FACE_NEVER = 7`, `TASK_PAYLOAD_BRICK_CAPACITY = 2048` | Compartilhadas Odin↔Slang |
+| Constantes | `NEIGHBOR_SLOT_INVALID`, `FACE_NORMALS`, `ROTATED_FACE`, `CULL_FACE_NEVER = 7`, `WORK_ITEM_CAPACITY = 4.194.304`, `WORK_QUEUE_STATE_WORDS = 8`, `WORK_QUEUE_SLOT_WORDS` | Compartilhadas Odin↔Slang |
 
 ### Recursos e proprietários
 
 - **`visible_chunks`** (binding 6): ring de 2 × 4.096 × 48 B (384 KiB), host-visible, escrito pela thread principal antes do submit gráfico do frame; a posição `frame % 2` só é regravada após a espera de frames em voo (mesmo padrão do ring de jobs da VS-01).
 - **Textura de paleta de albedo** (binding 8): `Texture2DArray` RGBA8, uma camada por entrada de albedo do dicionário, cada camada uma cor sólida; sampler linear com wrap `REPEAT`. Gerada em código no init via staging; destruída com o motor.
 - **Dummy PBR** (binding 9): textura 1×1 do mesmo tipo, presente só para validar o descriptor; não amostrada.
-- **Pipeline mesh**: criada no init do motor de voxels (task+mesh+fragment do `voxel.spv`), layout `graphicsPipelineLayout` da VS-00, push constants de 88 B (`view_projection_matrix`, `camera_position`, `visible_chunk_offset`).
+- **`work_queue`** (binding 17): ring de 2 × (8 words de estado + 4.194.304 itens) × 4 B (≈ 32 MiB), device-local (`STORAGE | INDIRECT | TRANSFER_DST | TRANSFER_SRC`); o builder anexa itens e o finalize fecha o comando indireto, ambos compute na fila gráfica gravados antes do render pass; o estado do slot do frame é zerado por `vkCmdFillBuffer` e o slot só é reusado após a espera da timeline gráfica (mesmo padrão do ring de visíveis).
+- **Pipeline mesh**: criada no init do motor de voxels (mesh+fragment do `voxel.spv`, mesh-only), layout `graphicsPipelineLayout` da VS-00, push constants de 88 B (`view_projection_matrix`, `camera_position`, `visible_chunk_offset`).
 
 ### Sequência do frame (integração)
 
@@ -106,12 +108,15 @@ Renderizar os chunks materializados por VS-01 com task/mesh shaders, fronteiras 
 ve_update (streaming + conclusões)            [thread principal]
 publicar visible_chunks do frame (REQ-VIS-01/02)
 aguardar frame em voo / adquirir imagem
-command buffer do frame:
+command buffer do frame:                      [se visible_count > 0]
+  fill do estado do work_queue (32 B) → barreira transfer→compute
+  dispatch build_work_queue(visible_count) → barreira compute→compute
+  dispatch finalize_work_queue(1) → barreira compute→mesh|draw_indirect
   barreiras de layout → CmdBeginRendering
   bind pipeline mesh + descriptor set + push constants
-  CmdDrawMeshTasksEXT(visible_count, 1, 1)    [se visible_count > 0]
+  CmdDrawMeshTasksIndirectEXT(1 comando: x = itens, y = z = 1)
   CmdEndRendering → barreira de present
-submit gráfico: espera timeline de compute (TASK|MESH, REQ-VIS-03)
+submit gráfico: espera timeline de compute (COMPUTE|MESH, REQ-VIS-03)
               + semáforo de aquisição; sinaliza present + timeline gráfica
 ```
 
@@ -119,7 +124,7 @@ submit gráfico: espera timeline de compute (TASK|MESH, REQ-VIS-03)
 
 - Sem chunks `RENDERABLE`: frame renderiza só o clear; nenhum draw é emitido.
 - Visíveis > 4.096: excedentes aguardam frames seguintes (raio 8 ⇒ 2.109 chunks máximo teórico — a capacidade não é atingida por construção).
-- Payload do task: capacidade 4.096 entradas = pior caso exato (1.024 bricks × 4 partes); o culling de oclusão de bricks cheios (REQ-VIS-04) reduz drasticamente o caso comum de chunks sólidos. O guarda de truncamento é defensivo e nunca dispara por construção.
+- Fila de trabalho: capacidade global = 4.096 visíveis × 1.024 bricks; os templates atuais nunca subdividem, então o caso é coberto por construção. Overflow (só possível com templates futuros que subdividam) acende a word de overflow do estado e o finalize faz o clamp do draw — itens excedentes são descartados com sinal explícito, nunca silencioso. O culling de oclusão de bricks cheios (REQ-VIS-04) reduz drasticamente o caso comum de chunks sólidos.
 - Vizinho em geração: faces de fronteira emitidas contra "ar" no frame corrente e corrigidas na conclusão do vizinho (ADR-B2).
 
 ## Cenários
@@ -128,7 +133,7 @@ submit gráfico: espera timeline de compute (TASK|MESH, REQ-VIS-03)
 
 - **Dado** a bolha materializada (VS-01) e a câmera dentro do terreno.
 - **Quando** frames avançam.
-- **Então** os chunks `RENDERABLE` são publicados com vizinhos, o draw despacha um workgroup de task por chunk visível, e o terreno aparece com cores sólidas por bloco, Lambert + emissão e depth correto — sem erros de validation.
+- **Então** os chunks `RENDERABLE` são publicados com vizinhos, o builder anexa os itens de trabalho na fila global e o draw indireto despacha um workgroup de mesh por item, e o terreno aparece com cores sólidas por bloco, Lambert + emissão e depth correto — sem erros de validation.
 
 ### Fronteira entre chunks (B2)
 
@@ -150,24 +155,24 @@ submit gráfico: espera timeline de compute (TASK|MESH, REQ-VIS-03)
 
 ### Dados-limite
 
-- Chunk `CHUNK_FLAG_EMPTY`: task retorna sem `DispatchMesh`.
+- Chunk `CHUNK_FLAG_EMPTY`: builder retorna sem anexar itens.
 - Brick vazio: pulado pela word de ocupação.
-- Todos os bricks pesados: payload trunca em 2.048 grupos sem falhar.
+- Todos os bricks pesados: a fila comporta o caso por construção; overflow sinalizado na word de estado com clamp do draw.
 - Rotação yaw 0–3: faces de culling remapeadas por `ROTATED_FACE` permanecem consistentes.
 
 ### Falhas e concorrência
 
 - Recriação de swapchain (resize/minimizar): frame pulado pelo caminho da VS-00; viewport/scissor dinâmicos seguem o novo tamanho sem recriar a pipeline.
-- Compute atrasado: a espera da timeline no submit garante que task/mesh nunca leiam ocupação de lotes não sinalizados.
+- Compute atrasado: a espera da timeline no submit garante que o builder e o mesh nunca leiam ocupação de lotes não sinalizados.
 
 ## Critérios de aceitação
 
 | ID | Critério verificável | Validação planejada | Evidência |
 | --- | --- | --- | --- |
-| VS-02-AC-01 | Nenhum grupo excede 256 vértices ou 192 triângulos por construção | Simulação de orçamento (REQ-SIM-03) cobrindo todos os templates × subdivisões + smoke test com validation layers sem erros de mesh shader | Verificado — `tools/sim/render_sim.py`: 191 checks OK (orçamento ≤ 256 v/192 t garantido pela subdivisão gravada pelo pack, todos os templates × subdivisões ×1/×2/×4); smoke test de 90 s com `VK_LAYER_KHRONOS_validation` sem nenhum erro de mesh/task shader |
-| VS-02-AC-02 | Fronteiras entre chunks não emitem faces internas duplicadas | Simulação da cena de dois chunks sólidos adjacentes (faces internas = 0) + inspeção visual no smoke test | Verificado (simulação) — `render_sim.py`: dois chunks sólidos adjacentes com 0 faces internas duplicadas; `ve_publish_visible` preenche `neighbor_slots[6]` na ordem de `FACE_NORMALS` e redireciona leituras via `is_voxel_solid`. Inspeção visual humana pendente (ver ressalva no histórico) |
-| VS-02-AC-03 | Templates obedecem ao voxel unitário e às regras de rotação/culling | Testes de contrato na simulação: vértices em `[0,1]³`, yaw 0–3 vs `ROTATED_FACE`, tag 7 nunca culpada, tags 0–5 contra `face_mask` | Verificado — `render_sim.py`: 191 checks cobrindo vértices em `[0,1]³`, yaw 0–3 consistente com `ROTATED_FACE`, `CULL_FACE_NEVER` (tag 7) nunca culpada e tags 0–5 contra `face_mask` com vizinho sólido (B2) |
-| VS-02-AC-04 | O terreno é apresentado com Lambert + emissão e albedo de cor sólida por bloco; PBR e alpha-test não são exigidos nesta fatia | Smoke test visual com validation layers (sem erros) + registro de screenshot ou descrição da cena no histórico | Verificado (pipeline) — smoke test de 90 s: 2.109 chunks `RENDERABLE` publicados e desenhados por frame (`CmdDrawMeshTasksEXT(2109,1,1)`), timeline de compute 132/132 concluída, depth + Lambert + emissão + triplanar sobre a paleta procedural ativos na pipeline, zero erros de validation; readback da VS-01 segue íntegro. Aparência final (cores/câmera) não conferida por screenshot — ver ressalva no histórico |
+| VS-02-AC-01 | Nenhum grupo excede 256 vértices ou 192 triângulos por construção | Simulação de orçamento (REQ-SIM-03) cobrindo todos os templates × subdivisões + smoke test com validation layers sem erros de mesh shader | Verificado — `tools/sim/render_sim.py`: 210 checks OK (orçamento ≤ 256 v/192 t garantido pela subdivisão gravada pelo pack, todos os templates × subdivisões ×1/×2/×4); smoke tests com `VK_LAYER_KHRONOS_validation` sem nenhum erro de mesh shader |
+| VS-02-AC-02 | Fronteiras entre chunks não emitem faces internas duplicadas | Simulação da cena de dois chunks sólidos adjacentes (faces internas = 0) + inspeção visual no smoke test | Verificado — `render_sim.py`: dois chunks sólidos adjacentes com 0 faces internas duplicadas; `ve_publish_visible` preenche `neighbor_slots[6]` na ordem de `FACE_NORMALS` e redireciona leituras via `is_voxel_solid`. Inspeção visual (correção pós-validação 3): terreno contínuo sem costuras, buracos ou z-fighting entre chunks nas capturas de tela |
+| VS-02-AC-03 | Templates obedecem ao voxel unitário e às regras de rotação/culling | Testes de contrato na simulação: vértices em `[0,1]³`, yaw 0–3 vs `ROTATED_FACE`, tag 7 nunca culpada, tags 0–5 contra `face_mask` | Verificado — `render_sim.py`: 210 checks cobrindo vértices em `[0,1]³`, yaw 0–3 consistente com `ROTATED_FACE`, `CULL_FACE_NEVER` (tag 7) nunca culpada e tags 0–5 contra `face_mask` com vizinho sólido (B2) |
+| VS-02-AC-04 | O terreno é apresentado com Lambert + emissão e albedo de cor sólida por bloco; PBR e alpha-test não são exigidos nesta fatia | Smoke test visual com validation layers (sem erros) + registro de screenshot ou descrição da cena no histórico | Verificado — smoke test com screenshots (correção pós-validação 3, ver histórico): terreno sólido e estável ao redor da câmera (duas capturas idênticas a 10 s de intervalo), plano de grama completo também em vista top-down, draw indireto sobre fila de trabalho com 67.204 itens (estado confirmado por readback: append = x = 67.204, y = z = 1, overflow = 0), 2.109 chunks visíveis, timeline de compute 132/132, zero erros de validation; readbacks da VS-01 íntegros |
 
 ## Tarefas da especificação
 
@@ -207,3 +212,4 @@ Ordem sugerida; cada tarefa referencia requisitos e critérios de aceitação.
 - 2026-11-04 — Validação verificada: evidências nos ACs acima. Ressalvas: a aparência final da cena (cores por bloco, enquadramento da câmera) não foi conferida por humano/screenshot — validação visual pendente via `run.bat`; ~7 fps com 2.109 chunks visíveis nesta configuração (desempenho não é critério desta fatia); shutdown do smoke test por sinal externo (join da worker não exercitado); race benigno conhecido do file logger permanece no backlog desde a VS-01.
 - 2026-11-04 — Correção pós-validação (defeito encontrado na inspeção visual humana): chunks totalmente sólidos (todo o subsolo de pedra) geram 1.024 bricks × 4 partes = 4.096 grupos, mas o payload comportava 2.048 — os excedentes eram descartados e a ordem não-determinística do `InterlockedAdd` mudava o conjunto descartado a cada frame (sintomas: faces parciais, blocos piscando). Correções: (1) entradas do payload empacotadas 2×14 bits por word — capacidade 4.096 = pior caso exato, payload inalterado em ≈ 8,2 KiB, sem tipos de 16 bits; (2) culling de oclusão no task shader (brick cheio + 6 vizinhos cheios via B2 → pulado; chunk sólido isolado cai de 4.096 para 520 grupos). Contratos atualizados: REQ-VIS-04, REQ-MESH-01, tabela `TaskPayload`. Evidências: `render_sim.py` estendido (202 checks, incl. empacotamento, oclusão conservadora com vizinho inválido e geometria preservada nos bricks culpados ×6 câmeras), `spirv-val` limpo, smoke test de 45 s com validation layers sem erros (2.109 visíveis, timeline de compute 132/132, readback da VS-01 íntegro).
 - 2026-11-04 — Correção pós-validação 2 (diagnosticada com captura RenderDoc/Nsight do mantenedor: faces malformadas em "barbatanas", chunks aparentemente ausentes): `template_vertices` era declarado `StructuredBuffer<float3>` no shader (stride std430 = **16 B**) mas a CPU gravava os vértices compactados a 12 B — do vértice 1 em diante o shader lia floats desalinhados, deformando toda face. Correção: binding 11 passa a `StructuredBuffer<float4>` (xyz usado, w ignorado), upload com stride 16 B e buffer de 16 KiB; comentário de contrato no `common.slang`. Verificado na captura que todos os demais layouts (VisibleChunk 48 B, ChunkHeader 2.064 B, BlockDefinition 48 B, MeshTemplate 32 B, SpecialVoxelRecord 12 B) casavam com os strides do SPIR-V — o defeito era exclusivo dos vértices. Evidências: readback de regressão de `template_vertices` adicionado ao `debug_readback_validate` (16 vértices == built-ins), `spirv-val` limpo, smoke test de 40 s sem erros de validation.
+- 2026-11-04 — Correção pós-validação 3 (defeito encontrado na inspeção visual humana: voxels piscando e a geometria inteira renderizada num único local, com z-fighting intermitente): o payload task→mesh chegava **sempre zerado** ao mesh shader neste ambiente (NVIDIA RTX 3050 Laptop, driver Vulkan 1.4.351, slangc 2026.17) — provado por experimentos com payload constante, payloads de 8 e 2.048 words e ambos os atributos de estágio, com SPIR-V correto sob `spirv-dis`/`spirv-val`; um pipeline mesh-only de diagnóstico lendo `visible_chunks` por `SV_GroupID` renderizou a cena corretamente, isolando o defeito no transporte pelo payload. Correção ([[ADR-B10-fila-trabalho-global|ADR-B10]]): eliminados o task shader e o payload; um builder compute na fila gráfica (mesma seleção: ocupação + oclusão B2 + subdivisão) anexa itens de 32 bits num buffer global `work_queue` (binding 17, ring de 2 slots com 8 words de estado), um finalize de 1 thread fecha o `x` do comando indireto com clamp, e o draw passa a `vkCmdDrawMeshTasksIndirectEXT` com um único comando (a variante IndirectCount executaria N comandos lidos da região de itens — derrubou o dispositivo com `ERROR_DEVICE_LOST` na primeira integração). Contratos atualizados: REQ-VIS-03/04, REQ-MESH-01, REQ-PIPE-01/03, tabela de contratos, recursos, sequência do frame, cenários e ACs. Evidências: `render_sim.py` reescrito para o modelo de fila (210 checks), `spirv-val` limpo, readback do estado da fila (append = x = 67.204, y = z = 1, overflow = 0, itens decodificados corretamente) e screenshots com a câmera travada: terreno sólido e estável (duas capturas idênticas a 10 s de intervalo), plano de grama completo ao redor da câmera e vista top-down integralmente coberta; zero erros de validation; readbacks da VS-01 íntegros.

@@ -18,10 +18,11 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 | ADR-CAMINHO-B | [[ADR-CAMINHO-B-templates-malha|Templates de malha data-driven]] | `aceita` | VS-01, VS-02 |
 | ADR-E1 | [[ADR-E1-edicao-bufferizada|Edição bufferizada por journal]] | `aceita` | VS-03, VS-04 |
 | ADR-C2 | [[ADR-C2-mirror-cpu|Mirror CPU denso com export direto]] | `aceita` | VS-04 |
+| ADR-B10 | [[ADR-B10-fila-trabalho-global|Fila de trabalho global no lugar do payload task→mesh]] | `aceita` | VS-02 |
 
 ## Resumo
 
-- 12 decisões registradas e aceitas.
+- 13 decisões registradas e aceitas.
 - Nenhuma decisão pendente.
 - Nenhuma decisão representa, por si só, implementação concluída ou validação verificada.
 

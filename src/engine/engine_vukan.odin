@@ -479,10 +479,10 @@ destroy_sync_objects :: proc() {
 	log.info("Sync objects destroyed successfully")
 }
 
-// REQ-FND-DESC-01: set 0 = recursos globais (bindings 0..16; storage buffers,
+// REQ-FND-DESC-01: set 0 = recursos globais (bindings 0..17; storage buffers,
 // exceto 8/9 = texturas combinadas desde a VS-02), visível a compute e
-// task/mesh/fragment; pipeline layouts com push constants de 88 B.
-DESCRIPTOR_SET_BINDING_COUNT :: 17
+// mesh/fragment; pipeline layouts com push constants de 88 B.
+DESCRIPTOR_SET_BINDING_COUNT :: 18
 PUSH_CONSTANTS_SIZE :: 88
 
 @(private)
@@ -506,7 +506,7 @@ create_descriptor_layouts :: proc() {
 		)
 	}
 
-	shader_stages := vk.ShaderStageFlags{.COMPUTE, .TASK_EXT, .MESH_EXT, .FRAGMENT}
+	shader_stages := vk.ShaderStageFlags{.COMPUTE, .MESH_EXT, .FRAGMENT}
 	bindings: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorSetLayoutBinding
 	for &binding, i in bindings {
 		binding = {
@@ -530,7 +530,7 @@ create_descriptor_layouts :: proc() {
 
 	set_layouts := []vk.DescriptorSetLayout{app.descriptorSetLayout}
 	graphics_push_range := vk.PushConstantRange {
-		stageFlags = {.TASK_EXT, .MESH_EXT, .FRAGMENT},
+		stageFlags = {.MESH_EXT, .FRAGMENT},
 		offset     = 0,
 		size       = PUSH_CONSTANTS_SIZE,
 	}

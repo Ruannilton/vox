@@ -33,6 +33,7 @@ graph TD
 - ADR-B5: VS-01 usa visão `8`, geração `8`, descarga `16` e 4.096 slots.
 - ADR-B6: a correção visual de plantas é trabalho posterior e não integra o aceite de VS-02.
 - ADR-B7: VS-02 usa Lambert + emissão; PBR é melhoria futura.
+- ADR-B10: VS-02 renderiza sem estágio task — builder compute na fila gráfica anexa itens numa fila de trabalho global e o draw é mesh-only indireto (o payload task→mesh não era entregue pelo driver do ambiente).
 
 ## Dependências transversais a registrar nas specs
 
@@ -40,7 +41,7 @@ Estas relações não alteram a cadeia principal, mas precisam virar contratos e
 
 - VS-00 deve fornecer as capabilities e a sincronização exigidas por todas as demais.
 - VS-01 produz os formatos packed consumidos por VS-02, VS-03 e VS-04.
-- VS-02 fornece o ponto de renderização no qual VS-03 aplica a barreira COMPUTE → TASK|MESH.
+- VS-02 fornece o ponto de renderização no qual VS-03 aplica a barreira COMPUTE → COMPUTE(builder) | MESH (a fila de trabalho da ADR-B10 eliminou o estágio task).
 - VS-03 fornece o journal e o feedback usados por VS-04.
 - `common.slang` e os layouts Odin↔Slang são contratos compartilhados; mudanças neles exigem revisão de todas as specs afetadas.
 
