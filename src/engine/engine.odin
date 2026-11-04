@@ -131,6 +131,11 @@ recreate_swapchain :: proc() -> bool {
 	return true
 }
 
+// Timeout finito no acquire: no Windows, vkAcquireNextImageKHR com timeout infinito
+// pode bloquear para sempre com a janela minimizada (o callback de framebuffer nem
+// sempre dispara na minimização), congelando a thread principal.
+ACQUIRE_TIMEOUT_NS :: 100_000_000 // 100 ms
+
 // Retorna ok=false quando o frame deve ser pulado (janela minimizada ou swapchain
 // recriada/fora de data) — nunca encerra o processo por swapchain obsoleta.
 AcquireNextImage :: proc() -> (frame: SwapChainFrameData, ok: bool) {
@@ -144,11 +149,14 @@ AcquireNextImage :: proc() -> (frame: SwapChainFrameData, ok: bool) {
 	result := vk.AcquireNextImageKHR(
 		app.vkDevice,
 		app.presentation.vkSwapChain,
-		max(u64),
+		ACQUIRE_TIMEOUT_NS,
 		app.frameData[app.frameIndex].vkAcquireSemaphore,
 		0,
 		&image_index,
 	)
+	if result == .TIMEOUT || result == .NOT_READY {
+		return {}, false
+	}
 	if result == .ERROR_OUT_OF_DATE_KHR || result == .SUBOPTIMAL_KHR {
 		app.swapchainNeedsRecreate = true
 		return {}, false
@@ -180,6 +188,16 @@ Present :: proc() {
 	} else {
 		vk_check(result)
 	}
+}
+
+// Desfaz a reserva feita por Update quando o frame é pulado (janela minimizada
+// ou swapchain fora de data). Sem isso, a sequência da timeline gráfica abre uma
+// lacuna e WaitTimelineSemaphore passa a aguardar um valor nunca sinalizado —
+// deadlock da thread principal (REQ-FND-SYNC-01).
+CancelFrameReservation :: proc() {
+	app.frameIndex = (app.frameIndex + NUM_FRAMES_IN_FLIGHT - 1) % NUM_FRAMES_IN_FLIGHT
+	app.currentTimelineValue -= 1
+	app.nextTimelineValue -= 1
 }
 
 WaitTimelineSemaphore :: proc() -> u64 {

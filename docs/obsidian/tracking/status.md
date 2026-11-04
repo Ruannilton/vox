@@ -15,7 +15,7 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Implementações concluídas | 1 |
 | Validações verificadas | 0 |
 
-Quatro documentos estão em `rascunho`; VS-00 está `aprovada` com implementação `concluida` e validação `em-validacao` (faltam: rejeição forçada de dispositivo, resize e shutdown limpo no smoke test manual).
+Quatro documentos estão em `rascunho`; VS-00 está `aprovada` com implementação `concluida` e validação `em-validacao` (falta apenas o teste forçado de rejeição de dispositivo do AC-02).
 
 ## Tracking das especificações
 

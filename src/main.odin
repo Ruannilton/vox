@@ -114,7 +114,9 @@ main :: proc() {
 		frame_resource := engine.AcquireFrameResource()
 		swapchain_frame, acquired := engine.AcquireNextImage()
 		if !acquired {
-			// Janela minimizada ou swapchain recriada/fora de data: pula o frame.
+			// Janela minimizada ou swapchain recriada/fora de data: pula o frame
+			// e desfaz a reserva da timeline para não abrir lacuna na sequência.
+			engine.CancelFrameReservation()
 			continue
 		}
 
