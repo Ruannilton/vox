@@ -3,7 +3,7 @@
 setlocal
 
 echo Compilando shaders...
-set "IN_DIR=.\assets\shaders"
+set "IN_DIR=.src\assets\shaders"
 set "OUT_DIR=.\bin"
 
 :: Cria o diretório de saída caso não exista
