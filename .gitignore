@@ -3,3 +3,4 @@ bin/
 *.spv
 */Odin-Documentation/
 *__pycache__/
+debug/
