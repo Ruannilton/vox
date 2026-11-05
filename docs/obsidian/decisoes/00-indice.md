@@ -20,10 +20,11 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 | ADR-C2 | [[ADR-C2-mirror-cpu|Mirror CPU denso com export direto]] | `aceita` | VS-04 |
 | ADR-B10 | [[ADR-B10-fila-trabalho-global|Fila de trabalho global no lugar do payload task→mesh]] | `aceita` | VS-02 |
 | ADR-T1 | [[ADR-T1-telemetria-vulkan-vma|Telemetria GPU via API Vulkan + VMA]] | `aceita` | VS-05 |
+| ADR-T2 | [[ADR-T2-modelos-por-tipo-de-tarefa|Modelo e thinking por tipo de tarefa]] | `aceita` | — |
 
 ## Resumo
 
-- 14 decisões registradas e aceitas.
+- 15 decisões registradas e aceitas.
 - Nenhuma decisão pendente.
 - Nenhuma decisão representa, por si só, implementação concluída ou validação verificada.
 

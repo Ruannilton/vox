@@ -14,6 +14,8 @@ Constantes e layouts: src/assets/shaders/common.slang é a fonte única de verda
 7. Layout do mirror é y-contíguo (y|z<<5|x<<10); o scratch GPU é x-contíguo. Não misturar.
 
 ## Workflow
+- Decisões de arquitetura e criação de requisitos/specs: executadas pelo agente principal (K3.1, thinking high).
+- Desenvolvimento e depuração: despachar para subagentes `coder` (K2.8, thinking low, via `[secondary_model]`); escalar para K3.1 (parâmetro `model` do Agent) só quando o subagente estiver travado.
 - Mudança de shader → escrever/estender simulação Python em tools/sim/ antes de integrar.
 - Marcar integrações pendentes com TODO(E1)/TODO(B)/TODO(C2) (convenção existente).
 - Manter documentação do projeto atualizada no formato obsidian dentro do diretorio docs/obsidian/*
