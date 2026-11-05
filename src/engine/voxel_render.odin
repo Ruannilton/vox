@@ -20,8 +20,8 @@ PUSH_CONSTANT_STAGES_GRAPHICS :: vk.ShaderStageFlags{.MESH_EXT, .FRAGMENT}
 
 voxel_render_pipeline_create :: proc() {
 	stages := [2]vk.PipelineShaderStageCreateInfo {
-		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.MESH_EXT}, module = voxel_gpu.shader_module, pName = "build_brick_mesh"},
-		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.FRAGMENT}, module = voxel_gpu.shader_module, pName = "shade_voxel"},
+		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.MESH_EXT}, module = voxel_gpu.render_shader_module, pName = "build_brick_mesh"},
+		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.FRAGMENT}, module = voxel_gpu.render_shader_module, pName = "shade_voxel"},
 	}
 
 	rendering_info := vk.PipelineRenderingCreateInfo {
@@ -99,13 +99,51 @@ voxel_render_pipeline_create :: proc() {
 // thread: fecha o x do draw indireto com clamp) → barrier compute→mesh/
 // indirect. A reutilização do slot (2 frames atrás) já foi ordenada pela
 // espera da timeline gráfica no host — mesma garantia do ring de visíveis.
+// VS-03 (E1): o dispatch do apply_voxel_edits (se houver jobs) precede tudo,
+// com barreira COMPUTE(write)→COMPUTE(read) — a ocupação/planos/header já
+// refletem a edição quando o builder e o mesh leem (mesmo frame).
 voxel_render_prepare :: proc(
 	cmd: vk.CommandBuffer,
 	vp: matrix[4, 4]f32,
 	camera_position: [3]f32,
 	visible_count: u32,
 	frame_index: u32,
+	edit_job_count: u32,
 ) {
+	if visible_count == 0 && edit_job_count == 0 do return
+
+	push_constants := VoxelPushConstants {
+		view_projection_matrix = vp,
+		camera_position        = camera_position,
+		visible_chunk_offset   = frame_index * MAXIMUM_VISIBLE_CHUNKS,
+		edit_job_offset        = frame_index * MAX_EDIT_JOBS_PER_FLUSH,
+	}
+	vk.CmdBindDescriptorSets(cmd, .COMPUTE, app.computePipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 0, nil)
+	vk.CmdPushConstants(cmd, app.computePipelineLayout, {.COMPUTE}, 0, PUSH_CONSTANTS_SIZE, &push_constants)
+
+	// VS-03 (E1): aplica as edições do flush antes de qualquer leitura da
+	// ocupação/planos neste frame.
+	if edit_job_count > 0 {
+		vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.edit_pipeline)
+		vk.CmdDispatch(cmd, edit_job_count, 1, 1)
+
+		edit_barrier := vk.MemoryBarrier2 {
+			sType         = .MEMORY_BARRIER_2,
+			srcStageMask  = {.COMPUTE_SHADER},
+			srcAccessMask = {.SHADER_WRITE},
+			dstStageMask  = {.COMPUTE_SHADER},
+			dstAccessMask = {.SHADER_READ},
+		}
+		vk.CmdPipelineBarrier2(
+			cmd,
+			&vk.DependencyInfo {
+				sType               = .DEPENDENCY_INFO,
+				memoryBarrierCount  = 1,
+				pMemoryBarriers     = &edit_barrier,
+			},
+		)
+	}
+
 	if visible_count == 0 do return
 
 	state_offset := vk.DeviceSize(frame_index * WORK_QUEUE_SLOT_WORDS * size_of(u32))
@@ -130,14 +168,7 @@ voxel_render_prepare :: proc(
 		},
 	)
 
-	push_constants := VoxelPushConstants {
-		view_projection_matrix = vp,
-		camera_position        = camera_position,
-		visible_chunk_offset   = frame_index * MAXIMUM_VISIBLE_CHUNKS,
-	}
 	vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.build_work_queue_pipeline)
-	vk.CmdBindDescriptorSets(cmd, .COMPUTE, app.computePipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 0, nil)
-	vk.CmdPushConstants(cmd, app.computePipelineLayout, {.COMPUTE}, 0, PUSH_CONSTANTS_SIZE, &push_constants)
 	vk.CmdDispatch(cmd, visible_count, 1, 1)
 
 	// builder → finalize: o append_count escrito pelo builder precisa estar

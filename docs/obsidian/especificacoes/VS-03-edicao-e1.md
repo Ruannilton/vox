@@ -3,13 +3,13 @@ id: VS-03
 titulo: Edição E1
 tipo: especificacao
 status_spec: aprovada
-status_implementacao: nao-iniciada
-status_validacao: nao-iniciada
+status_implementacao: concluida
+status_validacao: verificada
 depende_de:
   - VS-02
 bloqueada_por: []
 requisitos: [REQ-EDIT-01, REQ-EDIT-02, REQ-EDIT-03, REQ-EDIT-04, REQ-EDIT-05, REQ-EDIT-06, REQ-EDIT-07, REQ-EDIT-08, REQ-EDIT-09, REQ-EDIT-10, REQ-SIM-04]
-ultima_atualizacao: 2026-11-04
+ultima_atualizacao: 2026-11-05
 ---
 
 # VS-03 — Edição E1
@@ -149,10 +149,10 @@ submit gráfico (esperas da VS-02 inalteradas)
 
 | ID | Critério verificável | Validação planejada | Evidência |
 | --- | --- | --- | --- |
-| VS-03-AC-01 | Flush aplicado antes do draw reflete a edição no mesmo frame | Cenário roteirizado (caixa de ar + caixa de pedra à frente da câmera) com screenshots antes/depois no mesmo tick do flush + readback da ocupação dos chunks afetados | Pendente |
-| VS-03-AC-02 | Decode, refcounts, ocupação, EMPTY e subdivisão permanecem consistentes | `tools/sim/edit_sim.py` bit a bit contra verdade densa cobrindo os cenários mínimos (incl. reciclagem, planos, subdivisão) | Pendente |
-| VS-03-AC-03 | Dedup, pendências e tetos obedecem à ordenação especificada | Simulação do modelo CPU (dedup última-escrita-vence, reintegração, backpressure) + estatísticas do ring no log do cenário roteirizado | Pendente |
-| VS-03-AC-04 | AR nunca é reciclado e overflow rejeita edição com código próprio | Simulação (alocações nunca tomam o slot 0; chunk em overflow intocado) + leitura do ring de resultados evidenciando `REJECTED_OVERFLOW`/`REJECTED_PALETTE_FULL` | Pendente |
+| VS-03-AC-01 | Flush aplicado antes do draw reflete a edição no mesmo frame | Cenário roteirizado (caixa de ar + caixa de pedra à frente da câmera) com screenshots antes/depois no mesmo tick do flush + readback da ocupação dos chunks afetados | Verificado — flush forçado no tick 300 (8 jobs, 2.937 edições) aplicado no mesmo frame; screenshot pós-flush mostra o bloco de pedra flutuante e a caixa esculpida na superfície do terreno; readback de decode confirma os voxels (ar→pedra no bloco, pedra/terra→ar na caixa esculpida) |
+| VS-03-AC-02 | Decode, refcounts, ocupação, EMPTY e subdivisão permanecem consistentes | `tools/sim/edit_sim.py` bit a bit contra verdade densa cobrindo os cenários mínimos (incl. reciclagem, planos, subdivisão) | Verificado — `edit_sim.py`: 118 checks OK (decode == verdade densa após cada flush, refcounts exatos por slot, ocupação/coarse/EMPTY/subdivisão exatas, incl. 6 flushes aleatórios × 300 edições) |
+| VS-03-AC-03 | Dedup, pendências e tetos obedecem à ordenação especificada | Simulação do modelo CPU (dedup última-escrita-vence, reintegração, backpressure) + estatísticas do ring no log do cenário roteirizado | Verificado — `edit_sim.py`: dedup (3 escritas → última staged), tetos 4.096/256/1.024 com dreno ordenado no ciclo seguinte, pendência em GENERATING reintegrada na conclusão; log do smoke: `applied=1002 noop=1935 rejected=0 deferred=0 (fila=0, pendências=0)` |
+| VS-03-AC-04 | AR nunca é reciclado e overflow rejeita edição com código próprio | Simulação (alocações nunca tomam o slot 0; chunk em overflow intocado) + leitura do ring de resultados evidenciando `REJECTED_OVERFLOW`/`REJECTED_PALETTE_FULL` | Verificado (simulação) — `edit_sim.py`: chunk 100% sólido (refcount[0]=0) aloca id novo fora do slot 0 e ressuscita o AR com refcount exato; paleta lotada rejeita com `REJECTED_PALETTE_FULL` sem tocar os dados; chunk em overflow rejeita todas com `REJECTED_OVERFLOW` e permanece intacto |
 
 ## Tarefas da especificação
 
@@ -184,3 +184,6 @@ Ordem sugerida; cada tarefa referencia requisitos e critérios de aceitação. S
 - 2026-11-03 — Rascunho estrutural criado; conteúdo ainda não aprovado.
 - 2026-11-04 — Elaboração completa: 11 requisitos (EDIT/SIM), contratos de edição, sequência do frame (com a barreira da ADR-B10), cenários e ACs; submetida à revisão do mantenedor.
 - 2026-11-04 — **Aprovada pelo mantenedor**; tarefas VS-03-IMPL-01..07 destravadas.
+- 2026-11-05 — Implementação concluída (IMPL-01..07): contratos de edição no `common.slang` + espelho Odin (`#assert(size_of(EditChunkJob) == 16)`); `tools/sim/edit_sim.py` com 118 checks; `apply_voxel_edits` portado com as 6 fases (cache do header, hash block_id→slot com tombstones e reciclagem preguiçosa, crescimento de planos, RMW de planos/ocupação/refcounts, coarse/EMPTY, subdivisão dos bricks sujos); rings host-visible reais nos bindings 13/14/15 (results com `HOST_ACCESS_RANDOM` + `InvalidateAllocation`); journal CPU em `voxel_edit.odin` (dedup, pendências, tetos, backpressure, feedback); dispatch no command buffer do frame antes do builder com barreira COMPUTE→COMPUTE (ADR-B10).
+- 2026-11-05 — Bugs corrigidos durante a integração: (1) `edit_ring_write` re-copiava e re-despachava o staging a cada frame (feedback acumulava no-ops redundantes: 532 = 7×76) — staging passa a ser limpo após a cópia ao ring; (2) `groupshared` em escopo de módulo no Slang é a UNIÃO de todas as entry points — com o shader de edição no mesmo módulo, o mesh shader estourou `maxMeshSharedMemorySize` (37.924 B > 28.672 B): os shaders foram separados em três módulos (`voxel.spv` = generate+pack, `edit.spv` = edição, `render.spv` = builder+finalize+mesh+fragment; atenção: módulo de entry única é emitido como `"main"` pelo slangc). Readback da VS-01 movido do tick 120 para o 240 (no 120 ele corria o command buffer compartilhado da worker durante o streaming — corrida do harness de debug).
+- 2026-11-05 — Validação verificada: evidências nos ACs acima. Notas: o worldgen passou a terreno por ruído (FastNoiseLite, alteração do mantenedor não commitada nesta fatia — o cenário roteirizado e a câmera foram ajustados para a superfície do terreno de ruído); o `debug_readback_validate` da VS-01 segue comparando contra a verdade do mundo plano e falha sob o terreno de ruído (pendente de atualização, decisão do mantenedor); o processo encerrou-se sozinho duas vezes durante as sessões de depuração (exit gracioso ~30–60 s, possivelmente interação de foco/ghost window durante o uso da máquina — não reproduzido em uso normal, backlog).

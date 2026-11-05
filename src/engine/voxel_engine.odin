@@ -60,6 +60,7 @@ VoxelEngine :: struct {
 	last_camera_chunk:              ChunkCoordinate,
 	first_update:                   bool,
 	highest_completed_compute_value: u64,
+	edit:                           EditManager, // VS-03 (E1): journal de edição
 
 	// --- domínio de queue_mutex (thread principal <-> worker) ---
 	queue_mutex:           sync.Mutex,
@@ -120,6 +121,7 @@ ve_init :: proc() -> ^VoxelEngine {
 	for i in 0 ..< MAXIMUM_RESIDENT_CHUNKS {
 		append(&ve.free_storage_slots, u32(i))
 	}
+	edit_manager_init(ve)
 
 	voxel_gpu_init()
 
@@ -151,6 +153,7 @@ ve_destroy :: proc(ve: ^VoxelEngine) {
 	delete(ve.slot_generations)
 	delete(ve.pending_tasks)
 	delete(ve.submitted_batches)
+	edit_manager_destroy(ve)
 	active_ve = nil
 	free(ve)
 }

@@ -121,6 +121,32 @@ VisibleChunk :: struct {
 	padding:            [2]u32,
 }
 
+// --- Edição E1 (VS-03) ---
+// Limites do flush (ADR-E1). MAX_EDITS_PER_CHUNK_PER_FLUSH também é usado
+// pelo shader (arrays groupshared) — espelhar com o common.slang.
+EDIT_FLUSH_INTERVAL_MS        :: 100.0 // intervalo entre flushes (0 = todo frame)
+MAX_EDITS_PER_FLUSH           :: 4096
+MAX_EDIT_JOBS_PER_FLUSH       :: 256
+MAX_EDITS_PER_CHUNK_PER_FLUSH :: 1024
+// Códigos de resultado (espelham o Slang; lidos de edit_results 2 frames após o flush).
+EDIT_RESULT_APPLIED               :: 0
+EDIT_RESULT_NOOP                  :: 1
+EDIT_RESULT_REJECTED_PALETTE_FULL :: 2
+EDIT_RESULT_REJECTED_OVERFLOW     :: 3
+
+// 16 B — espelha o Slang (ring de jobs de edição, binding 13).
+EditChunkJob :: struct {
+	storage_slot_index: u32,
+	first_edit:         u32, // índice global no ring de voxel_edits/edit_results
+	edit_count:         u32, // <= MAX_EDITS_PER_CHUNK_PER_FLUSH
+	padding:            u32,
+}
+
+// Edição packed em u32: voxel_index (15 bits, layout denso x|z<<5|y<<10) | block_id<<16.
+pack_voxel_edit :: proc "contextless" (voxel_index: u32, block_id: u32) -> u32 {
+	return (voxel_index & 0x7FFF) | (block_id << 16)
+}
+
 // 88 B — casar com o pipeline layout da VS-00.
 VoxelPushConstants :: struct {
 	view_projection_matrix: matrix[4, 4]f32,
@@ -169,4 +195,5 @@ validate_template :: proc(vertices: [][3]f32, packed_triangles: []u32) -> bool {
 #assert(size_of(BlockDefinition) == 48)
 #assert(size_of(MeshTemplate) == 32)
 #assert(size_of(VisibleChunk) == 48)
+#assert(size_of(EditChunkJob) == 16)
 #assert(size_of(VoxelPushConstants) == 88)

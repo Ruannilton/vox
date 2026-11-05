@@ -32,7 +32,14 @@ VoxelGpu :: struct {
 	// VS-02 (correção): fila de trabalho global — ring 2×(estado + itens);
 	// builder compute anexa, draw mesh-only indireto consome (device-local).
 	work_queue:             GpuBuffer,
-	dummy_buffer:           GpuBuffer, // bindings ainda não usados (13-16)
+	// VS-03 (E1): rings de edição host-visible (2 slots de frame).
+	edit_jobs:              GpuBuffer,
+	edit_jobs_mapped:       [^]EditChunkJob,
+	voxel_edits:            GpuBuffer,
+	voxel_edits_mapped:     [^]u32,
+	edit_results:           GpuBuffer, // HOST_ACCESS_RANDOM: CPU lê o feedback
+	edit_results_mapped:    [^]u32,
+	dummy_buffer:           GpuBuffer, // binding ainda não usado (16)
 
 	// VS-02: texturas (bindings 8/9) — paleta procedural de cores sólidas +
 	// dummy PBR (ADR-B7).
@@ -46,13 +53,19 @@ VoxelGpu :: struct {
 
 	descriptor_pool:        vk.DescriptorPool,
 	descriptor_set:         vk.DescriptorSet,
-	shader_module:          vk.ShaderModule,
+	// Módulos separados por família de estágio: `groupshared` global no Slang
+	// é a UNIÃO do módulo inteiro — num módulo único, o mesh shader herdava a
+	// shared memory do pack+edição (37,9 KiB > maxMeshSharedMemorySize).
+	shader_module:          vk.ShaderModule, // voxel.spv: generate + pack
+	edit_shader_module:     vk.ShaderModule, // edit.spv: apply_voxel_edits
+	render_shader_module:   vk.ShaderModule, // render.spv: builder + finalize + mesh + fragment
 	generation_pipeline:    vk.Pipeline,
 	packing_pipeline:       vk.Pipeline,
 	// VS-02 (correção): builder + finalize da fila de trabalho (compute
 	// despachado na fila gráfica, antes do render pass).
 	build_work_queue_pipeline:    vk.Pipeline,
 	finalize_work_queue_pipeline: vk.Pipeline,
+	edit_pipeline:                vk.Pipeline, // VS-03: apply_voxel_edits (compute na fila gráfica)
 	mesh_pipeline:          vk.Pipeline, // VS-02: mesh/fragment (mesh-only)
 
 	compute_command_pool:    vk.CommandPool,
@@ -63,6 +76,37 @@ voxel_gpu: VoxelGpu
 
 @(private)
 gpu_buffer_create_host :: proc(size: vk.DeviceSize, usage: vk.BufferUsageFlags) -> (buffer: GpuBuffer, mapped: rawptr) {
+	return gpu_buffer_create_host_flags(size, usage, {.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED})
+}
+
+// Carrega um .spv do diretório de trabalho (bin/) e cria o shader module.
+@(private)
+load_shader_module :: proc(path: string) -> (module: vk.ShaderModule) {
+	shader_code := load_file(path, context.temp_allocator)
+	vk_check(
+		vk.CreateShaderModule(
+			app.vkDevice,
+			&vk.ShaderModuleCreateInfo {
+				sType    = .SHADER_MODULE_CREATE_INFO,
+				codeSize = len(shader_code),
+				pCode    = cast(^u32)raw_data(shader_code),
+			},
+			nil,
+			&module,
+		),
+	)
+	return
+}
+
+// HOST_ACCESS_RANDOM para buffers lidos pela CPU (ex.: edit_results); nesse
+// caso chamar vma.InvalidateAllocation antes da leitura se a memória não for
+// coerente.
+@(private)
+gpu_buffer_create_host_flags :: proc(
+	size: vk.DeviceSize,
+	usage: vk.BufferUsageFlags,
+	flags: vma.AllocationCreateFlags,
+) -> (buffer: GpuBuffer, mapped: rawptr) {
 	buffer.size = size
 	buffer_info := vk.BufferCreateInfo {
 		sType       = .BUFFER_CREATE_INFO,
@@ -72,7 +116,7 @@ gpu_buffer_create_host :: proc(size: vk.DeviceSize, usage: vk.BufferUsageFlags) 
 	}
 	allocation_info := vma.AllocationCreateInfo {
 		usage = .AUTO,
-		flags = {.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
+		flags = flags,
 	}
 	info: vma.AllocationInfo
 	vk_check(
@@ -386,6 +430,28 @@ voxel_gpu_init :: proc() {
 		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * WORK_QUEUE_SLOT_WORDS * size_of(u32)),
 		{.STORAGE_BUFFER, .INDIRECT_BUFFER, .TRANSFER_DST, .TRANSFER_SRC},
 	)
+	// VS-03 (E1): rings de edição host-visible (2 slots de frame; mesma
+	// garantia de reescrita do visible_chunks — slot só regravado após a
+	// espera de frames em voo).
+	mapped_edit_jobs: rawptr
+	voxel_gpu.edit_jobs, mapped_edit_jobs = gpu_buffer_create_host(
+		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * MAX_EDIT_JOBS_PER_FLUSH * size_of(EditChunkJob)),
+		{.STORAGE_BUFFER},
+	)
+	voxel_gpu.edit_jobs_mapped = cast([^]EditChunkJob)mapped_edit_jobs
+	mapped_voxel_edits: rawptr
+	voxel_gpu.voxel_edits, mapped_voxel_edits = gpu_buffer_create_host(
+		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * MAX_EDITS_PER_FLUSH * size_of(u32)),
+		{.STORAGE_BUFFER},
+	)
+	voxel_gpu.voxel_edits_mapped = cast([^]u32)mapped_voxel_edits
+	mapped_edit_results: rawptr
+	voxel_gpu.edit_results, mapped_edit_results = gpu_buffer_create_host_flags(
+		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * MAX_EDITS_PER_FLUSH * size_of(u32)),
+		{.STORAGE_BUFFER},
+		{.HOST_ACCESS_RANDOM, .MAPPED}, // CPU lê o feedback 2 frames depois
+	)
+	voxel_gpu.edit_results_mapped = cast([^]u32)mapped_edit_results
 	voxel_gpu.dummy_buffer = gpu_buffer_create(vk.DeviceSize(16), {.STORAGE_BUFFER})
 
 	upload_builtin_templates()
@@ -393,19 +459,9 @@ voxel_gpu_init :: proc() {
 	upload_palette_textures()
 
 	// --- pipelines de compute (generate + pack) ---
-	shader_code := load_file("./voxel.spv", context.temp_allocator)
-	vk_check(
-		vk.CreateShaderModule(
-			app.vkDevice,
-			&vk.ShaderModuleCreateInfo {
-				sType    = .SHADER_MODULE_CREATE_INFO,
-				codeSize = len(shader_code),
-				pCode    = cast(^u32)raw_data(shader_code),
-			},
-			nil,
-			&voxel_gpu.shader_module,
-		),
-	)
+	voxel_gpu.shader_module = load_shader_module("./voxel.spv")
+	voxel_gpu.edit_shader_module = load_shader_module("./edit.spv")
+	voxel_gpu.render_shader_module = load_shader_module("./render.spv")
 
 	generation_stage := vk.PipelineShaderStageCreateInfo {
 		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -449,17 +505,17 @@ voxel_gpu_init :: proc() {
 	)
 
 	// VS-02 (correção): pipelines compute do builder/finalize da fila de
-	// trabalho + gráfica mesh-only (mesh/fragment), todas do mesmo módulo.
+	// trabalho (módulo render.spv) + gráfica mesh-only (mesh/fragment).
 	build_queue_stage := vk.PipelineShaderStageCreateInfo {
 		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 		stage  = {.COMPUTE},
-		module = voxel_gpu.shader_module,
+		module = voxel_gpu.render_shader_module,
 		pName  = "build_work_queue",
 	}
 	finalize_queue_stage := vk.PipelineShaderStageCreateInfo {
 		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 		stage  = {.COMPUTE},
-		module = voxel_gpu.shader_module,
+		module = voxel_gpu.render_shader_module,
 		pName  = "finalize_work_queue",
 	}
 	vk_check(
@@ -488,6 +544,29 @@ voxel_gpu_init :: proc() {
 			},
 			nil,
 			&voxel_gpu.finalize_work_queue_pipeline,
+		),
+	)
+	// VS-03 (E1): pipeline do apply_voxel_edits (compute na fila gráfica,
+	// antes do builder da fila de trabalho — mesma layout de compute).
+	// O edit.spv tem UMA entry point, então o slangc a emite como "main".
+	edit_stage := vk.PipelineShaderStageCreateInfo {
+		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+		stage  = {.COMPUTE},
+		module = voxel_gpu.edit_shader_module,
+		pName  = "main",
+	}
+	vk_check(
+		vk.CreateComputePipelines(
+			app.vkDevice,
+			{},
+			1,
+			&vk.ComputePipelineCreateInfo {
+				sType  = .COMPUTE_PIPELINE_CREATE_INFO,
+				stage  = edit_stage,
+				layout = app.computePipelineLayout,
+			},
+			nil,
+			&voxel_gpu.edit_pipeline,
 		),
 	)
 	voxel_render_pipeline_create()
@@ -537,9 +616,9 @@ voxel_gpu_init :: proc() {
 		10 = voxel_gpu.mesh_templates.handle,
 		11 = voxel_gpu.template_vertices.handle,
 		12 = voxel_gpu.template_triangles.handle,
-		13 = voxel_gpu.dummy_buffer.handle, // edit_jobs (VS-03)
-		14 = voxel_gpu.dummy_buffer.handle, // voxel_edits (VS-03)
-		15 = voxel_gpu.dummy_buffer.handle, // edit_results (VS-03)
+		13 = voxel_gpu.edit_jobs.handle,    // ring de jobs de edição (VS-03)
+		14 = voxel_gpu.voxel_edits.handle,  // ring de edições packed (VS-03)
+		15 = voxel_gpu.edit_results.handle, // ring de resultados (VS-03)
 		16 = voxel_gpu.dummy_buffer.handle, // mirror_export_ring (VS-04)
 		17 = voxel_gpu.work_queue.handle,   // fila de trabalho (VS-02)
 	}
@@ -586,10 +665,13 @@ voxel_gpu_destroy :: proc() {
 	log.info("Destruindo recursos GPU do voxel engine")
 	vk.DestroyDescriptorPool(app.vkDevice, voxel_gpu.descriptor_pool, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.mesh_pipeline, nil)
+	vk.DestroyPipeline(app.vkDevice, voxel_gpu.edit_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.finalize_work_queue_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.build_work_queue_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.packing_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.generation_pipeline, nil)
+	vk.DestroyShaderModule(app.vkDevice, voxel_gpu.render_shader_module, nil)
+	vk.DestroyShaderModule(app.vkDevice, voxel_gpu.edit_shader_module, nil)
 	vk.DestroyShaderModule(app.vkDevice, voxel_gpu.shader_module, nil)
 	vk.FreeCommandBuffers(
 		app.vkDevice,
@@ -606,6 +688,9 @@ voxel_gpu_destroy :: proc() {
 	vma.DestroyImage(app.vmaAllocator, voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation)
 
 	gpu_buffer_destroy(&voxel_gpu.dummy_buffer)
+	gpu_buffer_destroy(&voxel_gpu.edit_results)
+	gpu_buffer_destroy(&voxel_gpu.voxel_edits)
+	gpu_buffer_destroy(&voxel_gpu.edit_jobs)
 	gpu_buffer_destroy(&voxel_gpu.work_queue)
 	gpu_buffer_destroy(&voxel_gpu.template_triangles)
 	gpu_buffer_destroy(&voxel_gpu.template_vertices)
@@ -809,6 +894,80 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 		)
 	} else {
 		log.errorf("DEBUG READBACK FALHOU: chunk {} slot {} — {} divergências", coord, slot, errors)
+	}
+}
+
+
+// TEMPORÁRIO (diagnóstico VS-03): decodifica voxels específicos de um chunk
+// via readback (header + planos), para inspecionar o cenário roteirizado.
+debug_readback_decode_voxels :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate, local_voxels: [][3]i32, tag: string) {
+	record, found := ve.active_chunks[chunk_coord]
+	if !found || record.state == .GENERATING {
+		log.infof("DEBUG VOXEL {}: chunk {} ausente/gerando", tag, chunk_coord)
+		return
+	}
+	slot := record.storage_slot_index
+
+	header_size := vk.DeviceSize(size_of(ChunkHeader))
+	planes_size := vk.DeviceSize(MATERIAL_WORDS_PER_CHUNK * size_of(u32))
+	total := header_size + planes_size
+	readback, mapped := gpu_buffer_create_host(total, {.TRANSFER_DST})
+	defer gpu_buffer_destroy(&readback)
+
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+	cmd := voxel_gpu.compute_command_buffers[0]
+	vk_check(vk.ResetCommandBuffer(cmd, {}))
+	vk_check(
+		vk.BeginCommandBuffer(
+			cmd,
+			&vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}},
+		),
+	)
+	copies := [2]vk.BufferCopy {
+		{srcOffset = vk.DeviceSize(slot) * header_size, dstOffset = 0, size = header_size},
+		{srcOffset = vk.DeviceSize(slot) * planes_size, dstOffset = header_size, size = planes_size},
+	}
+	vk.CmdCopyBuffer(cmd, voxel_gpu.chunk_headers.handle, readback.handle, 1, &copies[0])
+	vk.CmdCopyBuffer(cmd, voxel_gpu.material_plane_pool.handle, readback.handle, 1, &copies[1])
+	vk_check(vk.EndCommandBuffer(cmd))
+	vk_check(
+		vk.QueueSubmit2(
+			app.queues[.Compute].queue,
+			1,
+			&vk.SubmitInfo2 {
+				sType                  = .SUBMIT_INFO_2,
+				commandBufferInfoCount = 1,
+				pCommandBufferInfos    = &vk.CommandBufferSubmitInfo {
+					sType         = .COMMAND_BUFFER_SUBMIT_INFO,
+					commandBuffer = cmd,
+				},
+			},
+			{},
+		),
+	)
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+
+	header := cast(^ChunkHeader)mapped
+	planes := cast([^]u32)mem.ptr_offset(cast(^u8)mapped, int(header_size))
+	for lv in local_voxels {
+		brick_idx := int(lv.x / 4 + 8 * (lv.z / 4 + 8 * (lv.y / 2)))
+		bit_idx := int(lv.x % 4 + 4 * (lv.z % 4 + 4 * (lv.y % 2)))
+		palette_index: u32 = 0
+		for plane in 0 ..< header.plane_count {
+			word := planes[int(plane) * BRICKS_PER_CHUNK + brick_idx]
+			palette_index |= ((word >> uint(bit_idx)) & 1) << plane
+		}
+		clamped := min(palette_index, max(header.palette_size, 1) - 1)
+		log.infof(
+			"DEBUG VOXEL {}: chunk {} voxel {} -> id {} (palette_size={}, planes={}, flags={})",
+			tag,
+			chunk_coord,
+			lv,
+			header.palette[clamped],
+			header.palette_size,
+			header.plane_count,
+			header.flags,
+		)
 	}
 }
 

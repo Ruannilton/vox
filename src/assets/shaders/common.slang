@@ -16,6 +16,7 @@ static const int3 BRICKS_PER_CHUNK_AXIS = int3(8, 16, 8);
 static const uint BRICKS_PER_CHUNK      = 1024;
 
 static const int3 BRICKS_PER_COARSE_CELL = int3(2, 4, 2);
+static const uint COARSE_CELLS_PER_CHUNK = 64; // 4 x 4 x 4 células (8/2, 16/4, 8/4)
 static const uint COARSE_WORDS_PER_CHUNK = 2;
 // CAMINHO B: 2 bits de subdivisão por brick = 64 words por chunk.
 static const uint SUBDIVISION_WORDS_PER_CHUNK = 64;
@@ -66,6 +67,26 @@ static const uint WORK_QUEUE_APPEND_COUNT_WORD = 0;
 static const uint WORK_QUEUE_OVERFLOW_WORD     = 1;
 static const uint WORK_QUEUE_INDIRECT_X_WORD   = 2;
 static const uint WORK_QUEUE_SLOT_WORDS        = WORK_QUEUE_STATE_WORDS + WORK_ITEM_CAPACITY;
+
+// VS-03 (E1): journal de edição — limites do flush e constantes do shader.
+static const uint MAX_EDITS_PER_FLUSH            = 4096; // edições por flush (16 KiB no ring)
+static const uint MAX_EDIT_JOBS_PER_FLUSH        = 256;  // chunks tocados por flush
+static const uint MAX_EDITS_PER_CHUNK_PER_FLUSH  = 1024; // teto por workgroup
+// Hash block_id -> slot de paleta (probing linear; reconstruído a cada
+// dispatch, tombstones puladas e nunca reutilizadas).
+static const uint EDIT_HASH_CAPACITY = 512;              // 2x a paleta: load factor <= 0,5
+static const uint EDIT_HASH_EMPTY     = 0xFFFFFFFFu;
+static const uint EDIT_HASH_TOMBSTONE = 0xFFFFFFFEu;
+static const uint EDIT_REFCLAIMED     = 0x80000000u; // refcount em fluxo (alocação reivindicou, ainda publicando)
+// Sentinelas de shared_edit_new_slot (nunca colidem com índices 0..255).
+static const uint EDIT_SLOT_NOOP     = 0xFFFFFFFFu;
+static const uint EDIT_SLOT_REJECTED = 0xFFFFFFFEu;
+static const uint EDIT_COUNTED_FLAG  = 0x80000000u; // bit alto: refcount já saiu contado da Fase 1
+// Códigos escritos em edit_results (a CPU lê o ring 2 frames depois).
+static const uint EDIT_RESULT_APPLIED               = 0;
+static const uint EDIT_RESULT_NOOP                  = 1;
+static const uint EDIT_RESULT_REJECTED_PALETTE_FULL = 2;
+static const uint EDIT_RESULT_REJECTED_OVERFLOW     = 3;
 
 // ----------------------------------------------------------------------------
 // Estruturas (espelhadas em src/engine — std430)
@@ -139,6 +160,16 @@ struct VisibleChunk {
     uint _padding[2];
 };
 
+// VS-03 (E1): um job de edição = 1 workgroup no flush (binding 13), 16 B.
+// As edições (binding 14) vêm agrupadas por chunk:
+// [first_edit, first_edit + edit_count) — índice GLOBAL no ring.
+struct EditChunkJob {
+    uint storage_slot_index;
+    uint first_edit;
+    uint edit_count; // <= MAX_EDITS_PER_CHUNK_PER_FLUSH
+    uint _padding;
+};
+
 // VS-02: empacota o item de trabalho de 32 bits da fila global (decodificado
 // pelo mesh shader; espelhado em tools/sim/render_sim.py).
 uint pack_work_item(uint visible_index, uint brick_index, uint part, uint subdivision) {
@@ -155,7 +186,7 @@ struct MeshVertex {
 [[vk::push_constant]] PushConstants push_constants;
 
 // ----------------------------------------------------------------------------
-// Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–16 = VS-03/VS-04)
+// Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–15 = VS-03; 16 = VS-04)
 // ----------------------------------------------------------------------------
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint>               temporary_dense_chunks;
 [[vk::binding(1, 0)]] StructuredBuffer<ChunkGenerationJob>   generation_jobs;
@@ -173,6 +204,13 @@ struct MeshVertex {
 [[vk::binding(10, 0)]] StructuredBuffer<MeshTemplate>        mesh_templates;
 [[vk::binding(11, 0)]] StructuredBuffer<float4>              template_vertices;
 [[vk::binding(12, 0)]] StructuredBuffer<uint>                template_triangles;
+// VS-03 (E1): rings de edição (2 slots de frame; edit_job_offset nos push
+// constants seleciona o slot deste frame). Edição packed em u32:
+// voxel_index (15 bits) | block_id<<16. Resultados lidos pela CPU 2 frames
+// depois (ring host-coerente).
+[[vk::binding(13, 0)]] StructuredBuffer<EditChunkJob>        edit_jobs;
+[[vk::binding(14, 0)]] StructuredBuffer<uint>                voxel_edits;
+[[vk::binding(15, 0)]] RWStructuredBuffer<uint>              edit_results;
 // VS-02 (correção): fila de trabalho global — builder compute anexa itens e
 // o draw mesh-only indireto consome. Ring de 2 slots derivado do
 // visible_chunk_offset (sem novos push constants).
@@ -325,4 +363,19 @@ uint read_block_identifier(uint slot, ChunkHeader header, int3 coord) {
         palette_index |= ((plane_word >> bit_idx) & 1u) << plane;
     }
     return header.palette[min(palette_index, max(header.palette_size, 1u) - 1u)];
+}
+
+// VS-03 (E1): índice de paleta de um voxel lendo apenas os planos (sem o
+// header). plane_count é parâmetro explícito porque a edição cresce os
+// planos no meio do flush — chamadores usam sempre a contagem JÁ atualizada
+// (planos novos chegam zerados, então bits altos não mudam índices antigos).
+uint read_palette_index_at(uint slot, uint plane_count, int3 coord) {
+    uint brick_idx = brick_index_from_coordinate(coord / BRICK_SIZE);
+    uint bit_idx = bit_index_from_local_coordinate(coord % BRICK_SIZE);
+    uint palette_index = 0;
+    for (uint plane = 0; plane < plane_count; plane++) {
+        uint plane_word = material_plane_pool[slot * MATERIAL_WORDS_PER_CHUNK + plane * BRICKS_PER_CHUNK + brick_idx];
+        palette_index |= ((plane_word >> bit_idx) & 1u) << plane;
+    }
+    return palette_index;
 }

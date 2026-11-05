@@ -51,7 +51,7 @@ main :: proc() {
 
 	voxel_engine := engine.ve_init()
 	defer engine.ve_destroy(voxel_engine)
-	camera = camera_create(glm.vec3{32, 5, 32}, glm.vec3{0, -90, 0}, 45.0)
+	camera = camera_create(glm.vec3{32, 75, 60}, glm.vec3{-50, -90, 0}, 45.0)
 	projection := glm.mat4Perspective(
 		glm.radians(camera.fov),
 		f32(engine.app.presentation.width) / f32(engine.app.presentation.height),
@@ -95,7 +95,7 @@ main :: proc() {
 
 			sensitivity: f32 = 0.07
 			// A struct Camera define rotation como x: pitch, y: yaw, z: roll
-			delta_rotation := glm.vec3{-yoffset * sensitivity, xoffset * sensitivity, 0}
+			delta_rotation := glm.vec3{yoffset * sensitivity, xoffset * sensitivity, 0}
 
 			camera_rotate(&camera, delta_rotation)
 		},
@@ -113,9 +113,38 @@ main :: proc() {
 		update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
 
 		engine.ve_update(voxel_engine, camera.position)
-		if engine.app.tick == 120 {
+		if engine.app.tick == 299 || engine.app.tick == 305 {
+			// TEMPORÁRIO (diagnóstico VS-03): decodifica voxels do cenário
+			// roteirizado antes (299) e depois (305) do flush do tick 300 —
+			// mundo (30,35,30) está dentro da caixa esculpida; (31,53,31) e
+			// (33,55,33) dentro do bloco de pedra flutuante.
+			locals_c010 := [][3]i32{{30, 3, 30}, {31, 21, 31}}
+			engine.debug_readback_decode_voxels(voxel_engine, {0, 1, 0}, locals_c010, "cenario-c010")
+			locals_c111 := [][3]i32{{1, 23, 1}}
+			engine.debug_readback_decode_voxels(voxel_engine, {1, 1, 1}, locals_c111, "cenario-c111")
+		}
+		if engine.app.tick == 300 {
+			// VS-03 AC-01 (debug): esculpe um cubo de ar cortando a superfície
+			// do terreno de ruído (altura 32..47) e ergue um bloco de pedra
+			// flutuante acima dele, com flush forçado — a geometria do mesmo
+			// frame já reflete a edição.
+			engine.ve_request_voxel_edits_in_box(voxel_engine, {26, 28, 26}, {38, 44, 38}, 0)
+			engine.ve_request_voxel_edits_in_box(voxel_engine, {30, 52, 30}, {33, 55, 33}, 3)
+			voxel_engine.edit.force_next_flush = true
+		}
+		if engine.app.tick == 310 {
+			engine.edit_log_stats(voxel_engine, "DEBUG EDIT (pós-flush):")
+		}
+		if engine.edit_flush_due(voxel_engine) {
+			// VS-03 (E1): monta o staging do flush (drena pendências, agrupa
+			// por chunk, tetos) antes da espera de frames em voo.
+			engine.flush_voxel_edits(voxel_engine)
+		}
+		if engine.app.tick == 240 {
 			// AC-01: readback de debug — decodifica um chunk real e compara
-			// com a verdade do worldgen (uma única vez).
+			// com a verdade do worldgen (uma única vez). Tick 240: o streaming
+			// já concluiu — no tick 120 a worker podia estar usando o command
+			// buffer de compute compartilhado (corrida do harness de debug).
 			engine.debug_readback_validate(voxel_engine)
 		}
 
@@ -135,6 +164,9 @@ main :: proc() {
 		// VS-02: reconstrói os visíveis desta posição do ring (o slot já foi
 		// liberado pela espera da timeline gráfica acima).
 		visible_count := engine.ve_publish_visible(voxel_engine, engine.app.frameIndex)
+		// VS-03 (E1): colhe o feedback do slot do ring (2 frames atrás) e
+		// copia o staging do flush para o ring deste frame.
+		edit_job_count := engine.edit_ring_write(voxel_engine, engine.app.frameIndex)
 		if engine.app.tick == 240 {
 			// VS-02 AC-04: evidência de que o draw está emitindo trabalho.
 			log.infof(
@@ -218,7 +250,7 @@ main :: proc() {
 		
 		// VS-02 (correção): builder da fila de trabalho roda na fila gráfica ANTES
 	// do render pass — o draw indireto consome os resultados via barreiras.
-	engine.voxel_render_prepare(cmd, vp, camera.position, visible_count, engine.app.frameIndex)
+	engine.voxel_render_prepare(cmd, vp, camera.position, visible_count, engine.app.frameIndex, edit_job_count)
 
 	vk.CmdBeginRendering(cmd, &rendering_info)
 
