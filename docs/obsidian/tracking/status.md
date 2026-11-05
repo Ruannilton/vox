@@ -9,13 +9,13 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Indicador | Quantidade |
 | --- | ---: |
 | Specs registradas | 5 |
-| Specs aprovadas | 4 |
+| Specs aprovadas | 5 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
 | Implementações concluídas | 4 |
 | Validações verificadas | 4 |
 
-Três documentos estão registrados; VS-00, VS-01, VS-02 e VS-03 estão integralmente concluídas; VS-04 permanece em `rascunho`.
+Cinco especificações registradas; VS-00, VS-01, VS-02 e VS-03 estão integralmente concluídas; VS-04 está aprovada para implementação.
 
 ## Tracking das especificações
 
@@ -25,7 +25,7 @@ Três documentos estão registrados; VS-00, VS-01, VS-02 e VS-03 estão integral
 | VS-01 | [[VS-01-streaming-generate-pack|Streaming, generate e pack]] | `aprovada` | `concluida` | `verificada` | VS-00 | — |
 | VS-02 | [[VS-02-task-mesh-templates|Task/mesh e templates]] | `aprovada` | `concluida` | `verificada` | VS-01 | — |
 | VS-03 | [[VS-03-edicao-e1|Edição E1]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
-| VS-04 | [[VS-04-mirror-c2|Mirror C2]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-03 | — |
+| VS-04 | [[VS-04-mirror-c2|Mirror C2]] | `aprovada` | `nao-iniciada` | `nao-iniciada` | VS-03 | — |
 
 ## Decisões
 
