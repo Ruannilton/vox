@@ -113,74 +113,7 @@ main :: proc() {
 		update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
 
 		engine.ve_update(voxel_engine, camera.position)
-		if engine.app.tick == 299 || engine.app.tick == 305 {
-			// TEMPORÁRIO (diagnóstico VS-03): decodifica voxels do cenário
-			// roteirizado antes (299) e depois (305) do flush do tick 300 —
-			// mundo (30,35,30) está dentro da caixa esculpida; (31,53,31) e
-			// (33,55,33) dentro do bloco de pedra flutuante.
-			locals_c010 := [][3]i32{{30, 3, 30}, {31, 21, 31}}
-			engine.debug_readback_decode_voxels(voxel_engine, {0, 1, 0}, locals_c010, "cenario-c010")
-			locals_c111 := [][3]i32{{1, 23, 1}}
-			engine.debug_readback_decode_voxels(voxel_engine, {1, 1, 1}, locals_c111, "cenario-c111")
-		}
-		if engine.app.tick == 300 {
-			// VS-03 AC-01 (debug): esculpe um cubo de ar cortando a superfície
-			// do terreno de ruído (altura 32..47) e ergue um bloco de pedra
-			// flutuante acima dele, com flush forçado — a geometria do mesmo
-			// frame já reflete a edição.
-			engine.ve_request_voxel_edits_in_box(voxel_engine, {26, 28, 26}, {38, 44, 38}, 0)
-			engine.ve_request_voxel_edits_in_box(voxel_engine, {30, 52, 30}, {33, 55, 33}, 3)
-			voxel_engine.edit.force_next_flush = true
-		}
-		if engine.app.tick == 310 {
-			engine.edit_log_stats(voxel_engine, "DEBUG EDIT (pós-flush):")
-		}
-		if engine.app.tick == 5 {
-			// VS-04 AC-05 (debug): consulta antes da materialização — esperado
-			// ok=false (página PENDING/ausente), nunca bloco inventado.
-			_, ok_early := engine.voxel_get(voxel_engine, {30, 35, 30})
-			log.infof("DEBUG MIRROR (early): voxel_get((30,35,30)) ok={} (esperado: false)", ok_early)
-		}
-		if engine.app.tick == 305 {
-			// VS-04 AC-04/AC-05 (debug): evidências do mirror após a
-			// materialização e o flush roteirizado do tick 300 (VS-03).
-			engine.mirror_log_stats(voxel_engine, "DEBUG MIRROR:")
-			sample_air, ok_air := engine.voxel_get(voxel_engine, {30, 35, 30})
-			log.infof(
-				"DEBUG MIRROR: voxel (30,35,30) [caixa esculpida] -> id={} solid={} ok={} (esperado: ar)",
-				sample_air.block_id,
-				sample_air.solid,
-				ok_air,
-			)
-			sample_pillar, ok_pillar := engine.voxel_get(voxel_engine, {31, 53, 31})
-			log.infof(
-				"DEBUG MIRROR: voxel (31,53,31) [pilar] -> id={} solid={} ok={} (esperado: 3=pedra)",
-				sample_pillar.block_id,
-				sample_pillar.solid,
-				ok_pillar,
-			)
-			_, ok_far := engine.voxel_get(voxel_engine, {9999, 10, 9999})
-			log.infof("DEBUG MIRROR: voxel (9999,10,9999) [fora da bolha] -> ok={} (esperado: false)", ok_far)
-			ground, ok_ground := engine.mirror_column_ground(voxel_engine, 32, 32, 70)
-			log.infof("DEBUG MIRROR: column_ground(32,32) de y=70 -> y={} ok={}", ground, ok_ground)
-			engine.debug_mirror_parity(voxel_engine, {0, 1, 0})
-			engine.debug_mirror_parity(voxel_engine, {1, 1, 1})
-		}
-		if engine.app.tick == 600 {
-			engine.mirror_log_stats(voxel_engine, "DEBUG MIRROR (tick 600):")
-		}
-		if engine.edit_flush_due(voxel_engine) {
-			// VS-03 (E1): monta o staging do flush (drena pendências, agrupa
-			// por chunk, tetos) antes da espera de frames em voo.
-			engine.flush_voxel_edits(voxel_engine)
-		}
-		if engine.app.tick == 240 {
-			// AC-01: readback de debug — decodifica um chunk real e compara
-			// com a verdade do worldgen (uma única vez). Tick 240: o streaming
-			// já concluiu — no tick 120 a worker podia estar usando o command
-			// buffer de compute compartilhado (corrida do harness de debug).
-			engine.debug_readback_validate(voxel_engine)
-		}
+		
 
 		signal_value := engine.WaitTimelineSemaphore()
 		view := camera_view(&camera)
@@ -201,14 +134,7 @@ main :: proc() {
 		// VS-03 (E1): colhe o feedback do slot do ring (2 frames atrás) e
 		// copia o staging do flush para o ring deste frame.
 		edit_job_count := engine.edit_ring_write(voxel_engine, engine.app.frameIndex)
-		if engine.app.tick == 240 {
-			// VS-02 AC-04: evidência de que o draw está emitindo trabalho.
-			log.infof(
-				"DEBUG RENDER: {} chunks visíveis, timeline de compute em {}",
-				visible_count,
-				voxel_engine.highest_completed_compute_value,
-			)
-		}
+		
 
 
 		vk_check(vk.ResetCommandPool(engine.app.vkDevice, frame_resource.vkCommandPool, {}))
