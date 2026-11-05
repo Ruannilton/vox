@@ -87,6 +87,13 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		}
 
 		ring_index := int(submitted_batch_count % MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT)
+
+		// VS-05 (REQ-PROF-02): o pool deste slot foi usado pelo lote de 3
+		// posições atrás (já concluído pelo backpressure acima) — colhe antes
+		// de regravar.
+		if submitted_batch_count >= MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT {
+			telemetry_collect_compute(ring_index)
+		}
 		job_offset := ring_index * MAXIMUM_CHUNKS_PER_BATCH
 
 		for i in 0 ..< claimed_batch.task_count {
@@ -135,8 +142,14 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 
 		// B4/B9: generate cobre N chunks (thread_id.z / 32 = job local);
 		// pack cobre N chunks (group_id.x = job local).
+		compute_pool := telemetry.compute_pools[ring_index]
+		telemetry_reset_pool(cmd, compute_pool, TELEMETRY_COMPUTE_QUERY_COUNT)
+		telemetry_timestamp_begin(cmd, compute_pool, 0)
+		telemetry_begin_label(cmd, "generate")
 		vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.generation_pipeline)
 		vk.CmdDispatch(cmd, 4, 4, 4 * u32(claimed_batch.task_count))
+		telemetry_end_label(cmd)
+		telemetry_timestamp_end(cmd, compute_pool, 1)
 
 		// C2 (VS-04): lote export_only (re-export do mirror) NÃO roda o pack —
 		// o packed já existe e contém edições; repackar a partir do scratch
@@ -158,7 +171,11 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		)
 
 		vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.packing_pipeline)
+		telemetry_timestamp_begin(cmd, compute_pool, 2)
+		telemetry_begin_label(cmd, "pack")
 		vk.CmdDispatch(cmd, u32(claimed_batch.task_count), 1, 1)
+		telemetry_end_label(cmd)
+		telemetry_timestamp_end(cmd, compute_pool, 3)
 		}
 
 		vk_check(vk.EndCommandBuffer(cmd))

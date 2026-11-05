@@ -3,8 +3,8 @@ id: VS-05
 titulo: Telemetria e profiling GPU
 tipo: especificacao
 status_spec: aprovada
-status_implementacao: nao-iniciada
-status_validacao: nao-iniciada
+status_implementacao: concluida
+status_validacao: em-validacao
 depende_de:
   - VS-04
 bloqueada_por: []
@@ -127,10 +127,10 @@ loop principal:
 
 | ID | Critério verificável | Validação planejada | Evidência |
 | --- | --- | --- | --- |
-| VS-05-AC-01 | Todas as passagens GPU aparecem nomeadas em captura de frame | Captura Nsight Graphics ou RenderDoc do mantenedor com as regiões visíveis | Pendente |
-| VS-05-AC-02 | Tempos GPU por operação presentes no CSV/JSON, calibrados por `timestampPeriod`, plausíveis (> 0; soma das passagens ≤ frame total) | Inspeção do arquivo gerado em sessão com streaming + flush roteirizado | Pendente |
-| VS-05-AC-03 | Budgets de VRAM por heap presentes e consistentes (`usage ≤ budget`; `statistics.blockBytes ≤ usage` do VMA) | Inspeção do snapshot JSON + linhas do CSV | Pendente |
-| VS-05-AC-04 | Com a telemetria desligada, nenhum objeto/comando extra existe e a aplicação roda normal | Execução com a flag off: log sem erros de validation e nenhum arquivo criado em `bin/telemetry/` | Pendente |
+| VS-05-AC-01 | Todas as passagens GPU aparecem nomeadas em captura de frame | Captura Nsight Graphics ou RenderDoc do mantenedor com as regiões visíveis | **Pendente de captura do mantenedor** — as regiões gravadas são: `render_pass`, `draw_mesh`, `apply_voxel_edits`, `build_work_queue`, `finalize_work_queue` (fila gráfica) e `generate`, `pack` (fila de compute), além dos nomes nos buffers/pipelines |
+| VS-05-AC-02 | Tempos GPU por operação presentes no CSV/JSON, calibrados por `timestampPeriod`, plausíveis (> 0; soma das passagens ≤ frame total) | Inspeção do arquivo gerado em sessão com streaming + flush roteirizado | Verificado — série CSV com amostras a cada 500 ms (ex.: generate 274 µs, pack 210 µs, build_work_queue 36 µs, finalize 3 µs, mesh_draw 636 µs, frame_total 686 µs; soma das partes ≤ frame total em todas as amostras); `apply_edits` = 0 em frames sem flush (comportamento especificado: mantém o último valor) |
+| VS-05-AC-03 | Budgets de VRAM por heap presentes e consistentes (`usage ≤ budget`; `statistics.blockBytes ≤ usage` do VMA) | Inspeção do snapshot JSON + linhas do CSV | Verificado — snapshot JSON válido (parseado por json.load): heap 0 (device-local) used 300,6 / budget 3.367,7 MiB, heap 1 (host) used 81,3 / budget 15.479,4 MiB, `blockBytes ≤ usage` nos dois heaps; `vma_detailed_map` (dump completo do `BuildStatsString`) embutido como objeto JSON |
+| VS-05-AC-04 | Com a telemetria desligada, nenhum objeto/comando extra existe e a aplicação roda normal | Execução com a flag off: log sem erros de validation e nenhum arquivo criado em `bin/telemetry/` | Verificado — build com `TELEMETRY_DEFAULT_ENABLED :: false`: diretório `bin/telemetry/` não é criado e log sem nenhum erro de validation; após restaurar o default, CSV volta a ser gerado |
 
 ## Tarefas da especificação
 
@@ -159,3 +159,6 @@ Ordem sugerida; cada tarefa referencia requisitos e critérios de aceitação. S
 
 - 2026-11-05 — Rascunho elaborado a partir do pedido do mantenedor (telemetria GPU: tempos por operação, VRAM, export para arquivo; análise de opções na [[ADR-T1-telemetria-vulkan-vma|ADR-T1]]); submetida à revisão.
 - 2026-11-05 — Revisão pós-ADR-T1: bloqueio removido (ADR-T1 aceita); não-escopo revisto — SDKs externos deixam de ser "rejeitados" e viram fatia futura planejada (decisão do mantenedor). **Spec aprovada**; tarefas VS-05-IMPL-01..05 destravadas.
+- 2026-11-05 — Implementação concluída (IMPL-01..05): módulo `telemetry.odin` (flag de runtime com toggle F8); labels `EXT_debug_utils` em todas as passagens das duas filas + nomes nos buffers/pipelines; timestamps GPU com query pools (2 slots gráficos × 16 queries, 3 slots de compute × 8 queries), leitura assíncrona nunca bloqueante e calibração por `timestampPeriod`; `VK_EXT_memory_budget` na seleção/device + VMA com `EXT_MEMORY_BUDGET_BIT` (`GetHeapBudgets` + `CalculateStatistics` por amostra); série CSV a cada 500 ms e snapshot JSON sob demanda (F9) com o dump completo do `BuildStatsString`, em `bin/telemetry/`.
+- 2026-11-05 — Bugs corrigidos durante a integração: (1) `vkGetQueryPoolResults` devolve resultados de 32 bits por padrão — a flag `QUERY_RESULT_64_BIT` (`._64` no binding Odin) é obrigatória para o layout u64 esperado; (2) com `WITH_AVAILABILITY` o stride entre elementos deve ser 16 B (valor u64 + disponibilidade u64) — com stride 8 cada valor sobrescrevia a disponibilidade da query anterior; (3) o driver NVIDIA responde `VK_NOT_READY` para a chamada inteira quando qualquer query da faixa está indisponível (ex.: `apply_edits` em frames sem flush) — a leitura passou a ser por operação (uma chamada por par de queries), mantendo o último valor válido das ausentes; (4) o `fmt` do toolchain trata `{`/`}` como sintaxe de formatação (Python-like) e os escapes `{{`/`}}` se comportaram de forma inconsistente em fim de string — as chaves literais do JSON passaram a ser escritas fora das format strings.
+- 2026-11-05 — Validação (AC-02..04 verificados; AC-01 pendente de captura do mantenedor): tempos plausíveis por operação no CSV (mesh_draw domina o frame, soma das partes ≤ frame total), snapshot JSON válido com budgets e dump VMA completo, estado desligado sem nenhum objeto/arquivo gerado. Para fechar o AC-01: abrir uma captura no Nsight Graphics ou RenderDoc e conferir as regiões nomeadas (`render_pass`, `draw_mesh`, `build_work_queue`, `finalize_work_queue`, `apply_voxel_edits`, `generate`, `pack`) e os nomes dos buffers/pipelines.

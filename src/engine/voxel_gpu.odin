@@ -671,6 +671,25 @@ voxel_gpu_init :: proc() {
 	}
 	vk.UpdateDescriptorSets(app.vkDevice, u32(write_count), raw_data(&writes), 0, nil)
 
+	// VS-05 (REQ-PROF-01): nomes dos objetos-chave para as capturas
+	// Nsight/RenderDoc (no-op quando a telemetria está desligada).
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.scratch.handle, .BUFFER, "scratch_dense")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.occupancy_pool.handle, .BUFFER, "occupancy_pool")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.material_plane_pool.handle, .BUFFER, "material_plane_pool")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.chunk_headers.handle, .BUFFER, "chunk_headers")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.visible_chunks.handle, .BUFFER, "visible_chunks")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.work_queue.handle, .BUFFER, "work_queue")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_jobs.handle, .BUFFER, "edit_jobs")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.voxel_edits.handle, .BUFFER, "voxel_edits")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_results.handle, .BUFFER, "edit_results")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.mirror_export_ring.handle, .BUFFER, "mirror_export_ring")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.generation_pipeline, .PIPELINE, "pipeline_generate")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.packing_pipeline, .PIPELINE, "pipeline_pack")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_pipeline, .PIPELINE, "pipeline_apply_voxel_edits")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.build_work_queue_pipeline, .PIPELINE, "pipeline_build_work_queue")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.finalize_work_queue_pipeline, .PIPELINE, "pipeline_finalize_work_queue")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.mesh_pipeline, .PIPELINE, "pipeline_mesh_draw")
+
 	log.info("Recursos GPU do voxel engine inicializados")
 }
 

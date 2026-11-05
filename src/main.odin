@@ -56,6 +56,16 @@ main :: proc() {
 				glfw.SetWindowShouldClose(engine.app.glfwWindow, true)
 				return
 			}
+			if key == glfw.KEY_F8 && action == glfw.PRESS {
+				// VS-05 (REQ-PROF-05): liga/desliga a telemetria em runtime.
+				engine.telemetry_toggle()
+				return
+			}
+			if key == glfw.KEY_F9 && action == glfw.PRESS {
+				// VS-05 (REQ-PROF-04): snapshot JSON de telemetria sob demanda.
+				engine.telemetry_snapshot()
+				return
+			}
 		},
 	)
 
@@ -85,12 +95,16 @@ main :: proc() {
 		glfw.PollEvents()
 
 		engine.Update()
+		engine.telemetry_service() // VS-05 (REQ-PROF-04): amostra CSV por intervalo
 		update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
 
 		engine.ve_update(voxel_engine, camera.position)
 
 
 		signal_value := engine.WaitTimelineSemaphore()
+		// VS-05 (REQ-PROF-02): o pool deste slot foi usado 2 frames atrás e já
+		// concluiu (a espera acima); colhe os tempos antes de regravar.
+		engine.telemetry_collect_graphics(engine.app.frameIndex)
 		view := camera_view(&camera)
 		vp := GL_TO_VK_CLIP * projection * view
 
@@ -119,6 +133,12 @@ main :: proc() {
 		}
 		cmd := frame_resource.vkCommandBuffer
 		vk_check(vk.BeginCommandBuffer(cmd, &begin_command_info))
+
+		// VS-05 (REQ-PROF-02): frame total gráfico — pool do slot resetado e
+		// timestamps de início/fim abrangendo todo o command buffer.
+		gfx_pool := engine.telemetry.gfx_pools[engine.app.frameIndex]
+		engine.telemetry_reset_pool(cmd, gfx_pool, engine.TELEMETRY_GFX_QUERY_COUNT)
+		engine.telemetry_timestamp_begin(cmd, gfx_pool, 0)
 
 		transition_rendering_barrier := [2]vk.ImageMemoryBarrier2 {
 			{
@@ -192,9 +212,11 @@ main :: proc() {
 		)
 
 		vk.CmdBeginRendering(cmd, &rendering_info)
+		engine.telemetry_begin_label(cmd, "render_pass")
 
 		engine.voxel_render_record(cmd, vp, camera.position, visible_count, engine.app.frameIndex)
 
+		engine.telemetry_end_label(cmd)
 		vk.CmdEndRendering(cmd)
 
 		transition_present_barrier := vk.ImageMemoryBarrier2 {
@@ -216,6 +238,7 @@ main :: proc() {
 				pImageMemoryBarriers = &transition_present_barrier,
 			},
 		)
+		engine.telemetry_timestamp_end(cmd, gfx_pool, 1)
 		vk_check(vk.EndCommandBuffer(cmd))
 
 

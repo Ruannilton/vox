@@ -83,6 +83,7 @@ CreateEngine :: proc(widht: u32 = 800, height: u32 = 600) {
 	create_sync_objects()
 	create_frame_data()
 	create_descriptor_layouts()
+	telemetry_init()
 	log.info("Engine created successfully")
 }
 
@@ -90,6 +91,7 @@ CreateEngine :: proc(widht: u32 = 800, height: u32 = 600) {
 // destruição na ordem inversa da criação.
 DestroyEngine :: proc() {
 	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+	telemetry_destroy()
 	destroy_descriptor_layouts()
 	destroy_frame_data()
 	destroy_sync_objects()

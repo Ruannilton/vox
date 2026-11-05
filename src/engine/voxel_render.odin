@@ -124,8 +124,13 @@ voxel_render_prepare :: proc(
 	// VS-03 (E1): aplica as edições do flush antes de qualquer leitura da
 	// ocupação/planos neste frame.
 	if edit_job_count > 0 {
+		gfx_pool := telemetry.gfx_pools[frame_index]
+		telemetry_timestamp_begin(cmd, gfx_pool, 2)
+		telemetry_begin_label(cmd, "apply_voxel_edits")
 		vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.edit_pipeline)
 		vk.CmdDispatch(cmd, edit_job_count, 1, 1)
+		telemetry_end_label(cmd)
+		telemetry_timestamp_end(cmd, gfx_pool, 3)
 
 		edit_barrier := vk.MemoryBarrier2 {
 			sType         = .MEMORY_BARRIER_2,
@@ -168,8 +173,12 @@ voxel_render_prepare :: proc(
 		},
 	)
 
+	telemetry_timestamp_begin(cmd, telemetry.gfx_pools[frame_index], 4)
+	telemetry_begin_label(cmd, "build_work_queue")
 	vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.build_work_queue_pipeline)
 	vk.CmdDispatch(cmd, visible_count, 1, 1)
+	telemetry_end_label(cmd)
+	telemetry_timestamp_end(cmd, telemetry.gfx_pools[frame_index], 5)
 
 	// builder → finalize: o append_count escrito pelo builder precisa estar
 	// visível para a leitura do finalize.
@@ -192,8 +201,12 @@ voxel_render_prepare :: proc(
 		},
 	)
 
+	telemetry_timestamp_begin(cmd, telemetry.gfx_pools[frame_index], 6)
+	telemetry_begin_label(cmd, "finalize_work_queue")
 	vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.finalize_work_queue_pipeline)
 	vk.CmdDispatch(cmd, 1, 1, 1)
+	telemetry_end_label(cmd)
+	telemetry_timestamp_end(cmd, telemetry.gfx_pools[frame_index], 7)
 
 	// finalize/builder → draw: o estado (x,y,z) vira INDIRECT_COMMAND_READ e
 	// os itens viram SHADER_READ no estágio mesh.
@@ -257,6 +270,8 @@ voxel_render_record :: proc(
 		&push_constants,
 	)
 	state_offset := vk.DeviceSize(frame_index * WORK_QUEUE_SLOT_WORDS * size_of(u32))
+	telemetry_timestamp_begin(cmd, telemetry.gfx_pools[frame_index], 8)
+	telemetry_begin_label(cmd, "draw_mesh")
 	vk.CmdDrawMeshTasksIndirectEXT(
 		cmd,
 		voxel_gpu.work_queue.handle,
@@ -264,4 +279,6 @@ voxel_render_record :: proc(
 		1,  // um único comando (x = contagem de itens, com clamp do finalize)
 		12, // stride = size_of(VkDrawMeshTasksIndirectCommandEXT) = 3 u32
 	)
+	telemetry_end_label(cmd)
+	telemetry_timestamp_end(cmd, telemetry.gfx_pools[frame_index], 9)
 }

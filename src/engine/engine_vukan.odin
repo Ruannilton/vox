@@ -135,6 +135,7 @@ REQUIRED_DEVICE_EXTENSIONS :: []cstring {
 	vk.KHR_SWAPCHAIN_EXTENSION_NAME,
 	vk.EXT_MESH_SHADER_EXTENSION_NAME,
 	vk.EXT_SHADER_OBJECT_EXTENSION_NAME,
+	vk.EXT_MEMORY_BUDGET_EXTENSION_NAME, // VS-05 (REQ-PROF-03): budgets reais de VRAM
 }
 
 // Cadeia completa de features consultada (REQ-FND-DEV-01) e habilitada (REQ-FND-DEV-03).
@@ -273,7 +274,8 @@ create_vulkan_device :: proc() {
 		vk.KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
 		vk.EXT_MESH_SHADER_EXTENSION_NAME,
 		vk.KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME,
-		vk.KHR_SPIRV_1_4_EXTENSION_NAME
+		vk.KHR_SPIRV_1_4_EXTENSION_NAME,
+		vk.EXT_MEMORY_BUDGET_EXTENSION_NAME, // VS-05 (REQ-PROF-03)
 	}
 
 	enabled_features: DeviceFeatureChain
@@ -377,7 +379,7 @@ create_vma_allocator :: proc() {
 	log.info("Creating VMA allocator")
 	vma_functions := vma.create_vulkan_functions()
 	allocator_create_info := vma.AllocatorCreateInfo {
-		flags            = {},
+		flags            = {.EXT_MEMORY_BUDGET}, // VS-05 (REQ-PROF-03): budgets reais no GetHeapBudgets
 		physicalDevice   = app.vkPhysicalDevice,
 		device           = app.vkDevice,
 		instance         = app.vkInstance,

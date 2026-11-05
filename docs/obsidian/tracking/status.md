@@ -12,10 +12,10 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Specs aprovadas | 6 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 5 |
+| Implementações concluídas | 6 |
 | Validações verificadas | 5 |
 
-Seis especificações registradas; VS-00 a VS-04 estão integralmente concluídas; VS-05 está aprovada para implementação.
+Seis especificações registradas; VS-00 a VS-04 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor).
 
 ## Tracking das especificações
 
@@ -26,7 +26,7 @@ Seis especificações registradas; VS-00 a VS-04 estão integralmente concluída
 | VS-02 | [[VS-02-task-mesh-templates|Task/mesh e templates]] | `aprovada` | `concluida` | `verificada` | VS-01 | — |
 | VS-03 | [[VS-03-edicao-e1|Edição E1]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
 | VS-04 | [[VS-04-mirror-c2|Mirror C2]] | `aprovada` | `concluida` | `verificada` | VS-03 | — |
-| VS-05 | [[VS-05-telemetria-profiling|Telemetria e profiling GPU]] | `aprovada` | `nao-iniciada` | `nao-iniciada` | VS-04 | — |
+| VS-05 | [[VS-05-telemetria-profiling|Telemetria e profiling GPU]] | `aprovada` | `concluida` | `em-validacao` | VS-04 | — |
 
 ## Decisões
 
