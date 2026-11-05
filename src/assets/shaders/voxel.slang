@@ -4,6 +4,7 @@
 // Simulação bit-a-bit do pack: tools/sim/pack_sim.py (959 checks).
 // ============================================================================
 import common;
+#include "./lib/FastNoiseLite.slang"
 
 // ----------------------------------------------------------------------------
 // ESTÁGIO 1: GENERATE — scratch denso (1 u32 por voxel)
@@ -20,13 +21,31 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID) {
     int3 coord = int3(int(thread_id.x), int(thread_id.y), int(local_z));
     int3 voxel_world_position = job.chunk_world_origin + coord;
 
+    fnl_state fnl1;
+    fnl1 = fnlCreateState();
+    fnl1.frequency = 0.02;
+    fnl1.noise_type = FNL_NOISE_OPENSIMPLEX2;
+
+    fnl_state fnl2;
+    fnl2 = fnlCreateState();
+    fnl2.frequency = 0.07;
+    fnl2.noise_type = FNL_NOISE_PERLIN;
+
+
+
+    uint height1 = uint(fnlGetNoise2D(fnl1,voxel_world_position.x, voxel_world_position.z) * 10);
+    uint height2 = uint(fnlGetNoise2D(fnl2,voxel_world_position.z, voxel_world_position.x) * 5);
+    uint height = 32 + height1 + height2;
+
     // Worldgen da referência (determinístico).
     uint block_id = 0;
-    if (voxel_world_position.y < 0) {
+    if(voxel_world_position.y > height) {
+        block_id = 0; // ar
+    }else if (voxel_world_position.y < (height-8)) {
         block_id = 3; // pedra profunda
-    } else if (voxel_world_position.y == 0) {
+    } else if (voxel_world_position.y < height) {
         block_id = 2; // terra
-    } else if (voxel_world_position.y == 1) {
+    } else if (voxel_world_position.y == height) {
         block_id = 1; // grama
     }
 

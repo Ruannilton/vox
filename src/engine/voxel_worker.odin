@@ -173,11 +173,5 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 				{},
 			),
 		)
-		log.infof(
-			"Lote {} submetido: {} chunks (timeline de compute = {})",
-			submitted_batch_count,
-			claimed_batch.task_count,
-			assigned_timeline,
-		)
 	}
 }
