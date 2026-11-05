@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 5 |
-| Specs aprovadas | 5 |
+| Specs registradas | 6 |
+| Specs aprovadas | 6 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
 | Implementações concluídas | 5 |
 | Validações verificadas | 5 |
 
-Cinco especificações registradas; VS-00, VS-01, VS-02, VS-03 e VS-04 estão integralmente concluídas.
+Seis especificações registradas; VS-00 a VS-04 estão integralmente concluídas; VS-05 está aprovada para implementação.
 
 ## Tracking das especificações
 
@@ -26,6 +26,7 @@ Cinco especificações registradas; VS-00, VS-01, VS-02, VS-03 e VS-04 estão in
 | VS-02 | [[VS-02-task-mesh-templates|Task/mesh e templates]] | `aprovada` | `concluida` | `verificada` | VS-01 | — |
 | VS-03 | [[VS-03-edicao-e1|Edição E1]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
 | VS-04 | [[VS-04-mirror-c2|Mirror C2]] | `aprovada` | `concluida` | `verificada` | VS-03 | — |
+| VS-05 | [[VS-05-telemetria-profiling|Telemetria e profiling GPU]] | `aprovada` | `nao-iniciada` | `nao-iniciada` | VS-04 | — |
 
 ## Decisões
 
@@ -46,6 +47,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-E1 | [[ADR-E1-edicao-bufferizada|Edição bufferizada por journal]] | `aceita` | VS-03, VS-04 |
 | ADR-C2 | [[ADR-C2-mirror-cpu|Mirror CPU denso com export direto]] | `aceita` | VS-04 |
 | ADR-B10 | [[ADR-B10-fila-trabalho-global|Fila de trabalho global no lugar do payload]] | `aceita` | VS-02 |
+| ADR-T1 | [[ADR-T1-telemetria-vulkan-vma|Telemetria GPU via API Vulkan + VMA]] | `aceita` | VS-05 |
 
 ## Vocabulário de status
 

@@ -11,11 +11,13 @@ graph TD
     VS02[VS-02 — Task/mesh e templates]
     VS03[VS-03 — Edição E1]
     VS04[VS-04 — Mirror C2]
+    VS05[VS-05 — Telemetria e profiling GPU]
 
     VS00 --> VS01
     VS01 --> VS02
     VS02 --> VS03
     VS03 --> VS04
+    VS04 --> VS05
 ```
 
 ## Registro normativo
@@ -27,6 +29,7 @@ graph TD
 | [[VS-02-task-mesh-templates|VS-02]] | VS-01 | — | VS-03 |
 | [[VS-03-edicao-e1|VS-03]] | VS-02 | — | VS-04 |
 | [[VS-04-mirror-c2|VS-04]] | VS-03 | — | Consumidores futuros do mirror |
+| [[VS-05-telemetria-profiling|VS-05]] | VS-04 | — | — |
 
 ## Decisões incorporadas
 
