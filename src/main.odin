@@ -10,30 +10,6 @@ import vma "shared:vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-NUM_FRAMES_IN_FLIGHT :: 2
-NUM_SWAP_CHAIN_IMAGES :: NUM_FRAMES_IN_FLIGHT + 1
-
-
-Globals :: struct {
-	global_context:    runtime.Context,
-	window:            glfw.WindowHandle,
-	vkInstance:        vk.Instance,
-	vkDebugMessenger:  vk.DebugUtilsMessengerEXT,
-	vkSurface:         vk.SurfaceKHR,
-	vkPhysicalDevice:  vk.PhysicalDevice,
-	vkDevice:          vk.Device,
-	vkQueue:           vk.Queue,
-	vkFamilyIndex:     u32,
-	frameIndex:        u32,
-	vmaAllocator:      vma.Allocator,
-	triangleShader:    vk.ShaderModule,
-	pipelineLayout:    vk.PipelineLayout,
-	graphicsPipeline:  vk.Pipeline,
-	timelineSemaphore: vk.Semaphore,
-	nextSignalValue:   u64,
-	deltaTime:         f32,
-}
-
 last_x, last_y: f64
 camera: Camera
 main :: proc() {
@@ -51,6 +27,7 @@ main :: proc() {
 
 	voxel_engine := engine.ve_init()
 	defer engine.ve_destroy(voxel_engine)
+	
 	camera = camera_create(glm.vec3{32, 75, 60}, glm.vec3{-50, -90, 0}, 45.0)
 	projection := glm.mat4Perspective(
 		glm.radians(camera.fov),
@@ -75,7 +52,7 @@ main :: proc() {
 		proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
 			context = engine.app.runtimeContext
 
-			if key == glfw.KEY_ESCAPE && action == glfw.PRESS {
+			if key == glfw.KEY_ESCAPE {
 				glfw.SetWindowShouldClose(engine.app.glfwWindow, true)
 				return
 			}
@@ -101,8 +78,6 @@ main :: proc() {
 		},
 	)
 
-	//mesh_pipeline := engine.create_mesh_shader_pipeline()
-	//defer engine.destroy_mesh_shader_pipeline(&mesh_pipeline)
 
 	log.info("Starting main loop")
 	for !glfw.WindowShouldClose(engine.app.glfwWindow) {
@@ -113,7 +88,7 @@ main :: proc() {
 		update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
 
 		engine.ve_update(voxel_engine, camera.position)
-		
+
 
 		signal_value := engine.WaitTimelineSemaphore()
 		view := camera_view(&camera)
@@ -134,7 +109,6 @@ main :: proc() {
 		// VS-03 (E1): colhe o feedback do slot do ring (2 frames atrás) e
 		// copia o staging do flush para o ring deste frame.
 		edit_job_count := engine.edit_ring_write(voxel_engine, engine.app.frameIndex)
-		
 
 
 		vk_check(vk.ResetCommandPool(engine.app.vkDevice, frame_resource.vkCommandPool, {}))
@@ -206,13 +180,18 @@ main :: proc() {
 			pColorAttachments = &color_attachment,
 			pDepthAttachment = &depth_attachment,
 		}
-	//	engine.record_compute_shader_pipeline(&mesh_pipeline, cmd, vp)
-		
 		// VS-02 (correção): builder da fila de trabalho roda na fila gráfica ANTES
-	// do render pass — o draw indireto consome os resultados via barreiras.
-	engine.voxel_render_prepare(cmd, vp, camera.position, visible_count, engine.app.frameIndex, edit_job_count)
+		// do render pass — o draw indireto consome os resultados via barreiras.
+		engine.voxel_render_prepare(
+			cmd,
+			vp,
+			camera.position,
+			visible_count,
+			engine.app.frameIndex,
+			edit_job_count,
+		)
 
-	vk.CmdBeginRendering(cmd, &rendering_info)
+		vk.CmdBeginRendering(cmd, &rendering_info)
 
 		engine.voxel_render_record(cmd, vp, camera.position, visible_count, engine.app.frameIndex)
 
@@ -295,7 +274,7 @@ update_camera_movement :: proc(dt: f32) {
 	window := engine.app.glfwWindow
 
 	speed: f32 = 10.0 // unidades por segundo
-	if glfw.GetKey(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS do speed *= 4
+	if glfw.GetKey(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS do speed *= 8
 
 	forward, right: f32
 	if glfw.GetKey(window, glfw.KEY_W) == glfw.PRESS do forward += 1

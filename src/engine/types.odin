@@ -48,8 +48,3 @@ DepthBuffer :: struct {
 	vmaAllocation: vma.Allocation,
 	format:        vk.Format,
 }
-
-RenderSet :: struct {
-	pipelineLayout:   vk.PipelineLayout,
-	graphicsPipeline: vk.Pipeline,
-}

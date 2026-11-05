@@ -8,6 +8,7 @@ import "core:log"
 import "core:sync"
 import "core:thread"
 import vk "vendor:vulkan"
+import "core:time"
 
 @(private)
 wait_for_compute_timeline :: proc(target_value: u64) {
@@ -188,5 +189,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 				{},
 			),
 		)
+		
+		time.sleep(32 * time.Millisecond)
 	}
 }
