@@ -135,6 +135,40 @@ main :: proc() {
 		if engine.app.tick == 310 {
 			engine.edit_log_stats(voxel_engine, "DEBUG EDIT (pós-flush):")
 		}
+		if engine.app.tick == 5 {
+			// VS-04 AC-05 (debug): consulta antes da materialização — esperado
+			// ok=false (página PENDING/ausente), nunca bloco inventado.
+			_, ok_early := engine.voxel_get(voxel_engine, {30, 35, 30})
+			log.infof("DEBUG MIRROR (early): voxel_get((30,35,30)) ok={} (esperado: false)", ok_early)
+		}
+		if engine.app.tick == 305 {
+			// VS-04 AC-04/AC-05 (debug): evidências do mirror após a
+			// materialização e o flush roteirizado do tick 300 (VS-03).
+			engine.mirror_log_stats(voxel_engine, "DEBUG MIRROR:")
+			sample_air, ok_air := engine.voxel_get(voxel_engine, {30, 35, 30})
+			log.infof(
+				"DEBUG MIRROR: voxel (30,35,30) [caixa esculpida] -> id={} solid={} ok={} (esperado: ar)",
+				sample_air.block_id,
+				sample_air.solid,
+				ok_air,
+			)
+			sample_pillar, ok_pillar := engine.voxel_get(voxel_engine, {31, 53, 31})
+			log.infof(
+				"DEBUG MIRROR: voxel (31,53,31) [pilar] -> id={} solid={} ok={} (esperado: 3=pedra)",
+				sample_pillar.block_id,
+				sample_pillar.solid,
+				ok_pillar,
+			)
+			_, ok_far := engine.voxel_get(voxel_engine, {9999, 10, 9999})
+			log.infof("DEBUG MIRROR: voxel (9999,10,9999) [fora da bolha] -> ok={} (esperado: false)", ok_far)
+			ground, ok_ground := engine.mirror_column_ground(voxel_engine, 32, 32, 70)
+			log.infof("DEBUG MIRROR: column_ground(32,32) de y=70 -> y={} ok={}", ground, ok_ground)
+			engine.debug_mirror_parity(voxel_engine, {0, 1, 0})
+			engine.debug_mirror_parity(voxel_engine, {1, 1, 1})
+		}
+		if engine.app.tick == 600 {
+			engine.mirror_log_stats(voxel_engine, "DEBUG MIRROR (tick 600):")
+		}
 		if engine.edit_flush_due(voxel_engine) {
 			// VS-03 (E1): monta o staging do flush (drena pendências, agrupa
 			// por chunk, tetos) antes da espera de frames em voo.

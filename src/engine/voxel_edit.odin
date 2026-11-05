@@ -181,6 +181,11 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 		append(&bucket, pack_voxel_edit(voxel_index, request.block_id))
 		buckets[record.storage_slot_index] = bucket
 		total_staged += 1
+		// VS-04 (C2): a MESMA edição staged p/ a GPU alimenta o mirror (mesma
+		// ordem, mesmo dedup, mesmo teto — convergência por construção).
+		// Edições retidas (kept/pending) NÃO se aplicam aqui: passarão por
+		// este mesmo caminho no flush em que forem staged.
+		mirror_journal_apply(ve, chunk, request.world_voxel, request.block_id)
 	}
 
 	// 3. Emite os jobs com as edições contíguas (first_edit local do staging;
@@ -211,6 +216,44 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 			len(ve.edit.staged_edits),
 		)
 	}
+}
+
+// VS-04 (REQ-MIRROR-09): mapeia uma posição rejeitada do ring de resultados
+// de volta a (chunk, voxel, bloco) usando os rings de jobs/edições do mesmo
+// slot (intactos na colheita) e reconcilia a página do mirror.
+@(private)
+mirror_reconcile_ring_position :: proc(ve: ^VoxelEngine, frame_idx: int, counts: EditRingCounts, index: u32) {
+	// job que cobre a posição (edições contíguas por chunk)
+	job: EditChunkJob
+	found_job := false
+	for j in 0 ..< counts.job_count {
+		candidate := voxel_gpu.edit_jobs_mapped[frame_idx * MAX_EDIT_JOBS_PER_FLUSH + int(j)]
+		if index >= candidate.first_edit && index < candidate.first_edit + candidate.edit_count {
+			job, found_job = candidate, true
+			break
+		}
+	}
+	if !found_job do return
+
+	// slot -> coordenada do chunk (busca reversa; caminho raro de rejeição)
+	coord: ChunkCoordinate
+	found_coord := false
+	for c, record in ve.active_chunks {
+		if record.storage_slot_index == job.storage_slot_index {
+			coord, found_coord = c, true
+			break
+		}
+	}
+	if !found_coord do return
+
+	packed_edit := voxel_gpu.voxel_edits_mapped[frame_idx * MAX_EDITS_PER_FLUSH + int(index)]
+	voxel_index := packed_edit & 0x7FFF
+	world_voxel := [3]i32 {
+		coord.x * CHUNK_SIZE + i32(voxel_index & 31),
+		coord.y * CHUNK_SIZE + i32(voxel_index >> 10),
+		coord.z * CHUNK_SIZE + i32((voxel_index >> 5) & 31),
+	}
+	mirror_reconcile_rejection(ve, coord, VoxelEditRequest{world_voxel, packed_edit >> 16})
 }
 
 // Copia o staging para o slot do ring deste frame e colhe o feedback do uso
@@ -244,6 +287,11 @@ edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 				noop += 1
 			case:
 				rejected += 1
+				// VS-04 (REQ-MIRROR-09): o mirror aplicou otimisticamente —
+				// reconcilia a página mapeando a posição do ring de volta a
+				// (chunk, voxel, bloco). Os rings de jobs/edições do slot
+				// ainda estão intactos na colheita (só são regravados abaixo).
+				mirror_reconcile_ring_position(ve, frame_idx, previous, i)
 			}
 		}
 		log.infof(

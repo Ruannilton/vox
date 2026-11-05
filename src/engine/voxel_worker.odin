@@ -34,7 +34,8 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 
 	for {
 		sync.mutex_lock(&ve.queue_mutex)
-		for len(ve.pending_tasks) == 0 && sync.atomic_load(&ve.worker_stop_requested) == 0 {
+		for len(ve.pending_tasks) == 0 && len(ve.pending_export_tasks) == 0 &&
+		    sync.atomic_load(&ve.worker_stop_requested) == 0 {
 			sync.cond_wait(&ve.queue_condition, &ve.queue_mutex)
 		}
 		if sync.atomic_load(&ve.worker_stop_requested) == 1 {
@@ -45,6 +46,14 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		claimed_batch := SubmittedBatch {
 			compute_timeline_value = submitted_batch_count + 1,
 		}
+		// C2 (VS-04): re-exports do mirror embarcam 1 por lote, antes do dreno
+		// normal (são raros e não podem morrer de fome), e pulam o pack abaixo.
+		export_only := false
+		if len(ve.pending_export_tasks) > 0 {
+			claimed_batch.tasks[0] = pop(&ve.pending_export_tasks)
+			claimed_batch.task_count = 1
+			export_only = true
+		} else {
 		// B4: drena até 16 tarefas por lote, sempre as mais próximas da câmera
 		// (varredura linear nesta fatia — heap fica no backlog de performance).
 		for claimed_batch.task_count < MAXIMUM_CHUNKS_PER_BATCH && len(ve.pending_tasks) > 0 {
@@ -60,6 +69,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 			claimed_batch.tasks[claimed_batch.task_count] = ve.pending_tasks[best_idx]
 			claimed_batch.task_count += 1
 			unordered_remove(&ve.pending_tasks, best_idx)
+		}
 		}
 
 		// B1 — CLAIM ATÔMICO: o lote é publicado em submitted_batches ANTES de
@@ -83,7 +93,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 			voxel_gpu.generation_jobs_mapped[job_offset + i] = ChunkGenerationJob {
 				chunk_world_origin = task.coordinate * CHUNK_SIZE,
 				storage_slot_index = task.storage_slot_index,
-				mirror_ring_slot   = -1,
+				mirror_ring_slot   = task.mirror_ring_slot, // C2: -1 = sem export
 			}
 		}
 
@@ -127,6 +137,10 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.generation_pipeline)
 		vk.CmdDispatch(cmd, 4, 4, 4 * u32(claimed_batch.task_count))
 
+		// C2 (VS-04): lote export_only (re-export do mirror) NÃO roda o pack —
+		// o packed já existe e contém edições; repackar a partir do scratch
+		// (só worldgen) as apagaria. O ring já saiu escrito pelo generate.
+		if !export_only {
 		vk.CmdPipelineBarrier2(
 			cmd,
 			&vk.DependencyInfo {
@@ -144,6 +158,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 
 		vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.packing_pipeline)
 		vk.CmdDispatch(cmd, u32(claimed_batch.task_count), 1, 1)
+		}
 
 		vk_check(vk.EndCommandBuffer(cmd))
 

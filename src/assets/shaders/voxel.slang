@@ -50,6 +50,13 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID) {
     }
 
     temporary_dense_chunks[(push_constants.batch_job_offset + chunk_in_batch) * CHUNK_VOXEL_COUNT + dense_index_from_coordinate(coord)] = block_id;
+
+    // VS-04 (C2): saída secundária — export denso u16 y-contíguo p/ o mirror
+    // CPU-side, DIRETO no ring host-visible (a escrita É o readback). Só
+    // acontece quando o job traz um slot reservado (-1 = sem export).
+    if (job.mirror_ring_slot >= 0) {
+        mirror_export_ring[uint(job.mirror_ring_slot) * CHUNK_VOXEL_COUNT + mirror_index_from_coordinate(coord)] = uint16_t(block_id);
+    }
 }
 
 // ----------------------------------------------------------------------------

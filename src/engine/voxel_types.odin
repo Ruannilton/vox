@@ -147,6 +147,51 @@ pack_voxel_edit :: proc "contextless" (voxel_index: u32, block_id: u32) -> u32 {
 	return (voxel_index & 0x7FFF) | (block_id << 16)
 }
 
+// --- Mirror C2 (VS-04) ---
+// Bolha de simulação independente da bolha de render (ADR-C2).
+RADIUS_SIMULATION     :: 5
+MIRROR_RING_SLOTS     :: 64  // exports em voo: 64 × 64 KiB = 4 MiB host-visible
+MIRROR_PAGE_POOL_SIZE :: 768 // páginas fixas (~50 MiB; bolha ~523 chunks + folga)
+
+MirrorPageState :: enum u8 {
+	PENDING_READBACK, // export em voo (ou aguardando slot de ring): leitura = desconhecido
+	MATERIALIZED,     // aberta a leituras; atualizada pelo journal do E1
+}
+
+// Amostra de consulta tri-state (gameplay).
+VoxelSample :: struct {
+	block_id: u16,
+	solid:    bool, // derivado de id != 0 — mesma regra da ocupação na GPU
+}
+
+// Página-espelho de um chunk 32³ (~68,1 KiB). Denso SEM PALETA: na RAM o ID
+// é direto (u16), o que elimina divergência de paleta e mantém chunks com
+// PALETTE_OVERFLOW representáveis. Layout y-contíguo (y | z<<5 | x<<10) —
+// regra 7: NUNCA misturar com o denso x-contíguo do GPU/E1.
+MirrorChunkPage :: struct {
+	coord:       ChunkCoordinate,
+	edit_seq:    u32, // revisão do journal aplicada (paridade com a GPU em debug)
+	state:       MirrorPageState,
+	ring_slot:   i32, // slot do ring de export reservado p/ o preenchimento (-1 = nenhum)
+	// Edições staged p/ a GPU enquanto PENDING_READBACK (o export contém só
+	// worldgen): replay na materialização (dedup última-escrita-vence).
+	pending:     [dynamic]VoxelEditRequest,
+	// Journal aplicado desde a materialização — base do replay da
+	// reconciliação de rejeições (REQ-MIRROR-09); liberado na evicção.
+	applied_log: [dynamic]VoxelEditRequest,
+	// Pares (voxel, bloco) rejeitados pela GPU aguardando a rematerialização
+	// (o replay filtra o applied_log removendo a ocorrência mais recente).
+	rejected_log: [dynamic]VoxelEditRequest,
+	solid:       [CHUNK_VOXEL_COUNT / 32]u32, // 4 KiB: derivado de id != 0
+	ids:         [CHUNK_VOXEL_COUNT]u16,      // 64 KiB densos
+}
+
+MirrorRingEntry :: struct {
+	used:       bool,
+	coord:      ChunkCoordinate,
+	generation: u32, // anti-ABA: casa com a geração do slot de GPU no pedido
+}
+
 // 88 B — casar com o pipeline layout da VS-00.
 VoxelPushConstants :: struct {
 	view_projection_matrix: matrix[4, 4]f32,

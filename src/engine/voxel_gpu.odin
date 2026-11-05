@@ -39,7 +39,11 @@ VoxelGpu :: struct {
 	voxel_edits_mapped:     [^]u32,
 	edit_results:           GpuBuffer, // HOST_ACCESS_RANDOM: CPU lê o feedback
 	edit_results_mapped:    [^]u32,
-	dummy_buffer:           GpuBuffer, // binding ainda não usado (16)
+	// VS-04 (C2): ring de export do mirror — host-coerente (a escrita do
+	// generate É o readback; CPU lê no handler de conclusão).
+	mirror_export_ring:        GpuBuffer,
+	mirror_export_ring_mapped: [^]u16,
+	dummy_buffer:           GpuBuffer, // reservado para uso futuro
 
 	// VS-02: texturas (bindings 8/9) — paleta procedural de cores sólidas +
 	// dummy PBR (ADR-B7).
@@ -452,6 +456,15 @@ voxel_gpu_init :: proc() {
 		{.HOST_ACCESS_RANDOM, .MAPPED}, // CPU lê o feedback 2 frames depois
 	)
 	voxel_gpu.edit_results_mapped = cast([^]u32)mapped_edit_results
+	// VS-04 (C2): ring de export do mirror (64 slots × 64 KiB = 4 MiB,
+	// u16 denso y-contíguo; a CPU lê após o acquire da timeline do lote).
+	mapped_mirror_ring: rawptr
+	voxel_gpu.mirror_export_ring, mapped_mirror_ring = gpu_buffer_create_host_flags(
+		vk.DeviceSize(MIRROR_RING_SLOTS * CHUNK_VOXEL_COUNT * size_of(u16)),
+		{.STORAGE_BUFFER},
+		{.HOST_ACCESS_RANDOM, .MAPPED},
+	)
+	voxel_gpu.mirror_export_ring_mapped = cast([^]u16)mapped_mirror_ring
 	voxel_gpu.dummy_buffer = gpu_buffer_create(vk.DeviceSize(16), {.STORAGE_BUFFER})
 
 	upload_builtin_templates()
@@ -619,7 +632,7 @@ voxel_gpu_init :: proc() {
 		13 = voxel_gpu.edit_jobs.handle,    // ring de jobs de edição (VS-03)
 		14 = voxel_gpu.voxel_edits.handle,  // ring de edições packed (VS-03)
 		15 = voxel_gpu.edit_results.handle, // ring de resultados (VS-03)
-		16 = voxel_gpu.dummy_buffer.handle, // mirror_export_ring (VS-04)
+		16 = voxel_gpu.mirror_export_ring.handle, // ring de export do mirror (VS-04)
 		17 = voxel_gpu.work_queue.handle,   // fila de trabalho (VS-02)
 	}
 	buffer_infos: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorBufferInfo
@@ -688,6 +701,7 @@ voxel_gpu_destroy :: proc() {
 	vma.DestroyImage(app.vmaAllocator, voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation)
 
 	gpu_buffer_destroy(&voxel_gpu.dummy_buffer)
+	gpu_buffer_destroy(&voxel_gpu.mirror_export_ring)
 	gpu_buffer_destroy(&voxel_gpu.edit_results)
 	gpu_buffer_destroy(&voxel_gpu.voxel_edits)
 	gpu_buffer_destroy(&voxel_gpu.edit_jobs)
@@ -968,6 +982,95 @@ debug_readback_decode_voxels :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordin
 			header.plane_count,
 			header.flags,
 		)
+	}
+}
+
+
+// TEMPORÁRIO (diagnóstico VS-04): paridade bit a bit GPU (packed) x mirror
+// (página densa) para um chunk materializado — 32.768 voxels comparados.
+debug_mirror_parity :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate) {
+	page, found := ve.mirror.pages[chunk_coord]
+	if !found || page.state != .MATERIALIZED {
+		log.warnf("DEBUG MIRROR PARITY: chunk {} sem página materializada", chunk_coord)
+		return
+	}
+	record, active := ve.active_chunks[chunk_coord]
+	if !active || record.state == .GENERATING {
+		log.warnf("DEBUG MIRROR PARITY: chunk {} ausente/gerando", chunk_coord)
+		return
+	}
+	slot := record.storage_slot_index
+
+	header_size := vk.DeviceSize(size_of(ChunkHeader))
+	planes_size := vk.DeviceSize(MATERIAL_WORDS_PER_CHUNK * size_of(u32))
+	total := header_size + planes_size
+	readback, mapped := gpu_buffer_create_host(total, {.TRANSFER_DST})
+	defer gpu_buffer_destroy(&readback)
+
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+	cmd := voxel_gpu.compute_command_buffers[0]
+	vk_check(vk.ResetCommandBuffer(cmd, {}))
+	vk_check(
+		vk.BeginCommandBuffer(
+			cmd,
+			&vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}},
+		),
+	)
+	copies := [2]vk.BufferCopy {
+		{srcOffset = vk.DeviceSize(slot) * header_size, dstOffset = 0, size = header_size},
+		{srcOffset = vk.DeviceSize(slot) * planes_size, dstOffset = header_size, size = planes_size},
+	}
+	vk.CmdCopyBuffer(cmd, voxel_gpu.chunk_headers.handle, readback.handle, 1, &copies[0])
+	vk.CmdCopyBuffer(cmd, voxel_gpu.material_plane_pool.handle, readback.handle, 1, &copies[1])
+	vk_check(vk.EndCommandBuffer(cmd))
+	vk_check(
+		vk.QueueSubmit2(
+			app.queues[.Compute].queue,
+			1,
+			&vk.SubmitInfo2 {
+				sType                  = .SUBMIT_INFO_2,
+				commandBufferInfoCount = 1,
+				pCommandBufferInfos    = &vk.CommandBufferSubmitInfo {
+					sType         = .COMMAND_BUFFER_SUBMIT_INFO,
+					commandBuffer = cmd,
+				},
+			},
+			{},
+		),
+	)
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+
+	header := cast(^ChunkHeader)mapped
+	planes := cast([^]u32)mem.ptr_offset(cast(^u8)mapped, int(header_size))
+	divergences := 0
+	for y in 0 ..< CHUNK_SIZE {
+		for z in 0 ..< CHUNK_SIZE {
+			for x in 0 ..< CHUNK_SIZE {
+				brick_idx := x / 4 + 8 * (z / 4 + 8 * (y / 2))
+				bit_idx := x % 4 + 4 * (z % 4 + 4 * (y % 2))
+				palette_index: u32 = 0
+				for plane in 0 ..< header.plane_count {
+					word := planes[int(plane) * BRICKS_PER_CHUNK + brick_idx]
+					palette_index |= ((word >> uint(bit_idx)) & 1) << plane
+				}
+				clamped := min(palette_index, max(header.palette_size, 1) - 1)
+				gpu_id := header.palette[clamped]
+				// Layout y-contíguo do mirror (regra 7).
+				mirror_idx := u32(y) | (u32(z) << 5) | (u32(x) << 10)
+				if u32(page.ids[mirror_idx]) != gpu_id {
+					divergences += 1
+				}
+			}
+		}
+	}
+	if divergences == 0 {
+		log.infof(
+			"DEBUG MIRROR PARITY OK: chunk {} — 32768 voxels GPU == mirror (edit_seq {})",
+			chunk_coord,
+			page.edit_seq,
+		)
+	} else {
+		log.errorf("DEBUG MIRROR PARITY FALHOU: chunk {} — {} divergências", chunk_coord, divergences)
 	}
 }
 

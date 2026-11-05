@@ -3,8 +3,8 @@ id: VS-04
 titulo: Mirror C2
 tipo: especificacao
 status_spec: aprovada
-status_implementacao: nao-iniciada
-status_validacao: nao-iniciada
+status_implementacao: concluida
+status_validacao: verificada
 depende_de:
   - VS-03
 bloqueada_por: []
@@ -147,11 +147,11 @@ edit_ring_write: feedback com reconciliação de rejeições (REQ-MIRROR-09)
 
 | ID | Critério verificável | Validação planejada | Evidência |
 | --- | --- | --- | --- |
-| VS-04-AC-01 | O layout do mirror é y-contíguo e não é misturado ao scratch x-contíguo | Testes de indexação na simulação + paridade | Pendente |
-| VS-04-AC-02 | Nenhum slot de ring em voo é liberado fora do handler de conclusão | Cenários anti-ABA e evicção na simulação | Pendente |
-| VS-04-AC-03 | `export_only` nunca executa pack nem apaga edições do formato packed | Cenário de retry com edições na simulação + inspeção do caminho da worker | Pendente |
-| VS-04-AC-04 | GPU e mirror convergem para a mesma sequência do journal | Paridade bit a bit em 163.840 voxels (5 chunks: worldgen + journal com rejeição reconciliada, decode packed vs página) | Pendente |
-| VS-04-AC-05 | Consultas ausentes/pendentes retornam desconhecido sem inventar bloco | Testes da API tri-state na simulação + log de consultas em coordenadas conhecidas no smoke test | Pendente |
+| VS-04-AC-01 | O layout do mirror é y-contíguo e não é misturado ao scratch x-contíguo | Testes de indexação na simulação + paridade | Verificado — `mirror_sim.py`: 31 checks (permutação completa dos índices, coluna y contígua de 64 B, passos (1,1024) vs (1024,1) dos dois layouts); a paridade bit a bit (abaixo) só fecha com os layouts corretos |
+| VS-04-AC-02 | Nenhum slot de ring em voo é liberado fora do handler de conclusão | Cenários anti-ABA e evicção na simulação | Verificado — `mirror_sim.py`: evicção com export em voo preserva a entrada (liberada só no descarte do handler), liberação local só vale para não-submetidos com checagem (coord, geração), conclusão vencida não materializa na página nova |
+| VS-04-AC-03 | `export_only` nunca executa pack nem apaga edições do formato packed | Cenário de retry com edições na simulação + inspeção do caminho da worker | Verificado — `mirror_sim.py`: packed byte-idêntico após export_only com edições aplicadas; worker despacha o pack apenas em lotes normais (`if !export_only`), re-export embarca 1 por lote |
+| VS-04-AC-04 | GPU e mirror convergem para a mesma sequência do journal | Paridade bit a bit em 163.840 voxels (5 chunks: worldgen + journal com rejeição reconciliada, decode packed vs página) | Verificado — simulação: 163.840 voxels paritários após 3 flushes × 200 edições × 5 chunks + reconciliação exata pós-rejeição; smoke test: `DEBUG MIRROR PARITY OK` nos chunks [0,1,0] e [1,1,1] (32.768 voxels cada, GPU == mirror após o flush roteirizado) |
+| VS-04-AC-05 | Consultas ausentes/pendentes retornam desconhecido sem inventar bloco | Testes da API tri-state na simulação + log de consultas em coordenadas conhecidas no smoke test | Verificado — simulação: ok=false sem página e em PENDING, `column_ground` cruzando fronteiras; smoke test: ok=false em tick inicial (PENDING) e fora da bolha (9999,10,9999), amostras corretas na caixa esculpida (ar) e no pilar (pedra, id=3) |
 
 ## Tarefas da especificação
 
@@ -183,3 +183,6 @@ Ordem sugerida; cada tarefa referencia requisitos e critérios de aceitação. S
 - 2026-11-03 — Rascunho estrutural criado; conteúdo ainda não aprovado.
 - 2026-11-05 — Elaboração completa: 10 requisitos (MIRROR/SIM), contratos do mirror, sequência do frame, cenários e ACs; submetida à revisão do mantenedor.
 - 2026-11-05 — **Aprovada pelo mantenedor**; tarefas VS-04-IMPL-01..07 destravadas.
+- 2026-11-05 — Implementação concluída (IMPL-01..07): contratos do mirror no `common.slang` (`mirror_index_from_coordinate` y-contíguo, binding 16 `RWStructuredBuffer<uint16_t>`) + structs Odin; `tools/sim/mirror_sim.py` com 31 checks; export u16 direto no `generate_voxels`; ring host-coerente de 4 MiB no binding 16; `MirrorManager` em `voxel_mirror.odin` (pool de 768 páginas, ring com regra 4, bolha raio 5, evicção/retries); worker com fila `pending_export_tasks` (1 por lote, sem pack) e materialização no handler de conclusão com acquire `WaitSemaphores(0)` + `InvalidateAllocation`; dual-apply no flush, reconciliação por re-export + replay do `applied_log` filtrado e API tri-state (`voxel_get`/`voxel_is_solid`/`mirror_column_ground`/`mirror_request`).
+- 2026-11-05 — Ajuste na fundação: o SPIR-V do export u16 declara as capabilities `Int16` e `UniformAndStorageBuffer16BitAccess`, que não estavam habilitadas — a cadeia de features do dispositivo passou a exigir e habilitar `shaderInt16` (núcleo) e `uniformAndStorageBuffer16BitAccess` (Vulkan 1.1), além da já presente `storageBuffer16BitAccess` (revisão do contrato da VS-00 registrada aqui; seleção do dispositivo agora rejeita GPUs sem elas).
+- 2026-11-05 — Validação verificada: evidências nos ACs acima. Notas: o smoke test rodou com o terreno de ruído do mantenedor (worldgen FastNoiseLite não commitado nesta fatia); `column_ground(32,32)` respondeu y=55 = topo do pilar de pedra da edição roteirizada da VS-03 — evidência ponta a ponta de que o journal converge no mirror; o `debug_readback_validate` da VS-01 segue falhando por comparar com a verdade do mundo plano (pendente de decisão do mantenedor); estatísticas estáveis: 515 páginas vivas (pool 768, zero misses), ring misses acumulados só durante o preenchimento inicial (retry por construção).

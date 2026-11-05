@@ -139,6 +139,7 @@ REQUIRED_DEVICE_EXTENSIONS :: []cstring {
 
 // Cadeia completa de features consultada (REQ-FND-DEV-01) e habilitada (REQ-FND-DEV-03).
 DeviceFeatureChain :: struct {
+	base:          vk.PhysicalDeviceFeatures,
 	v11:           vk.PhysicalDeviceVulkan11Features,
 	v12:           vk.PhysicalDeviceVulkan12Features,
 	v13:           vk.PhysicalDeviceVulkan13Features,
@@ -149,10 +150,14 @@ DeviceFeatureChain :: struct {
 
 @(private)
 init_device_feature_chain :: proc(chain: ^DeviceFeatureChain) {
+	chain.base = {
+		shaderInt16 = true, // C2 (VS-04): uint16_t no SSBO do mirror
+	}
 	chain.v11 = {
 		sType                 = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
 		shaderDrawParameters  = true,
 		storageBuffer16BitAccess = true,
+		uniformAndStorageBuffer16BitAccess = true, // C2 (VS-04): uint16_t no SSBO do mirror
 	}
 	chain.v12 = {
 		sType            = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -186,8 +191,10 @@ init_device_feature_chain :: proc(chain: ^DeviceFeatureChain) {
 // Anexa à lista `missing` o nome de cada feature obrigatória não suportada.
 @(private)
 collect_missing_features :: proc(chain: ^DeviceFeatureChain, missing: ^[dynamic]string) {
+	if !chain.base.shaderInt16 do append(missing, "shaderInt16")
 	if !chain.v11.shaderDrawParameters do append(missing, "shaderDrawParameters")
 	if !chain.v11.storageBuffer16BitAccess do append(missing, "storageBuffer16BitAccess")
+	if !chain.v11.uniformAndStorageBuffer16BitAccess do append(missing, "uniformAndStorageBuffer16BitAccess")
 	if !chain.v12.timelineSemaphore do append(missing, "timelineSemaphore")
 	if !chain.v12.scalarBlockLayout do append(missing, "scalarBlockLayout")
 	if !chain.v13.dynamicRendering do append(missing, "dynamicRendering")
@@ -211,6 +218,7 @@ query_device_features :: proc(device: vk.PhysicalDevice) -> DeviceFeatureChain {
 		pNext = &chain.mesh_shader,
 	}
 	vk.GetPhysicalDeviceFeatures2(device, &features2)
+	chain.base = features2.features // preenchida junto (features do núcleo)
 	return chain
 }
 
@@ -278,6 +286,7 @@ create_vulkan_device :: proc() {
 		enabledExtensionCount   = u32(len(extensions)),
 		ppEnabledExtensionNames = raw_data(extensions),
 		pNext                   = &enabled_features.mesh_shader,
+		pEnabledFeatures        = &enabled_features.base, // shaderInt16 (C2, VS-04)
 	}
 
 	vk_check(vk.CreateDevice(app.vkPhysicalDevice, &device_create_info, nil, &app.vkDevice))

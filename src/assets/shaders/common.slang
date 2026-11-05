@@ -211,6 +211,11 @@ struct MeshVertex {
 [[vk::binding(13, 0)]] StructuredBuffer<EditChunkJob>        edit_jobs;
 [[vk::binding(14, 0)]] StructuredBuffer<uint>                voxel_edits;
 [[vk::binding(15, 0)]] RWStructuredBuffer<uint>              edit_results;
+// VS-04 (C2): ring de export do mirror CPU-side — 64 slots ×
+// CHUNK_VOXEL_COUNT u16 (4 MiB), host-coerente: a escrita do generate É o
+// readback; a CPU lê no handler de conclusão após o acquire da timeline.
+// Requer storageBuffer16BitAccess (habilitado na VS-00).
+[[vk::binding(16, 0)]] RWStructuredBuffer<uint16_t>          mirror_export_ring;
 // VS-02 (correção): fila de trabalho global — builder compute anexa itens e
 // o draw mesh-only indireto consome. Ring de 2 slots derivado do
 // visible_chunk_offset (sem novos push constants).
@@ -230,6 +235,10 @@ uint bit_index_from_local_coordinate(int3 coord) { return uint(coord.x) + 4u * (
 int3 local_coordinate_from_bit_index(uint index) { return int3(int(index & 3u), int(index >> 4u), int((index >> 2u) & 3u)); }
 uint dense_index_from_coordinate(int3 coord) { return uint(coord.x) | (uint(coord.z) << 5u) | (uint(coord.y) << 10u); }
 int3 coordinate_from_dense_index(uint index) { return int3(int(index & 31u), int(index >> 10u), int((index >> 5u) & 31u)); }
+// VS-04 (C2): índice do MIRROR — y-contíguo (coluna vertical = 64 B = 1
+// linha de cache). REGRA 7: NUNCA misturar com dense_index_from_coordinate
+// (x-contíguo, usado pelo scratch GPU e pelas edições packed).
+uint mirror_index_from_coordinate(int3 coord) { return uint(coord.y) | (uint(coord.z) << 5u) | (uint(coord.x) << 10u); }
 uint coarse_cell_index_from_brick_coordinate(int3 coord) { int3 cell = coord / BRICKS_PER_COARSE_CELL; return uint(cell.x) + 4u * (uint(cell.z) + 4u * uint(cell.y)); }
 
 // ----------------------------------------------------------------------------

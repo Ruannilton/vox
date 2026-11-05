@@ -28,7 +28,8 @@ GenerationTask :: struct {
 	coordinate:         ChunkCoordinate,
 	storage_slot_index: u32,
 	generation:         u32,
-	mirror_ring_slot:   i32, // C2 (VS-04): sempre -1 nesta fatia
+	mirror_ring_slot:   i32, // C2 (VS-04): >= 0 = exporta o denso u16 p/ este slot do ring
+	export_only:        bool, // C2: re-export do mirror — NUNCA roda o pack (lotes de 1 tarefa)
 }
 
 SubmittedBatch :: struct {
@@ -61,11 +62,15 @@ VoxelEngine :: struct {
 	first_update:                   bool,
 	highest_completed_compute_value: u64,
 	edit:                           EditManager, // VS-03 (E1): journal de edição
+	mirror:                         MirrorManager, // VS-04 (C2): mirror CPU-side
 
 	// --- domínio de queue_mutex (thread principal <-> worker) ---
 	queue_mutex:           sync.Mutex,
 	queue_condition:       sync.Cond,
 	pending_tasks:         [dynamic]GenerationTask,
+	// C2 (VS-04): re-exports do mirror (export_only) — fila separada para não
+	// misturar com o dreno por prioridade do B4; a worker embarca 1 por lote.
+	pending_export_tasks:  [dynamic]GenerationTask,
 	submitted_batches:     [dynamic]SubmittedBatch,
 	priority_camera_chunk: ChunkCoordinate,
 	worker_stop_requested: u32,
@@ -115,6 +120,7 @@ ve_init :: proc() -> ^VoxelEngine {
 		free_storage_slots    = make([dynamic]u32, 0, MAXIMUM_RESIDENT_CHUNKS),
 		slot_generations      = make([]u32, MAXIMUM_RESIDENT_CHUNKS), // zero-init: 1ª alocação = geração 1
 		pending_tasks         = make([dynamic]GenerationTask),
+		pending_export_tasks  = make([dynamic]GenerationTask),
 		submitted_batches     = make([dynamic]SubmittedBatch),
 		last_camera_chunk     = {max(i32), max(i32), max(i32)}, // força a 1ª atualização
 	}
@@ -122,6 +128,7 @@ ve_init :: proc() -> ^VoxelEngine {
 		append(&ve.free_storage_slots, u32(i))
 	}
 	edit_manager_init(ve)
+	mirror_init(ve)
 
 	voxel_gpu_init()
 
@@ -152,8 +159,10 @@ ve_destroy :: proc(ve: ^VoxelEngine) {
 	delete(ve.retiring_compute_slots)
 	delete(ve.slot_generations)
 	delete(ve.pending_tasks)
+	delete(ve.pending_export_tasks)
 	delete(ve.submitted_batches)
 	edit_manager_destroy(ve)
+	mirror_destroy(ve)
 	active_ve = nil
 	free(ve)
 }
@@ -178,6 +187,11 @@ ve_service_completions :: proc(ve: ^VoxelEngine) {
 				   rec.generation == task.generation {
 					rec.state = .CACHED
 				}
+			}
+			// C2 (VS-04): tasks com export do mirror são materializadas aqui —
+			// o único lugar que libera slot de ring em voo (regra 4).
+			if task.mirror_ring_slot >= 0 {
+				mirror_materialize_from_ring(ve, task, b.compute_timeline_value)
 			}
 		}
 		ve.highest_completed_compute_value = max(ve.highest_completed_compute_value, b.compute_timeline_value)
@@ -297,6 +311,7 @@ ve_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 		}
 		for coord in to_unload {
 			record := ve.active_chunks[coord]
+			mirror_forget_chunk(ve, coord, record) // C2 (VS-04): evicta a página (se houver)
 			if record.state == .GENERATING {
 				// B1: NUNCA devolver o slot direto — a GPU pode estar prestes a
 				// escrever nele (lote em voo) ou a tarefa pode estar pendente.
@@ -359,4 +374,9 @@ ve_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 			rec.state = .CACHED
 		}
 	}
+
+	// 4. C2 (VS-04): bolha de simulação (raio 5) — evicta páginas fora da
+	// bolha e agenda o preenchimento das ausentes; retries de PENDING sem slot.
+	mirror_update_bubble(ve, camera_chunk)
+	mirror_service_retries(ve)
 }
