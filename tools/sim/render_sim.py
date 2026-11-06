@@ -1095,6 +1095,12 @@ def sphere_count_reference():
             25: 65267, 26: 73525}
 
 
+def resident_slots(radius_unload):
+    """Emenda VS-08 (REQ-CFG-02): slots = ceil(|esfera(unload)| * 1.05) —
+    mesmo arredondamento de config.odin: (n*105 + 99) // 100."""
+    return (sphere_count(radius_unload) * 105 + 99) // 100
+
+
 def validate_config_rules(vision, generation, unload, simulation,
                           chunks_per_batch, batches_in_flight):
     """Espelha as regras de coerência de REQ-CFG-03 (VS-09 emenda o formato:
@@ -1113,7 +1119,7 @@ def validate_config_rules(vision, generation, unload, simulation,
         return False, "batches_in_flight 1..8"
     if chunks_per_batch * batches_in_flight > 256:
         return False, "scratch <= 256"
-    if sphere_count(generation) > 16384:
+    if resident_slots(unload) > 16384:
         return False, "resident_slots <= 16384"
     return True, ""
 
@@ -1177,6 +1183,17 @@ def scenario_config():
     check("custom vision=5/sim=3: visíveis 515, scratch 16, ring 64, páginas 185",
           derive_config(5, 6, 7, 3, 8, 2) == (515, 16, 64, 185))
 
+    # derivação de slots residentes (emenda VS-08): ceil(esfera(unload)*1.05)
+    for r in (2, 5, 8, 10, 25):
+        n = sphere_count(r)
+        expected = -(-n * 105 // 100)  # ceil(n*1.05) por aritmética exata
+        check(f"slots: resident_slots({r}) == ceil(esfera({r})*1.05) == {expected}",
+              resident_slots(r) == expected)
+        check(f"slots: esfera({r}) <= resident_slots({r}) <= esfera({r})*1.05+1",
+              n <= resident_slots(r) <= (n * 105) // 100 + 1)
+    check("slots: esfera(generation=9) <= resident_slots(unload=10)",
+          sphere_count(9) <= resident_slots(10))
+
     # regras de validação (uma violação por regra)
     base = dict(vision=8, generation=9, unload=10, simulation=5,
                 chunks_per_batch=16, batches_in_flight=3)
@@ -1189,7 +1206,7 @@ def scenario_config():
         ("chunks_per_batch 1..64", {"chunks_per_batch": 65}),
         ("batches_in_flight 1..8", {"batches_in_flight": 9}),
         ("scratch <= 256", {"chunks_per_batch": 64, "batches_in_flight": 8}),
-        ("resident_slots <= 16384", {"generation": 26, "unload": 27}),  # esfera(26) = 73525
+        ("resident_slots <= 16384", {"generation": 26, "unload": 27}),  # slots = ceil(esfera(27)*1.05) > 16384
     ]
     for rule, patch in violations:
         case = dict(base)

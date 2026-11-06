@@ -52,6 +52,7 @@ VoxelEngine :: struct {
 	retiring_compute_slots:         [dynamic]RetiringComputeSlot,
 	slot_generations:               []u32,
 	last_camera_chunk:              ChunkCoordinate,
+	slots_starved:                  bool,
 	first_update:                   bool,
 	highest_completed_compute_value: u64,
 	edit:                           EditManager,
@@ -315,8 +316,13 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 				}
 			}
 		}
-		if slots_exhausted {
+		if slots_exhausted && !ve.slots_starved {
+			// um warn por episódio de fome (transição no passo de geração)
 			log.warn("Pool de slots de chunk esgotado; novas requisições aguardam reciclagem")
+			ve.slots_starved = true
+		}
+		if !slots_exhausted {
+			ve.slots_starved = false
 		}
 		if len(new_tasks) > 0 {
 			sync.mutex_lock(&ve.queue_mutex)

@@ -217,6 +217,9 @@ config_derive_and_validate :: proc(cfg: ^Config) {
 
 	visible := sphere_count(cfg.radius_vision)
 	generation := sphere_count(cfg.radius_generation)
+	// slots residentes: esfera de UNLOAD (retenção CAGED até unload + transitório
+	// de aposentadoria B1) + margem de 5% — derivar de generation esgota o pool.
+	resident := (sphere_count(cfg.radius_unload) * 105 + 99) / 100
 	simulation := sphere_count(cfg.radius_simulation)
 	scratch := u64(cfg.batches_in_flight) * u64(cfg.chunks_per_batch)
 
@@ -226,11 +229,11 @@ config_derive_and_validate :: proc(cfg: ^Config) {
 	   scratch == 0 || scratch > u64(max(u32)) {
 		config_fatal("capacidade derivada excede u32 (overflow); reduza os parâmetros de streaming/compute")
 	}
-	if generation > 65535 {
+	if resident > 65535 {
 		config_fatal(
-			"streaming.generation = {} produz {} slots residentes, acima do limite de 65535",
-			cfg.radius_generation,
-			generation,
+			"streaming.unload = {} produz {} slots residentes, acima do limite de 65535",
+			cfg.radius_unload,
+			resident,
 		)
 	}
 	if scratch > 256 {
@@ -252,7 +255,7 @@ config_derive_and_validate :: proc(cfg: ^Config) {
 	if ring < 64 do ring = 64
 
 	cfg.visible_capacity = u32(visible)
-	cfg.resident_slots = u32(generation)
+	cfg.resident_slots = u32(resident)
 	cfg.scratch_chunks = u32(scratch)
 	cfg.mirror_pages = u32(pages)
 	cfg.mirror_ring_slots = u32(ring)
@@ -306,12 +309,12 @@ config_validate_machine :: proc() {
 	device_budget = (device_budget * CONFIG_BUDGET_MARGIN_NUM) / CONFIG_BUDGET_MARGIN_DEN
 
 	if config.provisioned_device_bytes > device_budget {
-		// sugestão: maior raio de geração cuja esfera ainda cabe
-		suggestion := config.radius_generation
-		for suggestion > config.radius_vision {
-			slots := sphere_count(suggestion - 1)
-			if slots > 65535 do break
-			saved := (sphere_count(config.radius_generation) - slots) * (
+		// sugestão: reduzir unload (que governa os slots residentes) até caber,
+		// com piso em generation + 1 (histerese estrita)
+		suggestion := config.radius_unload
+		for suggestion > config.radius_generation + 1 {
+			slots := (sphere_count(suggestion - 1) * 105 + 99) / 100
+			saved := (u64(config.resident_slots) - slots) * (
 				u64(OCCUPANCY_WORDS_PER_CHUNK) * size_of(u32) +
 				u64(MATERIAL_WORDS_PER_CHUNK) * size_of(u32) +
 				size_of(ChunkHeader) +
@@ -323,11 +326,16 @@ config_validate_machine :: proc() {
 			}
 			suggestion -= 1
 		}
+		floor_msg := ""
+		if suggestion <= config.radius_generation + 1 {
+			floor_msg = " (piso atingido: é preciso reduzir vision/generation manualmente)"
+		}
 		config_fatal(
-			"Limite de máquina excedido (REQ-CFG-04): os recursos derivados da configuração requerem {} bytes na heap device-local, mas o budget disponível com margem de 10% é {} bytes. Sugestão: reduza streaming.generation para ≤ {} (ou diminua streaming.vision)",
+			"Limite de máquina excedido (REQ-CFG-04): os recursos derivados da configuração requerem {} bytes na heap device-local, mas o budget disponível com margem de 10% é {} bytes. Sugestão: reduza streaming.unload para ≤ {}{} (ou diminua streaming.vision)",
 			config.provisioned_device_bytes,
 			device_budget,
 			suggestion,
+			floor_msg,
 		)
 	}
 

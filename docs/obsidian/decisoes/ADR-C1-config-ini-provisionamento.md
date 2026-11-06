@@ -24,7 +24,7 @@ Decisões necessárias: (1) fonte e formato da configuração; (2) como as capac
 ### Opção A — INI flat + capacidades derivadas das esferas + validação contra limites reais
 
 - Arquivo `vox.ini` (flat, seções `[streaming]`/`[compute]`, `--config <caminho>` para override; ausente → defaults embutidos + warning). Parse estrito: chave desconhecida → warning; valor malformado → erro fatal com motivo, antes de criar a janela.
-- Capacidades **derivadas**, nunca configuradas diretamente: `visible_capacity = |esfera(vision)|` (2109 em r=8), `resident_slots = |esfera(generation)|` (resolve o backlog B5 por construção), `scratch_chunks = batches_in_flight × chunks_per_batch`, `mirror_pages = |esfera(simulation)| × 1,5`, `mirror_ring = max(64, próxima potência ≥ scratch_chunks)`.
+- Capacidades **derivadas**, nunca configuradas diretamente: `visible_capacity = |esfera(vision)|` (2109 em r=8), `resident_slots = ⌈|esfera(unload)| × 1,05⌉` (resolve o backlog B5 por construção; emenda 2026-11-06 — era `|esfera(generation)|`, que esgotava o pool estruturalmente), `scratch_chunks = batches_in_flight × chunks_per_batch`, `mirror_pages = |esfera(simulation)| × 1,5`, `mirror_ring = max(64, próxima potência ≥ scratch_chunks)`.
 - Limites: coerência (`vision ≤ generation < unload`, mínimos/máximos práticos) + limites de formato (`visible_index` tem **12 bits** no item da fila → visíveis ≤ 4096 → vision ≤ 9) + limites de máquina (bytes device requeridos vs budget da heap device-local via `GetHeapBudgets` da VS-05, margem de 10%).
 - Shader: push constant ganha `visible_chunk_capacity` (88 → 92 B); `work_queue_base_words()` passa a usar o push constant. Contrato VS-00 revisado (como já o foi na VS-02).
 - Vantagens: cumpre o pedido sem surpresas de provisionamento (tamanho exato das esferas, sem over-allocation), validação honesta contra o hardware real, capacidade de visíveis dinâmica sem recompilar shader.
@@ -50,7 +50,7 @@ Decisões necessárias: (1) fonte e formato da configuração; (2) como as capac
 
 - `MAXIMUM_VISIBLE_CHUNKS`, `MAXIMUM_RESIDENT_CHUNKS`, `MIRROR_PAGE_POOL_SIZE`, `MIRROR_RING_SLOTS`, `SCRATCH_CHUNK_COUNT` deixam de existir como constantes de compilação e viram campos de um `Config` carregado antes de `CreateEngine` — nenhum tamanho de buffer pode permanecer ligado a elas.
 - O limite vision ≤ 9 (12 bits do `visible_index`) é documentado no erro; alargar o empacotamento para 16 bits (sobram bits no item de 32) fica como backlog explícito. **RESOLVIDO em 2026-11-06 pela [[ADR-B12-visible-index-16-bits|ADR-B12]]/[[VS-09-visible-index-16-bits|VS-09]]**: `visible_index` de 16 bits, cap de formato `vision ≤ 25`.
-- O backlog B5 (raio de geração > slots) é absorvido: slots derivados de `|esfera(generation)|` por construção.
+- O backlog B5 (raio de geração > slots) é absorvido: slots derivados da esfera de unload × 1,05 por construção (emenda 2026-11-06, era `|esfera(generation)|`).
 - A VS-05 passa a ser dependência de implementação (memory budget na validação), ainda que sua própria validação esteja em andamento (o uso é de API já integrada, não do AC pendente dela).
 
 ## Histórico

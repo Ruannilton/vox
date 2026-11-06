@@ -43,7 +43,7 @@ O jogador movimenta a câmera e o mundo precisa carregar. Para evitar que blocos
 
 **Novo na v3.0 — duas bolhas independentes:** à bolha de render acima soma-se a bolha de simulação do mirror CPU (Etapa 7), centrada nos agentes ativos e com raio próprio. Um chunk pode existir na VRAM sem existir na RAM (horizonte distante) e vice-versa (uma sala atrás da câmera onde um NPC está).
 
-**Bolhas e slots (B5 absorvida pela VS-08):** os slots de chunk deixaram de ser um teto fixo de 4.096 e passam a ser derivados do raio de geração (`resident_slots = |esfera(generation)|`, 3.071 com os defaults de `vox.ini`) — a bolha de geração cabe no pool por construção.
+**Bolhas e slots (B5 absorvida pela VS-08):** os slots de chunk deixaram de ser um teto fixo de 4.096 e passam a ser derivados em runtime (VS-08, emendada 2026-11-06: `resident_slots = ⌈|esfera(unload)| × 1,05⌉` — era `|esfera(generation)|`, o que esgotava o pool estruturalmente, pois o conjunto vivo inclui CACHED até o raio de unload + transitório de aposentadoria B1; 4.378 com os defaults de `vox.ini`) — a bolha de geração cabe no pool por construção.
 
 ## 3. Etapa 2: A ponte (Vulkan 1.4 Sync)
 
@@ -148,7 +148,7 @@ Toda interação usuário↔aplicação é intermediada por um **bus de eventos*
    View de RENDER — VRAM (GPU)          View de GAMEPLAY — RAM (CPU)
    slot packed: ocupação+planos+        ChunkPage: grid denso u16 + bitmask solid
    paleta+coarse · slots derivados de   ~500 chunks ≈ 34 MiB · bolha de simulação ·
-   |esfera(generation)| (3.071 nos     formato otimizado p/ consulta voxel(x,y,z)
+   ⌈|esfera(unload)|×1,05⌉ (4.378 nos     formato otimizado p/ consulta voxel(x,y,z)
    defaults) · bolha de render ·        ▲
    formato otimizado p/ culling e mesh          │ readback: export u16 → ring host-visible
                 └──────── Compute generate (GPU) ┘ → memcpy + replay do journal pendente
@@ -176,7 +176,7 @@ Estados: PENDING_READBACK → (fence + memcpy + replay pending) → MATERIALIZED
 
 > **Nota de implementação (2026-11-03):** a versão final no código simplificou esse fluxo — o generate escreve **direto num ring host-visible de 64 slots × 64 KiB (4 MiB), binding 16** (a escrita do shader É o readback), sem `export_pool` device-local nem `vkCmdCopyBuffer`. Requer `storageBuffer16BitAccess`.
 
-**Bolhas independentes:** a bolha de render (slots de VRAM derivados de `|esfera(generation)|`, raio de visão configurável) e a bolha de simulação (~500 chunks nos defaults, ~34 MiB de RAM) têm centros e raios próprios e nunca disputam recursos. A consulta é **tri-state**: `voxel_get` retorna o dado, ou «desconhecido» (página ausente ou em readback) — a política sobre o desconhecido (esperar, replanar, assumir ar ou sólido) é de cada consumidor, não do mirror, que apenas expõe o gancho `mirror_request` para puxar páginas sob demanda.
+**Bolhas independentes:** a bolha de render (slots de VRAM derivados de `⌈|esfera(unload)| × 1,05⌉` — emenda VS-08 2026-11-06, era generation; raio de visão configurável) e a bolha de simulação (~500 chunks nos defaults, ~34 MiB de RAM) têm centros e raios próprios e nunca disputam recursos. A consulta é **tri-state**: `voxel_get` retorna o dado, ou «desconhecido» (página ausente ou em readback) — a política sobre o desconhecido (esperar, replanar, assumir ar ou sólido) é de cada consumidor, não do mirror, que apenas expõe o gancho `mirror_request` para puxar páginas sob demanda.
 
 **Reconciliação:** a única divergência possível é a rejeição de edição pela GPU (chunk em overflow de paleta, somente-leitura). O mirror aplica otimisticamente; quando o ring de feedback do E1 reporta a rejeição (2 frames depois), a página é revertida por replay do journal sem aquela edição. Caminho raro, código simples.
 
@@ -197,7 +197,7 @@ Estados: PENDING_READBACK → (fence + memcpy + replay pending) → MATERIALIZED
 | C2 | recurso | Mirror CPU-side: ChunkPage denso u16 y-major + ring host-visible | Implementado |
 | Eventos | recurso | Bus de eventos de input/comando com gravação JSONL e replay 1× (VS-07) | Implementado |
 | E1 | correção | Flush do journal não era mais chamado (removido com os testes em 6897431) e `last_flush`/`force_next_flush` eram consumidos pelo ring write todo frame, matando o gating de 100 ms; restaurado via `edit_update` no loop | Corrigido |
-| B5 | backlog | Raio de geração > slots — **absorvida pela VS-08** (slots derivados de `|esfera(generation)|`) | Absorvida |
+| B5 | backlog | Raio de geração > slots — **absorvida pela VS-08** (slots derivados da esfera de unload ×1,05 — emenda 2026-11-06) | Absorvida |
 | B6 | backlog | Plantas sem alpha-test; CULL_MODE_NONE | Pendente |
 | B7 | backlog | PBR não amostrado (só Lambert + emissão) | Pendente |
 | B8 | backlog | Overflow int32 em calculate_squared_distance | Pendente |

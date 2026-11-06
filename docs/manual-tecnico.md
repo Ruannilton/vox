@@ -6,7 +6,7 @@
 
 ## 1. Estruturas de memória na GPU (bitmasking)
 
-Para contornar o limite de VRAM e maximizar o cache L1, abandonamos ponteiros (SVDAG) em favor de matrizes densas de bits. Um chunk de 32³ possui 32.768 voxels e vive num slot fixo pré-alocado do pool — desde a VS-08 o pool é dimensionado em runtime (`resident_slots = |esfera(generation)|`, 3.071 com os defaults; antes: 4.096 fixos). A região de ocupação de cada slot tem **1.090 words** (antes 1.026 — a v2.0 adicionou 64 words de subdivisão):
+Para contornar o limite de VRAM e maximizar o cache L1, abandonamos ponteiros (SVDAG) em favor de matrizes densas de bits. Um chunk de 32³ possui 32.768 voxels e vive num slot fixo pré-alocado do pool — desde a VS-08 o pool é dimensionado em runtime (`resident_slots = ⌈|esfera(unload)| × 1,05⌉`, 4.378 com os defaults — emenda 2026-11-06, era `|esfera(generation)|`; antes: 4.096 fixos). A região de ocupação de cada slot tem **1.090 words** (antes 1.026 — a v2.0 adicionou 64 words de subdivisão):
 
 ```
 ┌ Ocupação dos bricks — 1024 words (1 word = 32 voxels, brick 4×2×4)     words [0..1024)
@@ -297,7 +297,7 @@ O export (Seção 3.3) é condicionado à bolha de simulação — chunks fora d
 
 | Item | Valor |
 |---|---|
-| Slots de chunk | derivados: `resident_slots = |esfera(generation)|` (3.071 nos defaults) |
+| Slots de chunk | derivados: `resident_slots = ⌈|esfera(unload)| × 1,05⌉` (4.378 nos defaults — emenda 2026-11-06: retenção até unload + transitório B1) |
 | Voxels por chunk | 32³ = 32.768 |
 | Brick | 4×2×4 = 32 voxels = 1 word |
 | Coarse cell | 8³ voxels = 1 bit (descarte de 512 voxels) |
@@ -318,7 +318,7 @@ O export (Seção 3.3) é condicionado à bolha de simulação — chunks fora d
 
 ## 10. Configuração e provisionamento runtime (VS-08)
 
-Os parâmetros de streaming/compute deixaram de ser constantes de compilação. `src/engine/config.odin` carrega `vox.ini` (seções `[streaming]`/`[compute]`; `--config <caminho>` sobrescreve o caminho; arquivo ausente → defaults 8/9/10/5, 16, 3 + warning) **antes** de `CreateEngine` — erros de coerência/formato/parse encerram a inicialização com mensagem explicativa, sem criar a janela. As capacidades são sempre **derivadas**: `visible_capacity = |esfera(vision)|` (visíveis publicados por frame e capacidade da fila de trabalho), `resident_slots = |esfera(generation)|`, `scratch_chunks = batches_in_flight × chunks_per_batch`, `mirror_pages = ⌈|esfera(simulation)| × 1,5⌉`, `mirror_ring_slots = max(64, próxima potência de 2 ≥ scratch_chunks)`. Após o VMA, a soma dos bytes device é confrontada com o budget da heap device-local (VS-05) × 0,9 antes de qualquer buffer do motor ser criado (REQ-CFG-04). O shader conhece a capacidade de visíveis pelo push constant `visible_chunk_capacity` (92 B). O backlog B5 (raio de geração > slots) está absorvido: os slots são a esfera de geração por construção.
+Os parâmetros de streaming/compute deixaram de ser constantes de compilação. `src/engine/config.odin` carrega `vox.ini` (seções `[streaming]`/`[compute]`; `--config <caminho>` sobrescreve o caminho; arquivo ausente → defaults 8/9/10/5, 16, 3 + warning) **antes** de `CreateEngine` — erros de coerência/formato/parse encerram a inicialização com mensagem explicativa, sem criar a janela. As capacidades são sempre **derivadas**: `visible_capacity = |esfera(vision)|` (visíveis publicados por frame e capacidade da fila de trabalho), `resident_slots = ⌈|esfera(unload)| × 1,05⌉` (emenda 2026-11-06, era `|esfera(generation)|` — o conjunto vivo inclui CACHED até unload + transitório de aposentadoria B1; margem de 5% para o transitório, arredondamento `(n×105+99)/100` em u64), `scratch_chunks = batches_in_flight × chunks_per_batch`, `mirror_pages = ⌈|esfera(simulation)| × 1,5⌉`, `mirror_ring_slots = max(64, próxima potência de 2 ≥ scratch_chunks)`. Após o VMA, a soma dos bytes device é confrontada com o budget da heap device-local (VS-05) × 0,9 antes de qualquer buffer do motor ser criado (REQ-CFG-04). O shader conhece a capacidade de visíveis pelo push constant `visible_chunk_capacity` (92 B). O backlog B5 (raio de geração > slots) está absorvido: a bolha de geração cabe nos slots (esfera de unload × 1,05) por construção.
 
 ## 10. Bus de eventos de input, gravação e replay (VS-07, novo na v3.0)
 

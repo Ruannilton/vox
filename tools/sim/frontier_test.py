@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Testes de fronteira do streaming (VS-01, AC-04 / REQ-STREAM-01/02/05/06;
-raios atualizados pela VS-08 — ADR-B5 absorvida: slots derivados de
-|esfera(generation)|, sem teto fixo de 4096)."""
+raios atualizados pela VS-08 — slots derivados de |esfera(unload)| x 1.05
+(emenda 2026-11-06: esfera(generation) esgotava o pool), sem teto fixo de
+4096)."""
 
 import sys
 
@@ -30,8 +31,14 @@ def sphere_count(radius):
     return count
 
 
-# VS-08 (REQ-CFG-02): slots residentes são derivados — nunca um teto fixo.
-RESIDENT_SLOTS = sphere_count(RADIUS_GENERATION)
+# VS-08 (REQ-CFG-02, emenda 2026-11-06): slots residentes derivados da esfera
+# de UNLOAD (retenção até unload + transitório de aposentadoria), com margem
+# de 5%: slots = ceil(|esfera(unload)| * 1.05) = (n*105 + 99) // 100.
+def resident_slots(radius_unload):
+    return (sphere_count(radius_unload) * 105 + 99) // 100
+
+
+RESIDENT_SLOTS = resident_slots(RADIUS_UNLOAD)
 CHUNK_SIZE = 32
 
 
@@ -50,14 +57,16 @@ def floor_div(v, d):
 
 
 def main():
-    # 1. Esfera de geração cabe nos slots derivados (ADR-B5 absorvida pela
-    #    VS-08: resident_slots = |esfera(generation)| por construção)
-    count = sphere_count(RADIUS_GENERATION)
-    print(f"[fronteira] esfera r={RADIUS_GENERATION} contem {count} chunks")
-    check(f"esfera r={RADIUS_GENERATION} ({count}) == slots derivados ({RESIDENT_SLOTS})",
-          count == RESIDENT_SLOTS)
-    check(f"esfera r={RADIUS_GENERATION} ({count}) <= 16384 (limite REQ-CFG-03)",
-          count <= 16384)
+    # 1. Slots derivados da esfera de unload cabem nos limites (emenda VS-08)
+    count = sphere_count(RADIUS_UNLOAD)
+    print(f"[fronteira] esfera r={RADIUS_UNLOAD} contem {count} chunks; "
+          f"slots residentes = {RESIDENT_SLOTS} (x 1.05, ceil)")
+    check(f"slots ({RESIDENT_SLOTS}) == ceil(esfera({RADIUS_UNLOAD})*1.05)",
+          RESIDENT_SLOTS == (count * 105 + 99) // 100)
+    check(f"esfera de generation ({sphere_count(RADIUS_GENERATION)}) <= slots ({RESIDENT_SLOTS})",
+          sphere_count(RADIUS_GENERATION) <= RESIDENT_SLOTS)
+    check(f"slots ({RESIDENT_SLOTS}) <= 16384 (limite REQ-CFG-03)",
+          RESIDENT_SLOTS <= 16384)
 
     # 2. Distancias extremas sem overflow (ADR-B8)
     far = (2 ** 20, -(2 ** 20), 2 ** 19)
