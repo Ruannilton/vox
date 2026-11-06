@@ -12,6 +12,14 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
     uint visible_index = group_id.x;
     VisibleChunk chunk = visible_chunks[push_constants.visible_chunk_offset + visible_index];
 
+    // VS-06 (REQ-CULL-02): early-out de chunk antes de ler header/ocupação —
+    // o teste é uniforme no workgroup, sem divergência.
+    float4 frustum_planes[6] = frustum_planes_from_vp(push_constants.view_projection_matrix);
+    float3 chunk_min = float3(chunk.chunk_world_origin);
+    if (aabb_outside_frustum(chunk_min, chunk_min + float3(CHUNK_SIZE), frustum_planes)) {
+        return;
+    }
+
     ChunkHeader header = chunk_headers[chunk.storage_slot_index];
     if ((header.flags & CHUNK_FLAG_EMPTY) != 0) {
         return; 
@@ -27,9 +35,12 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
         uint occupancy_word = occupancy_pool[occupancy_base + brick_index];
 
         uint item_count = 0;
-        // TODO: culling de frustum por brick (bounds do brick vs frustum).
-        if (occupancy_word != 0 && !is_brick_occluded(chunk.storage_slot_index, occupancy_word,
-                brick_coordinate_from_index(brick_index), chunk.neighbor_slots)) {
+        // VS-06 (REQ-CULL-03): ordem vazio → frustum → oclusão.
+        int3 brick_coord = brick_coordinate_from_index(brick_index);
+        float3 brick_min = float3(chunk.chunk_world_origin + brick_coord * BRICK_SIZE);
+        if (occupancy_word != 0 && !aabb_outside_frustum(brick_min, brick_min + float3(BRICK_SIZE),
+                frustum_planes) && !is_brick_occluded(chunk.storage_slot_index, occupancy_word,
+                brick_coord, chunk.neighbor_slots)) {
             uint subd_word = occupancy_pool[occupancy_base + SUBDIVISION_WORD_BASE + (brick_index >> 4u)];
             item_count = 1u << ((subd_word >> ((brick_index & 15u) * 2u)) & 3u);
         }
@@ -62,8 +73,11 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
         uint brick_index = thread + step * 128;
         uint occupancy_word = occupancy_pool[occupancy_base + brick_index];
 
-        if (occupancy_word == 0 || is_brick_occluded(chunk.storage_slot_index, occupancy_word,
-                brick_coordinate_from_index(brick_index), chunk.neighbor_slots)) {
+        int3 brick_coord = brick_coordinate_from_index(brick_index);
+        float3 brick_min = float3(chunk.chunk_world_origin + brick_coord * BRICK_SIZE);
+        if (occupancy_word == 0 || aabb_outside_frustum(brick_min, brick_min + float3(BRICK_SIZE),
+                frustum_planes) || is_brick_occluded(chunk.storage_slot_index, occupancy_word,
+                brick_coord, chunk.neighbor_slots)) {
             continue;
         }
         uint subd_word = occupancy_pool[occupancy_base + SUBDIVISION_WORD_BASE + (brick_index >> 4u)];

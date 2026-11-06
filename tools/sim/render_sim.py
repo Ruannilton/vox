@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simulacao da renderizacao mesh (VS-02, REQ-SIM-03).
+"""Simulacao da renderizacao mesh (VS-02, REQ-SIM-03; VS-06, REQ-SIM-04).
 
 Espelha src/assets/shaders/common.slang + build_work_queue/finalize_work_queue/
 build_brick_mesh (voxel.slang). A leitura de bloco usa o grid denso
@@ -17,6 +17,158 @@ fila e clamp do finalize, face_mask com redirecionamento B2 (AC-02), dois
 chunks adjacentes sem faces internas duplicadas (AC-02), rotacao yaw 0..3 vs
 ROTATED_FACE e tag 7 nunca culpada (AC-03).
 """
+
+import random
+import struct
+
+
+def f32(x):
+    """Arredonda um float Python (f64) para float32 — espelha as operações
+    float32 do shader (numpy indisponível neste ambiente; a soma/produto de
+    dois f32 em f64 é exata antes do arredondamento, o que equivale à
+    operação float32 corretamente arredondada)."""
+    return struct.unpack('<f', struct.pack('<f', x))[0]
+
+
+# ----------------------------------------------------------------------------
+# VS-06 — Frustum (REQ-SIM-04): derivação Gribb-Hartmann float32 vs oracle
+# independente (projeção dos 8 cantos do AABB para clip space). Convenção
+# Vulkan: clip = VP × mundo; NDC x,y ∈ [−1,1], z ∈ [0,1]. Matrizes em linhas:
+# clip_i = dot(linha_i, p). Espelha common.slang.
+# ----------------------------------------------------------------------------
+
+def mat_mul(a, b):
+    """Produto de matrizes 4x4 em f64 (linhas)."""
+    return [[sum(a[i][k] * b[k][j] for k in range(4)) for j in range(4)] for i in range(4)]
+
+
+def look_at(eye, target, up=(0.0, 1.0, 0.0)):
+    """View RH estilo glm.mat4LookAt (f64, linhas)."""
+    def sub(a, b): return tuple(a[i] - b[i] for i in range(3))
+    def dot(a, b): return sum(a[i] * b[i] for i in range(3))
+    def norm(a):
+        l = dot(a, a) ** 0.5
+        return tuple(x / l for x in a)
+    def cross(a, b):
+        return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+    f = norm(sub(target, eye))
+    r = norm(cross(f, up))
+    u = cross(r, f)
+    return [
+        [r[0], r[1], r[2], -dot(r, eye)],
+        [u[0], u[1], u[2], -dot(u, eye)],
+        [-f[0], -f[1], -f[2], dot(f, eye)],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def perspective_gl(fov_y_deg, aspect, near, far):
+    """Projeção estilo GL (z ∈ [−1,1]) — o app aplica a correção
+    GL_TO_VK_CLIP por último (main.odin). f64, linhas."""
+    import math
+    f = 1.0 / math.tan(math.radians(fov_y_deg) / 2.0)
+    return [
+        [f / aspect, 0.0, 0.0, 0.0],
+        [0.0, f, 0.0, 0.0],
+        [0.0, 0.0, (far + near) / (near - far), (2.0 * far * near) / (near - far)],
+        [0.0, 0.0, -1.0, 0.0],
+    ]
+
+
+GL_TO_VK_CLIP = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, -1.0, 0.0, 0.0],
+    [0.0, 0.0, 0.5, 0.5],
+    [0.0, 0.0, 0.0, 1.0],
+]
+
+
+def make_vp(eye, target, fov=60.0, aspect=16.0 / 9.0, near=0.5, far=500.0):
+    """VP float32 na convenção do app (GL_TO_VK_CLIP * P * V)."""
+    vp = mat_mul(GL_TO_VK_CLIP, mat_mul(perspective_gl(fov, aspect, near, far), look_at(eye, target)))
+    return [[f32(v) for v in row] for row in vp]
+
+
+def frustum_planes_from_vp(vp):
+    """Gribb-Hartmann float32 (espelha common.slang). Retorna 6 float4:
+    left, right, bottom, top, near, far — normal xyz para dentro, w offset,
+    normalizados. No shader a VP é column_major e vp[i] é a COLUNA i, então
+    as linhas são rederivadas por transposição — aqui `vp` já é a matriz em
+    linhas (matematicamente idêntico)."""
+    r0, r1, r2, r3 = vp[0], vp[1], vp[2], vp[3]
+    raw = [
+        [f32(r3[i] + r0[i]) for i in range(4)],  # left
+        [f32(r3[i] - r0[i]) for i in range(4)],  # right
+        [f32(r3[i] + r1[i]) for i in range(4)],  # bottom
+        [f32(r3[i] - r1[i]) for i in range(4)],  # top
+        list(r2),                                 # near (z_ndc >= 0)
+        [f32(r3[i] - r2[i]) for i in range(4)],  # far
+    ]
+    planes = []
+    for p in raw:
+        # length(xyz): raiz da soma de quadrados em float32
+        s = f32(f32(f32(p[0] * p[0]) + f32(p[1] * p[1])) + f32(p[2] * p[2]))
+        if s == 0.0:
+            # norma zero (VP degenerado): 0/0 = NaN no shader — comparações
+            # falham e o teste vira conservador (nunca culpa)
+            planes.append([float('nan')] * 4)
+            continue
+        inv = f32(1.0 / f32(s ** 0.5))
+        planes.append([f32(c * inv) for c in p])
+    return planes
+
+
+def mat_vec_f32(m, p):
+    """clip = M × p com arredondamento float32 por operação (espelha mul)."""
+    out = []
+    for i in range(4):
+        acc = 0.0
+        for k in range(4):
+            acc = f32(acc + f32(m[i][k] * p[k]))
+        out.append(acc)
+    return out
+
+
+def plane_distance_f32(plane, point):
+    """dot(float4(p, 1), plano) com arredondamento float32 por operação."""
+    acc = 0.0
+    for k in range(3):
+        acc = f32(acc + f32(plane[k] * point[k]))
+    return f32(acc + plane[3])
+
+
+def aabb_outside_frustum(box_min, box_max, planes):
+    """p-vertex clássico (espelha common.slang): cull apenas se o vértice mais
+    positivo na direção da normal falhar algum plano."""
+    for p in planes:
+        pv = [box_max[k] if p[k] >= 0.0 else box_min[k] for k in range(3)]
+        if plane_distance_f32(p, pv) < 0.0:
+            return True
+    return False
+
+
+# --- oracle independente (f64 = valor exato dos dados float32) ---
+
+def oracle_box_outside(vp64, box_min, box_max):
+    """Projete os 8 cantos para clip (f64) e verifique as inequações de NDC
+    (Vulkan): dentro sse -w <= x <= w, -w <= y <= w, 0 <= z <= w. Fora sse os
+    8 cantos violam a MESMA inequação. Retorna (fora, decisivo): 'decisivo'
+    marca se nenhuma inequação ficou a menos de 1e-6 relativo de zero (casos
+    de fronteira dentro do erro de arredondamento float32 não são exigíveis)."""
+    corners = [[box_min[0] if i & 1 else box_max[0],
+                box_min[1] if i & 2 else box_max[1],
+                box_min[2] if i & 4 else box_max[2], 1.0] for i in range(8)]
+    clips = [[sum(vp64[r][k] * c[k] for k in range(4)) for r in range(4)] for c in corners]
+    # inequações: left/right/bottom/top/near/far >= 0 dentro
+    vals = []
+    for cl in clips:
+        vals.append([cl[0] + cl[3], cl[3] - cl[0], cl[1] + cl[3],
+                     cl[3] - cl[1], cl[2], cl[3] - cl[2]])
+    scale = max(1.0, max(abs(v) for row in vals for v in row))
+    decisive = all(abs(v) > 1e-6 * scale for row in vals for v in row)
+    outside = any(all(row[i] < 0.0 for row in vals) for i in range(6))
+    return outside, decisive
+
 
 CHUNK_SIZE = 32
 CHUNK_VOXEL_COUNT = 32 ** 3
@@ -314,9 +466,21 @@ def work_queue_base_words(visible_chunk_offset):
     return (visible_chunk_offset // MAXIMUM_VISIBLE_CHUNKS) * WORK_QUEUE_SLOT_WORDS
 
 
-def build_work_queue(chunks, visible_slots):
+def chunk_aabb(origin):
+    return (tuple(float(o) for o in origin), tuple(float(origin[i] + CHUNK_SIZE) for i in range(3)))
+
+
+def brick_aabb(origin, brick_idx):
+    bc = brick_coordinate_from_index(brick_idx)
+    lo = tuple(float(origin[i] + bc[i] * BRICK_SIZE[i]) for i in range(3))
+    return lo, tuple(lo[i] + float(BRICK_SIZE[i]) for i in range(3))
+
+
+def build_work_queue(chunks, visible_slots, frustum_planes=None):
     """Espelha o builder: 1 workgroup por chunk visivel; append atomico global
     (a ordem entre chunks e corrida — aqui serializamos na ordem da lista).
+    Com frustum_planes (VS-06): early-out de chunk e culling por brick na
+    mesma ordem do shader (vazio -> frustum -> oclusao).
     Retorna (items, total, overflow)."""
     items = []
     total = 0
@@ -325,10 +489,18 @@ def build_work_queue(chunks, visible_slots):
         chunk = chunks[slot]
         if all(b == 0 for b in chunk["dense"]):
             continue  # CHUNK_FLAG_EMPTY: workgroup nao anexa nada
+        if frustum_planes is not None:
+            lo, hi = chunk_aabb(chunk["origin"])
+            if aabb_outside_frustum(lo, hi, frustum_planes):
+                continue  # early-out: sem ler ocupacao/header
         for brick_idx in range(BRICKS_PER_CHUNK):
             occupancy = brick_occupancy_word(chunks, slot, brick_coordinate_from_index(brick_idx))
             if occupancy == 0:
                 continue
+            if frustum_planes is not None:
+                lo, hi = brick_aabb(chunk["origin"], brick_idx)
+                if aabb_outside_frustum(lo, hi, frustum_planes):
+                    continue
             # Culling de brick ocluso: cheio + 6 vizinhos cheios = zero faces.
             if occupancy == FULL_BRICK and is_brick_occluded(
                 chunks, slot, brick_coordinate_from_index(brick_idx), chunk["neighbors"]
@@ -666,6 +838,225 @@ def scenario_rotation():
     check("r=1: face +X rotacionada sobrevive com mascara -Z", triangle_survives_culling(tri_px, 1, mask))
 
 
+def scenario_frustum_planes_vs_oracle():
+    print("[cenario] VS-06: derivacao de planos (GH f32) vs oracle de cantos")
+    rng = random.Random(20261106)
+    decisive_total = 0
+    for case in range(400):
+        eye = (rng.uniform(-300, 300), rng.uniform(40, 300), rng.uniform(-300, 300))
+        target = (eye[0] + rng.uniform(-80, 80), rng.uniform(-20, 60),
+                  eye[2] + rng.uniform(-80, 80))
+        near = rng.uniform(0.1, 2)
+        far = rng.uniform(100, 2000)
+        vp = make_vp(eye, target, fov=rng.uniform(30, 90),
+                     aspect=rng.uniform(0.5, 2.5), near=near, far=far)
+        vp64 = [[float(v) for v in row] for row in vp]
+        planes = frustum_planes_from_vp(vp)
+        # planos normalizados: |n| == 1 e n apontando para dentro
+        check(f"caso {case}: planos normalizados",
+              all(abs(sum(p[k] * p[k] for k in range(3)) ** 0.5 - 1.0) < 2e-5 for p in planes))
+        dir = tuple(target[k] - eye[k] for k in range(3))
+        ln = sum(d * d for d in dir) ** 0.5
+        dist = 2.0 * near + 0.25  # 2x o near deste caso + folga
+        ahead = tuple(eye[k] + dir[k] / ln * dist for k in range(3))
+        exact_ahead, dec_ahead = oracle_box_outside(vp64, ahead, ahead)
+        check(f"caso {case}: ponto a frente da camera dentro (near/far)",
+              dec_ahead and not exact_ahead)
+        for _ in range(4):
+            lo = tuple(rng.uniform(-400, 400) for _ in range(3))
+            size = tuple(rng.uniform(0.0, 40.0) for _ in range(3))  # 0 = degenerado
+            hi = tuple(lo[i] + size[i] for i in range(3))
+            exact_outside, decisive = oracle_box_outside(vp64, lo, hi)
+            if not decisive:
+                continue  # fronteira dentro do erro de arredondamento f32
+            decisive_total += 1
+            gh_outside = aabb_outside_frustum(lo, hi, planes)
+            check(f"caso {case}: GH f32 == oracle exato ({lo})", gh_outside == exact_outside)
+    check("amostragem: >= 1000 casos decisivos executados", decisive_total >= 1000)
+    print(f"  ({decisive_total} casos decisivos)")
+
+
+def scenario_frustum_edge_cases():
+    print("[cenario] VS-06: dados-limite (fora por cada plano, intersectando,")
+    print("          atras da camera, atras do near, degenerado)")
+    eye = (0.0, 70.0, -120.0)
+    target = (0.0, 30.0, 0.0)
+    vp = make_vp(eye, target)
+    vp64 = [[float(v) for v in row] for row in vp]
+    planes = frustum_planes_from_vp(vp)
+
+    # AABB visivel de referencia: no centro do frustum, colado no chao
+    lo = (-4.0, 28.0, -4.0)
+    hi = (4.0, 34.0, 4.0)
+    check("dentro: nao culpado", not aabb_outside_frustum(lo, hi, planes))
+    exact, dec = oracle_box_outside(vp64, lo, hi)
+    check("dentro: oracle concorda (dentro)", dec and not exact)
+
+    # fora por cada plano: deslocamentos grandes na direcao de cada normal
+    normals = [(p[0], p[1], p[2]) for p in planes]
+    for i, n in enumerate(normals):
+        d = 600.0
+        lo2 = (lo[0] + n[0] * d, lo[1] + n[1] * d, lo[2] + n[2] * d)
+        hi2 = (hi[0] + n[0] * d, hi[1] + n[1] * d, hi[2] + n[2] * d)
+        exact, dec = oracle_box_outside(vp64, lo2, hi2)
+        check(f"fora pelo plano {i}: oracle decisivo e fora", dec and exact)
+        check(f"fora pelo plano {i}: GH culpa", aabb_outside_frustum(lo2, hi2, planes))
+
+    # intersectando cada plano: metade dentro, metade fora (nao culpa)
+    for i, n in enumerate(normals):
+        # atravessa o plano: offset tal que uma ponta fique de cada lado
+        center = tuple((lo[k] + hi[k]) / 2.0 for k in range(3))
+        dist_center = sum(n[k] * center[k] for k in range(3)) + planes[i][3]
+        shift = -dist_center  # move o centro exatamente sobre o plano
+        lo2 = (lo[0] + n[0] * shift, lo[1] + n[1] * shift, lo[2] + n[2] * shift)
+        hi2 = (hi[0] + n[0] * shift, hi[1] + n[1] * shift, hi[2] + n[2] * shift)
+        exact, _ = oracle_box_outside(vp64, lo2, hi2)
+        check(f"intersectando o plano {i}: nao culpado",
+              not aabb_outside_frustum(lo2, hi2, planes))
+
+    # atras da camera e atras do plano near
+    behind = (-4.0, 68.0, -260.0), (4.0, 72.0, -180.0)
+    exact, dec = oracle_box_outside(vp64, *behind)
+    check("atras da camera: oracle fora", dec and exact)
+    check("atras da camera: GH culpa", aabb_outside_frustum(*behind, planes))
+    # atras do plano near (near = 0.5): box a ~0.2 do olho, dentro dos limites
+    # laterais — camera nivelada olhando -Z... +Z a partir de (0,70,-120)
+    near_clip = (-1.0, 69.5, -119.9), (1.0, 70.5, -119.8)
+    exact_near, dec_near = oracle_box_outside(vp64, *near_clip)
+    check("atras do near: oracle decisivo e fora", dec_near and exact_near)
+    check("atras do near: GH culpa", aabb_outside_frustum(*near_clip, planes))
+
+    # degenerado (min == max) dentro e fora
+    pt_inside = (0.0, 30.0, 0.0)
+    check("degenerado dentro: nao culpado",
+          not aabb_outside_frustum(pt_inside, pt_inside, planes))
+    pt_out = (1000.0, 30.0, 0.0)
+    check("degenerado fora: culpado", aabb_outside_frustum(pt_out, pt_out, planes))
+
+    # VP singular (frustum degenerado): pior caso e nao culpar nada proximo
+    zero_vp = [[0.0] * 4 for _ in range(4)]
+    zero_planes = frustum_planes_from_vp(zero_vp)
+    check("VP zero: AABB dentro nao culpado (conservador)",
+          not aabb_outside_frustum(lo, hi, zero_planes))
+
+
+def scenario_frustum_granularity():
+    print("[cenario] VS-06: granularidade chunk (early-out) e brick 4x2x4")
+    registry = {1: BlockDef(1)}
+    chunks = {0: make_chunk((0, 0, 0), lambda c: 1)}
+    pack_subdivisions(chunks[0], registry)
+
+    # camera olhando para +Z a partir de -Z: chunks em +X/-X/Y longe sao fora
+    eye = (16.0, 40.0, -160.0)
+    vp = make_vp(eye, (16.0, 40.0, 0.0))
+    planes = frustum_planes_from_vp(vp)
+
+    # early-out: chunk inteiramente fora (lateral) gera zero itens
+    _, total_out, _ = build_work_queue(chunks, [0], planes)
+    check("chunk alinhado no eixo de visao: nao culpado no early-out", total_out == 520)
+
+    # early-out dispara para chunk atras da camera
+    chunks_back = {1: make_chunk((0, 0, -256), lambda c: 1)}
+    pack_subdivisions(chunks_back[1], registry)
+    _, total_back, _ = build_work_queue(chunks_back, [1], planes)
+    check("chunk atras da camera: early-out (0 itens)", total_back == 0)
+
+    # brick NAO e cubico: AABB 4x2x4 — brick colado na lateral do frustum
+    # fora nao e culpado se intersectar; offset por eixo confirma a assimetria
+    chunk = chunks[0]
+    for axis, extent in enumerate(BRICK_SIZE):
+        bi = brick_index_from_coordinate((7, 0, 7) if axis == 0 else ((0, 15, 7) if axis == 1 else (0, 0, 7)))
+        lo, hi = brick_aabb(chunk["origin"], bi)
+        check(f"brick (4,2,4) eixo {axis}: AABB com extensao correta",
+              all(abs(hi[k] - lo[k] - float(BRICK_SIZE[k])) < 1e-6 for k in range(3)))
+
+
+def scenario_frustum_horizon():
+    print("[cenario] VS-06: camera no horizonte — invariancia da intersecao")
+    print("          e reducao da contagem de itens")
+    registry = {1: BlockDef(1), 2: BlockDef(2)}
+    rng = random.Random(7)
+    # faixa de terreno 8x8 chunks com relevo, camera dentro olhando o horizonte
+    chunks = {}
+    visible = []
+    for cx in range(8):
+        for cz in range(8):
+            origin = (cx * 32, -8, cz * 32)
+            slot = len(chunks)
+            def fill(c, o=origin, r=rng):
+                h = 3 + int(3.0 * r.random())  # camada superficial
+                wy = o[1] + c[1]
+                if wy == o[1]:
+                    return 2  # grama
+                return 1 if 0 <= wy < h else 0
+            chunks[slot] = make_chunk(origin, fill)
+            visible.append(slot)
+    for c in chunks.values():
+        pack_subdivisions(c, registry)
+
+    poses = [
+        ((100.0, 12.0, -60.0), (140.0, 8.0, 200.0)),   # horizonte +Z
+        ((100.0, 12.0, 100.0), (140.0, 30.0, -120.0)), # horizonte -Z (re)
+        ((100.0, 200.0, 100.0), (100.0, 0.0, 104.0)),  # top-down
+        ((100.0, 12.0, 100.0), (-200.0, 8.0, 100.0)),  # horizonte -X
+    ]
+    for pi, (eye, target) in enumerate(poses):
+        vp = make_vp(eye, target)
+        vp64 = [[float(v) for v in row] for row in vp]
+        planes = frustum_planes_from_vp(vp)
+        items_base, total_base, _ = build_work_queue(chunks, visible)
+        items_cull, total_cull, _ = build_work_queue(chunks, visible, planes)
+        print(f"  pose {pi}: sem culling={total_base} com frustum={total_cull}")
+
+        # invariancia: todo brick selecionado com culling intersecta o frustum
+        # (oracle exato) e estava na selecao sem culling; e vice-versa para os
+        # nao-culpados pela oclusao/vazio
+        base_set = set(items_base)
+        cull_set = set(items_cull)
+        check(f"pose {pi}: contagem caida ({total_base} -> {total_cull})",
+              total_cull < total_base)
+        check(f"pose {pi}: subconjunto da selecao sem culling",
+              cull_set <= base_set)
+        selection_invariant = True
+        oracle_agrees = True
+        for slot in visible:
+            origin = chunks[slot]["origin"]
+            clo, chi = chunk_aabb(origin)
+            if aabb_outside_frustum(clo, chi, planes):
+                exact, _ = oracle_box_outside(vp64, clo, chi)
+                oracle_agrees = oracle_agrees and exact
+                continue  # early-out: nada selecionado
+            for brick_idx in range(BRICKS_PER_CHUNK):
+                bc = brick_coordinate_from_index(brick_idx)
+                if brick_occupancy_word(chunks, slot, bc) == 0:
+                    continue
+                lo, hi = brick_aabb(origin, brick_idx)
+                gh_out = aabb_outside_frustum(lo, hi, planes)
+                exact, decisive = oracle_box_outside(vp64, lo, hi)
+                if decisive and gh_out != exact:
+                    oracle_agrees = False
+                if gh_out:
+                    # culpado pelo GH: nao pode estar na fila
+                    for part in range(4):
+                        if pack_work_item(visible.index(slot), brick_idx, part, 0) in cull_set:
+                            selection_invariant = False
+                else:
+                    # nao culpado: mesma decisao de vazio/oclusao de antes
+                    was_selected = any(
+                        pack_work_item(visible.index(slot), brick_idx, part,
+                                       chunks[slot]["subdivisions"][brick_idx]) in base_set
+                        for part in range(1 << chunks[slot]["subdivisions"][brick_idx]))
+                    is_selected = any(
+                        pack_work_item(visible.index(slot), brick_idx, part,
+                                       chunks[slot]["subdivisions"][brick_idx]) in cull_set
+                        for part in range(1 << chunks[slot]["subdivisions"][brick_idx]))
+                    if was_selected != is_selected:
+                        selection_invariant = False
+        check(f"pose {pi}: GH f32 == oracle exato (todos os bricks)", oracle_agrees)
+        check(f"pose {pi}: invariancia da selecao (intersectantes intactos)",
+              selection_invariant)
+
+
 def main():
     scenario_budget()
     scenario_selection()
@@ -673,6 +1064,10 @@ def main():
     scenario_occlusion_culling()
     scenario_b2()
     scenario_rotation()
+    scenario_frustum_planes_vs_oracle()
+    scenario_frustum_edge_cases()
+    scenario_frustum_granularity()
+    scenario_frustum_horizon()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
 

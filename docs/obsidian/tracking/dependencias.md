@@ -12,12 +12,14 @@ graph TD
     VS03[VS-03 — Edição E1]
     VS04[VS-04 — Mirror C2]
     VS05[VS-05 — Telemetria e profiling GPU]
+    VS06[VS-06 — Culling de frustum]
 
     VS00 --> VS01
     VS01 --> VS02
     VS02 --> VS03
     VS03 --> VS04
     VS04 --> VS05
+    VS02 --> VS06
 ```
 
 ## Registro normativo
@@ -30,6 +32,7 @@ graph TD
 | [[VS-03-edicao-e1|VS-03]] | VS-02 | — | VS-04 |
 | [[VS-04-mirror-c2|VS-04]] | VS-03 | — | Consumidores futuros do mirror |
 | [[VS-05-telemetria-profiling|VS-05]] | VS-04 | — | — |
+| [[VS-06-culling-frustum|VS-06]] | VS-02 | — | — |
 
 ## Decisões incorporadas
 
@@ -37,6 +40,7 @@ graph TD
 - ADR-B6: a correção visual de plantas é trabalho posterior e não integra o aceite de VS-02.
 - ADR-B7: VS-02 usa Lambert + emissão; PBR é melhoria futura.
 - ADR-B10: VS-02 renderiza sem estágio task — builder compute na fila gráfica anexa itens numa fila de trabalho global e o draw é mesh-only indireto (o payload task→mesh não era entregue pelo driver do ambiente).
+- ADR-B11: VS-06 deriva os 6 planos do frustum na GPU no builder (Gribb-Hartmann) a partir da `view_projection_matrix` já presente nos push constants — nenhum contrato novo de memória; culling conservador em dois níveis (early-out de chunk + por brick).
 
 ## Dependências transversais a registrar nas specs
 

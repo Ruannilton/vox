@@ -149,6 +149,52 @@ struct EditChunkJob {
 };
 
 
+// VS-06 (REQ-CULL-01): planos do frustum por Gribb-Hartmann sobre a MESMA
+// view_projection_matrix que leva a clip_position no mesh shader — o frustum
+// testado é exatamente o renderizado. Convenção Vulkan: clip = VP × mundo,
+// NDC x,y ∈ [−1,1], z ∈ [0,1]. Ordem: left, right, bottom, top, near, far;
+// xyz = normal para dentro, w = offset; normalizados.
+// Atenção: com column_major, vp[i] é a COLUNA i — as linhas (que definem as
+// inequações de clip) são rederivadas aqui por transposição.
+float4[6] frustum_planes_from_vp(column_major float4x4 vp) {
+    float4 c0 = vp[0];
+    float4 c1 = vp[1];
+    float4 c2 = vp[2];
+    float4 c3 = vp[3];
+    float4 r0 = float4(c0.x, c1.x, c2.x, c3.x); // clip.x = r0 · p
+    float4 r1 = float4(c0.y, c1.y, c2.y, c3.y); // clip.y = r1 · p
+    float4 r2 = float4(c0.z, c1.z, c2.z, c3.z); // clip.z = r2 · p
+    float4 r3 = float4(c0.w, c1.w, c2.w, c3.w); // clip.w = r3 · p
+    float4[6] planes;
+    planes[0] = r3 + r0; // left:   x_ndc >= -1
+    planes[1] = r3 - r0; // right:  x_ndc <=  1
+    planes[2] = r3 + r1; // bottom: y_ndc >= -1
+    planes[3] = r3 - r1; // top:    y_ndc <=  1
+    planes[4] = r2;      // near:   z_ndc >=  0
+    planes[5] = r3 - r2; // far:    z_ndc <=  1
+    [unroll]
+    for (uint i = 0; i < 6; i++) {
+        planes[i] /= length(planes[i].xyz);
+    }
+    return planes;
+}
+
+// VS-06 (REQ-CULL-04): p-vertex clássico — um AABB só é culpado se estiver
+// inteiramente do lado de fora de um único plano (o vértice mais positivo na
+// direção da normal falha o plano). AABBs que intersectam nunca são culpados.
+bool aabb_outside_frustum(float3 box_min, float3 box_max, float4 planes[6]) {
+    [unroll]
+    for (uint i = 0; i < 6; i++) {
+        float3 n = planes[i].xyz;
+        float3 positive_vertex = float3(
+            n.x >= 0.0 ? box_max.x : box_min.x,
+            n.y >= 0.0 ? box_max.y : box_min.y,
+            n.z >= 0.0 ? box_max.z : box_min.z);
+        if (dot(float4(positive_vertex, 1.0), planes[i]) < 0.0) return true;
+    }
+    return false;
+}
+
 uint pack_work_item(uint visible_index, uint brick_index, uint part, uint subdivision) {
     return (visible_index & 0xFFFu) | ((brick_index & 1023u) << 12u) | ((part & 3u) << 22u) | ((subdivision & 3u) << 24u);
 }

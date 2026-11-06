@@ -1,6 +1,6 @@
 # Painel de status
 
-Última revisão geral: 2026-11-04.
+Última revisão geral: 2026-11-06.
 
 Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o frontmatter correspondente no mesmo trabalho.
 
@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 6 |
-| Specs aprovadas | 6 |
+| Specs registradas | 7 |
+| Specs aprovadas | 7 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 6 |
+| Implementações concluídas | 7 |
 | Validações verificadas | 5 |
 
-Seis especificações registradas; VS-00 a VS-04 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor).
+Sete especificações registradas; VS-00 a VS-04 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-06 (culling de frustum) tem implementação concluída e validação em andamento (AC-01 e AC-03 verificados; AC-02 com ressalva de z-fighting pré-existente aguardando confirmação visual humana — ver histórico da spec).
 
 ## Tracking das especificações
 
@@ -27,6 +27,7 @@ Seis especificações registradas; VS-00 a VS-04 estão integralmente concluída
 | VS-03 | [[VS-03-edicao-e1|Edição E1]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
 | VS-04 | [[VS-04-mirror-c2|Mirror C2]] | `aprovada` | `concluida` | `verificada` | VS-03 | — |
 | VS-05 | [[VS-05-telemetria-profiling|Telemetria e profiling GPU]] | `aprovada` | `concluida` | `em-validacao` | VS-04 | — |
+| VS-06 | [[VS-06-culling-frustum|Culling de frustum]] | `aprovada` | `concluida` | `em-validacao` | VS-02 | — |
 
 ## Decisões
 
@@ -48,6 +49,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-C2 | [[ADR-C2-mirror-cpu|Mirror CPU denso com export direto]] | `aceita` | VS-04 |
 | ADR-B10 | [[ADR-B10-fila-trabalho-global|Fila de trabalho global no lugar do payload]] | `aceita` | VS-02 |
 | ADR-T1 | [[ADR-T1-telemetria-vulkan-vma|Telemetria GPU via API Vulkan + VMA]] | `aceita` | VS-05 |
+| ADR-B11 | [[ADR-B11-culling-frustum|Culling de frustum por brick no builder]] | `aceita` | VS-06 |
 
 ## Vocabulário de status
 

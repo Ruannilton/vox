@@ -103,6 +103,8 @@ Cada workgroup de 128 threads avalia um chunk visível: células grossas vazias 
 
 **Correção B2 — fronteiras:** leituras que cruzam a borda do chunk são redirecionadas à ocupação real dos 6 vizinhos (publicada por frame pela CPU). Faces internas entre chunks sólidos não são mais emitidas em dobro. Como a geometria é refeita a cada frame, um vizinho ainda em geração é tratado como ar e a face some sozinha no frame em que ele concluir — sem dirty flags.
 
+**Culling de frustum (VS-06, ADR-B11):** o builder da fila de trabalho deriva os 6 planos do frustum (Gribb-Hartmann) da `view_projection_matrix` já presente nos push constants — a mesma matriz que leva `clip_position` no mesh shader. Em dois níveis: early-out do chunk (AABB 32³ fora → o workgroup inteiro retorna sem ler ocupação) e por brick (AABB 4×2×4 fora → nenhum item), com teste conservador de p-vertex na ordem vazio → frustum → oclusão. Sem push constants novos e sem nenhum pixel alterado para geometria visível.
+
 **Caminho B — templates de malha:** a geometria deixou de ser um switch hardcoded (CUBO/PLANTA) e virou dado. Uma tabela global de templates em SSBO descreve, para cada tipo de bloco, vértices e triângulos. Cada triângulo carrega uma tag de culling: colado numa face do voxel (some quando o vizinho é sólido ou a câmera está atrás) ou interior (nunca culpado). O cubo e a planta são apenas os templates 1 e 2; mods registram novos sem tocar nos shaders.
 
 **Regra do voxel unitário:** todo voxel ocupa exatamente 1 unidade³; os vértices de um template vivem em [0,1]³ — validado no carregamento. Se um objeto precisa de mais espaço (porta, cama, mesa), ele é dividido em múltiplos voxels, cada um com seu template-parte. Orientações (0°/90°/180°/270°) são um campo de rotação do bloco, não IDs novos.
@@ -181,6 +183,7 @@ Estados: PENDING_READBACK → (fence + memcpy + replay pending) → MATERIALIZED
 | B4 | bug médio | Worker submetia 1 chunk/submit: lotes de até 16 por vkQueueSubmit2 | Corrigido |
 | B9 | bug alto | generate_voxels cobria só 8192/32768 voxels: numthreads(8,8,8), job = thread_id.z/32 | Corrigido |
 | Caminho B | recurso | Templates de malha data-driven em SSBO + subdivisão de brick | Implementado |
+| Culling de frustum | recurso | Planos Gribb-Hartmann na GPU no builder: early-out de chunk + por brick (VS-06/ADR-B11) | Implementado |
 | E1 | recurso | Edição de voxels bufferizada com flush no command buffer do frame | Implementado |
 | C2 | recurso | Mirror CPU-side: ChunkPage denso u16 y-major + ring host-visible | Implementado |
 | B5 | backlog | Raio de geração 12 > 4096 slots | Pendente |
