@@ -195,7 +195,8 @@ bool aabb_outside_frustum(float3 box_min, float3 box_max, float4 planes[6]) {
 }
 
 uint pack_work_item(uint visible_index, uint brick_index, uint part, uint subdivision) {
-    return (visible_index & 0xFFFu) | ((brick_index & 1023u) << 12u) | ((part & 3u) << 22u) | ((subdivision & 3u) << 24u);
+    // VS-09 (REQ-WID-01): visible_index 16 bits — layout 16|10|2|2
+    return (visible_index & 0xFFFFu) | ((brick_index & 1023u) << 16u) | ((part & 3u) << 26u) | ((subdivision & 3u) << 28u);
 }
 
 // VS-02: saída do mesh shader.

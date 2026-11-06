@@ -181,11 +181,14 @@ config_parse_ini :: proc(text, path: string, cfg: ^Config) {
 @(private)
 config_derive_and_validate :: proc(cfg: ^Config) {
 	// REQ-CFG-03: coerência e limites de formato
-	if cfg.radius_vision < 1 || cfg.radius_vision > 9 {
+	// REQ-CFG-03 (emendada pela VS-09, REQ-WID-02): regra de formato com
+	// visible_index de 16 bits — visíveis <= 65535, logo vision <= 25
+	// (esfera(25) = 65.267; esfera(26) = 73.525 estoura).
+	if cfg.radius_vision < 1 || cfg.radius_vision > 25 {
 		config_fatal(
-			"streaming.vision = {} fora do intervalo válido 1..9 (limite de formato: visible_index tem 12 bits no item da fila de trabalho, no máximo 4096 visíveis; vision=10 daria {} > 4096)",
+			"streaming.vision = {} fora do intervalo válido 1..25 (limite de formato: visible_index tem 16 bits no item da fila de trabalho, no máximo 65535 visíveis; vision=26 daria {} > 65535)",
 			cfg.radius_vision,
-			sphere_count(10),
+			sphere_count(26),
 		)
 	}
 	if cfg.radius_simulation < 1 {

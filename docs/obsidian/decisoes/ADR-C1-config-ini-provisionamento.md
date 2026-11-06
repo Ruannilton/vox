@@ -49,7 +49,7 @@ Decisões necessárias: (1) fonte e formato da configuração; (2) como as capac
 ## Consequências
 
 - `MAXIMUM_VISIBLE_CHUNKS`, `MAXIMUM_RESIDENT_CHUNKS`, `MIRROR_PAGE_POOL_SIZE`, `MIRROR_RING_SLOTS`, `SCRATCH_CHUNK_COUNT` deixam de existir como constantes de compilação e viram campos de um `Config` carregado antes de `CreateEngine` — nenhum tamanho de buffer pode permanecer ligado a elas.
-- O limite vision ≤ 9 (12 bits do `visible_index`) é documentado no erro; alargar o empacotamento para 16 bits (sobram bits no item de 32) fica como backlog explícito.
+- O limite vision ≤ 9 (12 bits do `visible_index`) é documentado no erro; alargar o empacotamento para 16 bits (sobram bits no item de 32) fica como backlog explícito. **RESOLVIDO em 2026-11-06 pela [[ADR-B12-visible-index-16-bits|ADR-B12]]/[[VS-09-visible-index-16-bits|VS-09]]**: `visible_index` de 16 bits, cap de formato `vision ≤ 25`.
 - O backlog B5 (raio de geração > slots) é absorvido: slots derivados de `|esfera(generation)|` por construção.
 - A VS-05 passa a ser dependência de implementação (memory budget na validação), ainda que sua própria validação esteja em andamento (o uso é de API já integrada, não do AC pendente dela).
 

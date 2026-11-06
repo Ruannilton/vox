@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 9 |
-| Specs aprovadas | 9 |
+| Specs registradas | 10 |
+| Specs aprovadas | 10 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 9 |
-| Validações verificadas | 7 |
+| Implementações concluídas | 10 |
+| Validações verificadas | 8 |
 
-Nove especificações registradas; VS-00 a VS-04, VS-06 e VS-08 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-07 (eventos de input e replay) implementada e validada nos ACs 01/03/04, com AC-02 em validação aguardando smoke interativo manual do mantenedor; VS-08 (configuração via INI e provisionamento runtime) integralmente verificada — bateria de INIs inválidos, paridade com defaults e provisionamento custom validados.
+Dez especificações registradas; VS-00 a VS-04, VS-06, VS-08 e VS-09 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-07 implementada e validada nos ACs 01/03/04 (AC-02 aguarda smoke interativo manual).
 
 ## Tracking das especificações
 
@@ -30,6 +30,7 @@ Nove especificações registradas; VS-00 a VS-04, VS-06 e VS-08 estão integralm
 | VS-06 | [[VS-06-culling-frustum|Culling de frustum]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
 | VS-07 | [[VS-07-eventos-input-replay|Eventos de input, comandos e replay]] | `aprovada` | `concluida` | `em-validacao` | VS-03 | Smoke interativo manual do AC-02 (paridade record→replay e revisão de código já verificados) |
 | VS-08 | [[VS-08-config-ini-provisionamento|Configuração via INI e provisionamento runtime]] | `aprovada` | `concluida` | `verificada` | VS-05 | — |
+| VS-09 | [[VS-09-visible-index-16-bits|Visible index de 16 bits na fila de trabalho]] | `aprovada` | `concluida` | `verificada` | VS-08 | — |
 
 ## Decisões
 
@@ -54,6 +55,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-B11 | [[ADR-B11-culling-frustum|Culling de frustum por brick no builder]] | `aceita` | VS-06 |
 | ADR-I1 | [[ADR-I1-bus-eventos-input-replay|Bus de eventos de input com gravação e replay]] | `aceita` | VS-07 |
 | ADR-C1 | [[ADR-C1-config-ini-provisionamento|Configuração runtime via INI com provisionamento derivado]] | `aceita` | VS-08 |
+| ADR-B12 | [[ADR-B12-visible-index-16-bits|visible_index de 16 bits no item da fila de trabalho]] | `aceita` | VS-09 |
 
 ## Vocabulário de status
 

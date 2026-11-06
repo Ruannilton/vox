@@ -121,11 +121,12 @@ void build_brick_mesh(
     out vertices MeshVertex verts[MESH_VERTEX_MAXIMUM]
 ) {
 
+    // VS-09 (REQ-WID-01): visible_index 16 bits — layout 16|10|2|2
     uint item             = work_queue[work_queue_base_words() + WORK_QUEUE_STATE_WORDS + group_id.x];
-    uint visible_index    = item & 0xFFFu;
-    uint brick_idx        = (item >> 12u) & 1023u;
-    uint part             = (item >> 22u) & 3u;
-    uint subdivision_log2 = (item >> 24u) & 3u;
+    uint visible_index    = item & 0xFFFFu;
+    uint brick_idx        = (item >> 16u) & 1023u;
+    uint part             = (item >> 26u) & 3u;
+    uint subdivision_log2 = (item >> 28u) & 3u;
 
     VisibleChunk chunk = visible_chunks[push_constants.visible_chunk_offset + visible_index];
     uint slot = chunk.storage_slot_index;

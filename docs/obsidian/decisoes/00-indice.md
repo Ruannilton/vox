@@ -24,10 +24,11 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 | ADR-B11 | [[ADR-B11-culling-frustum|Culling de frustum por brick no builder]] | `aceita` | VS-06 |
 | ADR-I1 | [[ADR-I1-bus-eventos-input-replay|Bus de eventos de input com gravação e replay]] | `aceita` | VS-07 |
 | ADR-C1 | [[ADR-C1-config-ini-provisionamento|Configuração runtime via INI com provisionamento derivado]] | `aceita` | VS-08 |
+| ADR-B12 | [[ADR-B12-visible-index-16-bits|visible_index de 16 bits no item da fila de trabalho]] | `aceita` | VS-09 |
 
 ## Resumo
 
-- 18 decisões registradas e aceitas.
+- 19 decisões registradas e aceitas.
 - Nenhuma decisão pendente.
 - Nenhuma decisão representa, por si só, implementação concluída ou validação verificada.
 

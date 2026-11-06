@@ -471,11 +471,12 @@ def is_brick_occluded(chunks, slot, brick_coord, neighbor_slots):
 
 def pack_work_item(visible_index, brick_idx, part, subdivision):
     """Item de 32 bits da fila global (decodificado pelo mesh shader)."""
-    return (visible_index & 0xFFF) | ((brick_idx & 1023) << 12) | ((part & 3) << 22) | ((subdivision & 3) << 24)
+    # VS-09 (REQ-WID-01): visible_index 16 bits — layout 16|10|2|2
+    return (visible_index & 0xFFFF) | ((brick_idx & 1023) << 16) | ((part & 3) << 26) | ((subdivision & 3) << 28)
 
 
 def unpack_work_item(item):
-    return (item & 0xFFF, (item >> 12) & 1023, (item >> 22) & 3, (item >> 24) & 3)
+    return (item & 0xFFFF, (item >> 16) & 1023, (item >> 26) & 3, (item >> 28) & 3)
 
 
 def work_queue_base_words(visible_chunk_offset, visible_capacity=MAXIMUM_VISIBLE_CHUNKS):
@@ -651,21 +652,26 @@ def scenario_selection():
 
 def scenario_work_item_packing():
     print("[cenario] empacotamento do item de 32 bits e layout da fila")
-    cases = [
-        (0, 0, 0, 0),                    # item zero
-        (4095, 1023, 3, 2),              # maximos por campo
-        (1, 1, 0, 0),
-        (2109, 517, 2, 1),
-        (64, 64, 1, 2),
-    ]
-    check("campos cabem nos bits (12|10|2|2)",
-          all(v < 4096 and b < 1024 and p < 4 and s < 4 for v, b, p, s in cases))
-    check("roundtrip pack/unpack",
-          all(unpack_work_item(pack_work_item(*c)) == c for c in cases))
-    check("campos nao vazam entre si",
-          unpack_work_item(pack_work_item(0, 1023, 0, 0)) == (0, 1023, 0, 0))
-    check("item cabe em 32 bits sem sinal",
-          all(pack_work_item(*c) < (1 << 26) for c in cases))
+    # VS-09 (REQ-WID-01): visible_index 16 bits; cantos nas fronteiras de campo
+    corners = [(v, b, p, s)
+               for v in (0, 4095, 4096, 65535)
+               for b in (0, 1023)
+               for p in (0, 3)
+               for s in (0, 3)]
+    check("roundtrip nos cantos (16|10|2|2)",
+          all(unpack_work_item(pack_work_item(*c)) == c for c in corners))
+    check("campos nao vazam entre si (16 bits)",
+          unpack_work_item(pack_work_item(0, 1023, 0, 0)) == (0, 1023, 0, 0)
+          and unpack_work_item(pack_work_item(65535, 0, 3, 3)) == (65535, 0, 3, 3))
+    check("itens abaixo de 1<<30 (30 bits usados, 2 de reserva)",
+          all(pack_work_item(*c) < (1 << 30) for c in corners))
+    check("bit 12 antigo nao colide: 4096 != 0",
+          pack_work_item(4096, 0, 0, 0) != pack_work_item(0, 0, 0, 0))
+
+    # aritmetica do ring no pior caso (REQ-WID-03): 2 x (8 + 65535 x 1024)
+    # words ~ 134 M < 2^32 — offsets/indices permanecem u32
+    worst_words = 2 * (WORK_QUEUE_STATE_WORDS + 65535 * BRICKS_PER_CHUNK)
+    check("pior caso do ring cabe em u32 (2^32)", worst_words < (1 << 32))
 
     # layout do slot do ring: estado (8 words) + itens; 2 frames
     check("base do frame 0 = 0", work_queue_base_words(0) == 0)
@@ -1085,14 +1091,16 @@ def sphere_count_reference():
     x^2+y^2+z^2 <= r^2 — mesma definição de frontier_test.py. Nota: a tabela
     original da spec (523/3053/4189/7238 para r=5/9/10/12) divergia da
     fórmula; os valores abaixo são os corretos (VS-08, 2026-11-06)."""
-    return {2: 33, 3: 123, 5: 515, 8: 2109, 9: 3071, 10: 4169, 12: 7153}
+    return {2: 33, 3: 123, 5: 515, 8: 2109, 9: 3071, 10: 4169, 12: 7153,
+            25: 65267, 26: 73525}
 
 
 def validate_config_rules(vision, generation, unload, simulation,
                           chunks_per_batch, batches_in_flight):
-    """Espelha as regras de coerência de REQ-CFG-03; retorna (ok, regra)."""
-    if not (1 <= vision <= 9):
-        return False, "vision 1..9"
+    """Espelha as regras de coerência de REQ-CFG-03 (VS-09 emenda o formato:
+    1 <= vision <= 25); retorna (ok, regra)."""
+    if not (1 <= vision <= 25):
+        return False, "vision 1..25"
     if simulation < 1:
         return False, "simulation >= 1"
     if generation < vision:
@@ -1173,8 +1181,8 @@ def scenario_config():
     base = dict(vision=8, generation=9, unload=10, simulation=5,
                 chunks_per_batch=16, batches_in_flight=3)
     violations = [
-        ("vision 1..9", {"vision": 10}),
-        ("vision 1..9", {"vision": 0}),
+        ("vision 1..25", {"vision": 26}),
+        ("vision 1..25", {"vision": 0}),
         ("simulation >= 1", {"simulation": 0}),
         ("generation >= vision", {"vision": 6, "generation": 5}),
         ("generation < unload", {"unload": 9}),
@@ -1193,6 +1201,32 @@ def scenario_config():
                                          simulation=3, chunks_per_batch=8,
                                          batches_in_flight=2)
     check("INI custom do cenário de sucesso: aceita", ok_custom)
+
+    # VS-09 (REQ-SIM-06): fronteiras do novo cap de formato (16 bits)
+    check("esfera(25) = 65267 <= 65535 (visíveis cabem no visible_index)",
+          sphere_count(25) <= 65535)
+    check("esfera(26) = 73525 > 65535 (estoura o visible_index de 16 bits)",
+          sphere_count(26) > 65535)
+    ok_v10, _ = validate_config_rules(vision=10, generation=11, unload=12,
+                                      simulation=5, chunks_per_batch=16,
+                                      batches_in_flight=3)
+    check("vision=10 liberado pela validação de formato", ok_v10)
+    # vision=25 passa pela REGRA DE FORMATO (o cap resident_slots 16384 da
+    # VS-08, inalterado, limita a configuração completa — ver AC-03)
+    ok_v25, failed_v25 = validate_config_rules(vision=25, generation=26, unload=27,
+                                               simulation=5, chunks_per_batch=16,
+                                               batches_in_flight=3)
+    check("vision=25 (máximo de formato) não viola a regra de formato",
+          failed_v25 != "vision 1..25")
+
+    # capacidades representativas: default / vision 10 / máxima (REQ-SIM-06)
+    for cap, label in ((2109, "default (vision 8)"), (4169, "vision 10"),
+                       (65535, "máxima (vision 25)")):
+        slot_words = WORK_QUEUE_STATE_WORDS + cap * BRICKS_PER_CHUNK
+        check(f"cap {label}: finalize clampa em cap x 1024",
+              finalize_work_queue(cap * 1024 + 999, cap) == (cap * 1024, 1, 1))
+        check(f"cap {label}: 2 slots do ring cabem em u32",
+              2 * slot_words < (1 << 32))
 
 
 def main():
