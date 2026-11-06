@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 11 |
-| Specs aprovadas | 11 |
+| Specs registradas | 12 |
+| Specs aprovadas | 12 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 11 |
-| Validações verificadas | 9 |
+| Implementações concluídas | 12 |
+| Validações verificadas | 10 |
 
-Onze especificações registradas; VS-00 a VS-04, VS-06 e VS-08 a VS-10 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-07 implementada e validada nos ACs 01/03/04 (AC-02 aguarda smoke interativo manual); VS-10 (chunks vazios virtuais) implementada e validada em 2026-11-06 (ACs 01–03: sims, smoke de contadores + readback da fila e replay de edição no céu).
+Doze especificações registradas; VS-00 a VS-04, VS-06 e VS-08 a VS-10 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-07 implementada e validada nos ACs 01/03/04 (AC-02 aguarda smoke interativo manual); VS-11 (UVs nos templates de malha) está integralmente concluída e verificada (AC-01..03: sims 2.906/968 checks, paridade pixel a pixel com o baseline, validação de carga).
 
 ## Tracking das especificações
 
@@ -32,6 +32,7 @@ Onze especificações registradas; VS-00 a VS-04, VS-06 e VS-08 a VS-10 estão i
 | VS-08 | [[VS-08-config-ini-provisionamento|Configuração via INI e provisionamento runtime]] | `aprovada` | `concluida` | `verificada` | VS-05 | — |
 | VS-09 | [[VS-09-visible-index-16-bits|Visible index de 16 bits na fila de trabalho]] | `aprovada` | `concluida` | `verificada` | VS-08 | — |
 | VS-10 | [[VS-10-chunks-vazios-virtuais|Chunks vazios virtuais]] | `aprovada` | `concluida` | `verificada` | VS-04 | — |
+| VS-11 | [[VS-11-uvs-templates|UVs nos templates de malha]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
 
 ## Decisões
 
@@ -58,6 +59,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-C1 | [[ADR-C1-config-ini-provisionamento|Configuração runtime via INI com provisionamento derivado]] | `aceita` | VS-08 |
 | ADR-B12 | [[ADR-B12-visible-index-16-bits|visible_index de 16 bits no item da fila de trabalho]] | `aceita` | VS-09 |
 | ADR-V1 | [[ADR-V1-chunks-vazios-virtuais|Chunks vazios virtuais sem slot]] | `aceita` | VS-10 |
+| ADR-U1 | [[ADR-U1-uvs-templates-malha|UVs nos templates de malha]] | `aceita` | VS-11 |
 
 ## Vocabulário de status
 

@@ -119,9 +119,15 @@ struct MeshTemplate {
     uint triangle_count;
     uint worst_case_tris; // pré-computado no load
     uint flags;           // bit 0: HAS_FLUSH_FACES
-    uint padding_0;
+    // VS-11 (REQ-UV-02): offset no pool template_uvs (binding 19); o template
+    // não tem pool de UVs quando uv_offset == NO_TEMPLATE_UV_OFFSET — o mesh
+    // shader emite a sentinela float2(-1,-1) e o fragment cai no triplanar.
+    uint uv_offset;
     uint padding_1;
-};
+}
+
+// VS-11 (REQ-UV-02): ausência de pool de UVs no template (sentinela interna).
+static const uint NO_TEMPLATE_UV_OFFSET = 0xFFFFFFFFu;
 
 struct PushConstants {
     column_major float4x4 view_projection_matrix;
@@ -199,18 +205,22 @@ uint pack_work_item(uint visible_index, uint brick_index, uint part, uint subdiv
     return (visible_index & 0xFFFFu) | ((brick_index & 1023u) << 16u) | ((part & 3u) << 26u) | ((subdivision & 3u) << 28u);
 }
 
-// VS-02: saída do mesh shader.
+// VS-02: saída do mesh shader. VS-11 (REQ-UV-01): +uv (TEXCOORD0) — 10
+// componentes de saída por vértice, distante do limite de
+// maxMeshOutputComponents; world_position segue necessário para as normais
+// por derivadas (REQ-SHADE-02).
 struct MeshVertex {
     float4 clip_position  : SV_Position;
     float3 world_position : WORLD_POSITION;
     uint   block_id       : BLENDINDICES;
+    float2 uv             : TEXCOORD0; // (-1,-1) = sentinela: fragment usa triplanar
 };
 
 [[vk::push_constant]] PushConstants push_constants;
 
 // ----------------------------------------------------------------------------
 // Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–15 = VS-03;
-// 16 = VS-04; 18 = VS-10)
+// 16 = VS-04; 18 = VS-10; 19 = VS-11)
 // ----------------------------------------------------------------------------
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint>               temporary_dense_chunks;
 [[vk::binding(1, 0)]] StructuredBuffer<ChunkGenerationJob>   generation_jobs;
@@ -233,6 +243,9 @@ struct MeshVertex {
 // VS-10 (REQ-VRT-02): flags do header por slot, escritas pelo pack e lidas
 // pelo handler de conclusão (host-visible) após a timeline do lote.
 [[vk::binding(18, 0)]] RWStructuredBuffer<uint>                chunk_result_flags;
+// VS-11 (REQ-UV-02): pool de UVs dos templates — paralelo e indexado como
+// template_vertices (stride 8 B, std430 float2); MeshTemplate.uv_offset.
+[[vk::binding(19, 0)]] StructuredBuffer<float2>                template_uvs;
 
 
 uint work_queue_base_words() {

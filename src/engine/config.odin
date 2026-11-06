@@ -284,6 +284,7 @@ config_device_bytes_required :: proc() -> u64 {
 		u64(MESH_TEMPLATE_CAPACITY) * size_of(MeshTemplate) +
 		1024 * 4 * size_of(f32) + // template_vertices
 		1024 * size_of(u32) + // template_triangles
+		1024 * 2 * size_of(f32) + // template_uvs (VS-11, binding 19)
 		16 // dummy_buffer
 
 	// VS-10 (REQ-VRT-05): feedback de flags do pack por slot (binding 18,

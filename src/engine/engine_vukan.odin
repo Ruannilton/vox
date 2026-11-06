@@ -486,7 +486,7 @@ destroy_sync_objects :: proc() {
 	log.info("Sync objects destroyed successfully")
 }
 
-DESCRIPTOR_SET_BINDING_COUNT :: 19
+DESCRIPTOR_SET_BINDING_COUNT :: 20 // VS-11: + binding 19 (template_uvs)
 PUSH_CONSTANTS_SIZE :: 92 // VS-08 (REQ-CFG-06): + visible_chunk_capacity
 
 @(private)

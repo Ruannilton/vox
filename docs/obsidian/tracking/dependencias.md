@@ -17,6 +17,7 @@ graph TD
     VS08[VS-08 — Configuração INI e provisionamento]
     VS09[VS-09 — Visible index 16 bits]
     VS10[VS-10 — Chunks vazios virtuais]
+    VS11[VS-11 — UVs nos templates]
 
     VS00 --> VS01
     VS01 --> VS02
@@ -28,6 +29,7 @@ graph TD
     VS07 --> VS08
     VS08 --> VS09
     VS09 --> VS10
+    VS10 --> VS11
 ```
 
 ## Registro normativo
@@ -45,6 +47,7 @@ graph TD
 | [[VS-08-config-ini-provisionamento|VS-08]] | VS-05 | — | — |
 | [[VS-09-visible-index-16-bits|VS-09]] | VS-08 | — | — |
 | [[VS-10-chunks-vazios-virtuais|VS-10]] | VS-04 | — | — |
+| [[VS-11-uvs-templates|VS-11]] | VS-02 | — | — |
 
 ## Decisões incorporadas
 
@@ -57,6 +60,7 @@ graph TD
 - ADR-C1: VS-08 carrega os parâmetros de streaming/compute de um INI e provisiona os recursos em runtime — capacidades derivadas das esferas (visíveis/slots/páginas), validação de coerência + limites de formato (12 bits do visible_index) e de máquina (memory budget da VS-05); push constant estendido para 92 B.
 - ADR-B12: VS-09 amplia o visible_index do item da fila para 16 bits (cap de formato vision ≤ 9 → ≤ 25), resolvendo o backlog da ADR-C1; contrato do item da VS-02 emendado nos três pontos de encode/decode (Slang pack, decode do mesh, sim).
 - ADR-V1: VS-10 introduz chunks vazios virtuais — chunk só-ar concluído vira estado EMPTY sem slot (feedback das flags do pack por binding 18, liberação imediata na conclusão B1), nunca publicado/despachado; edição materializa via geração + pending do E1; vizinhos o veem como ar (NEIGHBOR_SLOT_INVALID, B2) sem mudança de shader de render.
+- ADR-U1: VS-11 migra o albedo de triplanar para UVs por vértice dos templates (binding 19 template_uvs, MeshVertex +TEXCOORD0, sentinela (-1,-1) → fallback triplanar); orçamento mesh shader inalterado; REQ-SHADE-03 da VS-02 emendada.
 
 ## Dependências transversais a registrar nas specs
 

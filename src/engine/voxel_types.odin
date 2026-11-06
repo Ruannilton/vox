@@ -1,6 +1,6 @@
 package engine
 
-
+import "core:log"
 
 CHUNK_SIZE         :: 32
 CHUNK_VOXEL_COUNT  :: CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE
@@ -87,7 +87,9 @@ BlockDefinition :: struct {
 	padding_3:            u32,
 }
 
-// 32 B std430 — espelha o Slang.
+// 32 B std430 — espelha o Slang. VS-11 (REQ-UV-02): uv_offset no lugar de um
+// padding — offset no pool template_uvs (binding 19); NO_TEMPLATE_UV_OFFSET
+// marca template sem pool de UVs (mesh shader emite a sentinela).
 MeshTemplate :: struct {
 	vertex_offset:   u32,
 	vertex_count:    u32,
@@ -95,8 +97,27 @@ MeshTemplate :: struct {
 	triangle_count:  u32,
 	worst_case_tris: u32,
 	flags:           u32,
-	padding_0:       u32,
+	uv_offset:       u32,
 	padding_1:       u32,
+}
+
+NO_TEMPLATE_UV_OFFSET :: 0xFFFFFFFF
+
+// VS-11 (REQ-UV-04a): validação de carga do pool de UVs — mesma filosofia do
+// voxel unitário da VS-02 (validate_template): UVs, quando presentes, devem
+// estar em [0,1]²; a sentinela é interna ao mesh shader e nunca aparece num
+// template. Erro nomeia o índice do template e o vértice offending.
+validate_template_uvs :: proc(template_index: int, uvs: [][2]f32) -> bool {
+	for uv, i in uvs {
+		if uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1 {
+			log.errorf(
+				"template {}: UV do vértice {} fora de [0,1]²: ({}, {})",
+				template_index, i, uv.x, uv.y,
+			)
+			return false
+		}
+	}
+	return true
 }
 
 // 48 B — espelha o Slang

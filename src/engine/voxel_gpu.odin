@@ -23,6 +23,9 @@ VoxelGpu :: struct {
 	mesh_templates:         GpuBuffer,
 	template_vertices:      GpuBuffer,
 	template_triangles:     GpuBuffer,
+	// VS-11 (REQ-UV-02): pool de UVs dos templates (binding 19), paralelo a
+	// template_vertices e indexado por MeshTemplate.uv_offset.
+	template_uvs:           GpuBuffer,
 	work_queue:             GpuBuffer,
 	edit_jobs:              GpuBuffer,
 	edit_jobs_mapped:       [^]EditChunkJob,
@@ -397,6 +400,11 @@ voxel_gpu_init :: proc() {
 		vk.DeviceSize(1024 * size_of(u32)),
 		{.STORAGE_BUFFER, .TRANSFER_DST},
 	)
+	// VS-11 (REQ-UV-02): 1 float2 por vértice de template (stride 8 B std430).
+	voxel_gpu.template_uvs = gpu_buffer_create(
+		vk.DeviceSize(1024 * 2 * size_of(f32)),
+		{.STORAGE_BUFFER, .TRANSFER_DST},
+	)
 
 	voxel_gpu.work_queue = gpu_buffer_create(
 		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * config.work_queue_slot_words * size_of(u32)),
@@ -602,6 +610,7 @@ voxel_gpu_init :: proc() {
 		16 = voxel_gpu.mirror_export_ring.handle,
 		17 = voxel_gpu.work_queue.handle,
 		18 = voxel_gpu.chunk_result_flags.handle,
+		19 = voxel_gpu.template_uvs.handle,
 	}
 	buffer_infos: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorBufferInfo
 	writes: [DESCRIPTOR_SET_BINDING_COUNT]vk.WriteDescriptorSet
@@ -650,6 +659,7 @@ voxel_gpu_init :: proc() {
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_results.handle, .BUFFER, "edit_results")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.mirror_export_ring.handle, .BUFFER, "mirror_export_ring")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.chunk_result_flags.handle, .BUFFER, "chunk_result_flags")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.template_uvs.handle, .BUFFER, "template_uvs")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.generation_pipeline, .PIPELINE, "pipeline_generate")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.packing_pipeline, .PIPELINE, "pipeline_pack")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_pipeline, .PIPELINE, "pipeline_apply_voxel_edits")
@@ -693,6 +703,7 @@ voxel_gpu_destroy :: proc() {
 	gpu_buffer_destroy(&voxel_gpu.voxel_edits)
 	gpu_buffer_destroy(&voxel_gpu.edit_jobs)
 	gpu_buffer_destroy(&voxel_gpu.work_queue)
+	gpu_buffer_destroy(&voxel_gpu.template_uvs)
 	gpu_buffer_destroy(&voxel_gpu.template_triangles)
 	gpu_buffer_destroy(&voxel_gpu.template_vertices)
 	gpu_buffer_destroy(&voxel_gpu.mesh_templates)
@@ -1083,11 +1094,20 @@ upload_builtin_templates :: proc() {
 
 	cube_verts := BUILTIN_CUBE_VERTICES
 	plant_verts := BUILTIN_PLANT_VERTICES
+	// VS-11 (REQ-UV-02): built-ins com UV — cubo: projeção planar (x,z) por
+	// vértice (os 8 vértices são compartilhados entre 3 faces; unwrap por face
+	// exigiria duplicar vértices — simplificação registrada na VS-11, questão
+	// aberta de rotação/unwrap por face); planta: cada quad da cruz com [0,1]².
+	cube_uvs: [8][2]f32
+	for v, i in cube_verts do cube_uvs[i] = {v[0], v[2]}
+	plant_uvs := [8][2]f32{{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 0}, {1, 0}, {1, 1}, {0, 1}}
 	log.assert(validate_template(cube_verts[:], cube_tris[:]), "template cubo inválido")
 	log.assert(validate_template(plant_verts[:], plant_tris[:4]), "template planta inválido")
+	log.assert(validate_template_uvs(1, cube_uvs[:]), "UVs do template cubo fora de [0,1]²")
+	log.assert(validate_template_uvs(2, plant_uvs[:]), "UVs do template planta fora de [0,1]²")
 
 	templates := [3]MeshTemplate {
-		{}, // 0 = ar: nada emite
+		{uv_offset = NO_TEMPLATE_UV_OFFSET}, // 0 = ar: nada emite
 		{ // 1 = cubo
 			vertex_offset   = 0,
 			vertex_count    = 8,
@@ -1095,6 +1115,7 @@ upload_builtin_templates :: proc() {
 			triangle_count  = 12,
 			worst_case_tris = compute_worst_case_tris(cube_tris[:]),
 			flags           = TEMPLATE_FLAG_HAS_FLUSH_FACES,
+			uv_offset       = 0,
 		},
 		{ // 2 = planta
 			vertex_offset   = 8,
@@ -1103,6 +1124,7 @@ upload_builtin_templates :: proc() {
 			triangle_count  = 4,
 			worst_case_tris = compute_worst_case_tris(plant_tris[:4]),
 			flags           = 0,
+			uv_offset       = 8,
 		},
 	}
 
@@ -1112,10 +1134,14 @@ upload_builtin_templates :: proc() {
 	triangles: [16]u32
 	copy(triangles[0:12], cube_tris[:])
 	copy(triangles[12:16], plant_tris[:4])
+	uvs: [16][2]f32
+	copy(uvs[0:8], cube_uvs[:])
+	copy(uvs[8:16], plant_uvs[:])
 
 	upload_to_device_buffer(&templates, size_of(templates), voxel_gpu.mesh_templates.handle)
 	upload_to_device_buffer(&vertices, size_of(vertices), voxel_gpu.template_vertices.handle)
 	upload_to_device_buffer(&triangles, size_of(triangles), voxel_gpu.template_triangles.handle)
+	upload_to_device_buffer(&uvs, size_of(uvs), voxel_gpu.template_uvs.handle)
 }
 
 

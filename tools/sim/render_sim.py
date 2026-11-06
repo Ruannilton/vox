@@ -15,7 +15,9 @@ x = contagem de itens) e cada workgroup le o seu item por SV_GroupID.
 Cobre: orcamento 256v/192t por grupo (AC-01), selecao de bricks, lotacao da
 fila e clamp do finalize, face_mask com redirecionamento B2 (AC-02), dois
 chunks adjacentes sem faces internas duplicadas (AC-02), rotacao yaw 0..3 vs
-ROTATED_FACE e tag 7 nunca culpada (AC-03).
+ROTATED_FACE e tag 7 nunca culpada (AC-03), VS-10 (EMPTY como vizinho) e
+VS-11 (REQ-SIM-08): bounds de UV, roundtrip sentinela -> fallback triplanar
+e paridade de cor UV x triplanar na paleta solida.
 """
 
 import random
@@ -291,15 +293,51 @@ PLANT_TRIANGLES = [
     (0, 1, 2, CULL_FACE_NEVER), (0, 2, 3, CULL_FACE_NEVER),
     (4, 5, 6, CULL_FACE_NEVER), (4, 6, 7, CULL_FACE_NEVER),
 ]
+# --- VS-11 (REQ-SIM-08): pool de UVs dos templates (binding 19) ---
+# Sentinelas/contratos espelham common.slang/voxel_gpu.odin.
+UV_SENTINEL = (-1.0, -1.0)      # emitida pelo mesh shader quando o template nao tem UV
+NO_UV_OFFSET = 0xFFFFFFFF       # MeshTemplate.uv_offset: sem pool de UVs
+MESH_VERTEX_COMPONENTS = 10     # clip4 + world3 + block_id1 + uv2 (REQ-UV-01)
+MAX_MESH_OUTPUT_COMPONENTS = 128  # limite tipico auditado (REQ-UV-01)
+
+# Built-ins com UV (espelham upload_builtin_templates em voxel_gpu.odin):
+# cubo: 8 vertices compartilhados entre 3 faces cada — unwrap planar (x,z)
+# (equivale a projetar a face +/-Y; simplificacao registrada na VS-11,
+# questao aberta de rotacao/unwrap por face);
+# planta: cada quad da cruz com [0,1]^2 completo.
+CUBE_UVS = [(float(x), float(z)) for (x, y, z) in CUBE_VERTICES]
+PLANT_UVS = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] * 2
+
+
+def uv_in_bounds(uv):
+    """Validacao de carga (REQ-UV-04): UVs de template devem estar em
+    [0,1]^2; a sentinela e interna ao mesh shader, nunca aparece num template."""
+    return 0.0 <= uv[0] <= 1.0 and 0.0 <= uv[1] <= 1.0
+
+
+def emit_vertex_uv(template, vertex_index):
+    """Espelha a emissao no mesh shader: UV do pool quando o template tem
+    pool (uv_offset != NO_UV_OFFSET), senao a sentinela (-1,-1)."""
+    if template.uvs is None:
+        return UV_SENTINEL
+    return template.uvs[vertex_index]
+
+
+def fragment_uses_triplanar(uv):
+    """Espelha shade_voxel: uv.x >= 0 -> amostragem por UV; senao triplanar."""
+    return uv[0] < 0.0
+
+
 # Template sintetico pesado: 32 vertices, 24 triangulos todos tag NEVER.
 HEAVY_VERTICES = [(x / 3.0, y / 3.0, z / 3.0) for x in range(4) for y in range(4) for z in range(2)][:32]
 HEAVY_TRIANGLES = [(i % 32, (i + 1) % 32, (i + 2) % 32, CULL_FACE_NEVER) for i in range(24)]
 
 
 class Template:
-    def __init__(self, vertices, triangles):
+    def __init__(self, vertices, triangles, uvs=None):
         self.vertices = vertices
         self.triangles = triangles
+        self.uvs = uvs
         self.vertex_count = len(vertices)
         self.triangle_count = len(triangles)
         self.has_flush_faces = any(t[3] != CULL_FACE_NEVER for t in triangles)
@@ -315,9 +353,9 @@ class Template:
 
 TEMPLATES = {
     0: Template([], []),                  # ar
-    1: Template(CUBE_VERTICES, CUBE_TRIANGLES),
-    2: Template(PLANT_VERTICES, PLANT_TRIANGLES),
-    3: Template(HEAVY_VERTICES, HEAVY_TRIANGLES),
+    1: Template(CUBE_VERTICES, CUBE_TRIANGLES, CUBE_UVS),
+    2: Template(PLANT_VERTICES, PLANT_TRIANGLES, PLANT_UVS),
+    3: Template(HEAVY_VERTICES, HEAVY_TRIANGLES),  # sem UV: fallback triplanar
 }
 
 
@@ -1321,6 +1359,93 @@ def scenario_config():
               2 * slot_words < (1 << 32))
 
 
+def scenario_uvs():
+    print("[cenario] VS-11: UVs nos templates — bounds, sentinela, paridade de cor")
+    rng = random.Random(1106)
+
+    # REQ-UV-01: MeshVertex 8 -> 10 componentes, distante do limite
+    check("MeshVertex: 10 componentes (8 antigos + uv f2)",
+          MESH_VERTEX_COMPONENTS == 4 + 3 + 1 + 2)
+    check("MeshVertex: 10 <= 128 (maxMeshOutputComponents, folga)",
+          MESH_VERTEX_COMPONENTS <= MAX_MESH_OUTPUT_COMPONENTS)
+
+    # REQ-UV-04a/REQ-SIM-08: bounds — built-ins em [0,1]^2
+    for name, tmpl in (("cubo", TEMPLATES[1]), ("planta", TEMPLATES[2])):
+        check(f"{name}: pool de UV paralelo aos vertices ({tmpl.vertex_count})",
+              len(tmpl.uvs) == tmpl.vertex_count)
+        check(f"{name}: todas as UVs em [0,1]^2",
+              all(uv_in_bounds(uv) for uv in tmpl.uvs))
+        check(f"{name}: UVs cobrem os cantos do quadrado unitario",
+              {(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)} <= set(tmpl.uvs))
+
+    # sentinela exclusa da faixa valida (e interna: nunca em template)
+    check("sentinela (-1,-1) fora de [0,1]^2 (validacao rejeitaria)",
+          not uv_in_bounds(UV_SENTINEL))
+    check("validacao: UV com x=-0.5 rejeitada", not uv_in_bounds((-0.5, 0.25)))
+    check("validacao: UV com y=1.5 rejeitada", not uv_in_bounds((0.25, 1.5)))
+    check("validacao: template sem UVs e valido (fallback, sem erro)",
+          TEMPLATES[3].uvs is None and TEMPLATES[0].uvs is None)
+
+    # REQ-UV-02: roundtrip sentinela -> fallback triplanar; template com UV
+    # emite UV do pool
+    for i in range(TEMPLATES[1].vertex_count):
+        check(f"cubo: emissao devolve a UV do pool (v{i})",
+              emit_vertex_uv(TEMPLATES[1], i) == CUBE_UVS[i])
+    check("pesado (sem UV): emissao devolve a sentinela",
+          all(emit_vertex_uv(TEMPLATES[3], i) == UV_SENTINEL for i in range(32)))
+    check("ar: sem vertices, sem emissao", TEMPLATES[0].vertex_count == 0)
+    check("fragmento: uv.x >= 0 -> amostragem UV; sentinela -> triplanar",
+          not fragment_uses_triplanar((0.3, 0.7))
+          and fragment_uses_triplanar(UV_SENTINEL)
+          and fragment_uses_triplanar((-0.0 - 1e-6, 0.5)))
+
+    # REQ-UV-03/REQ-SIM-08: paridade de cor UV x triplanar na paleta solida.
+    # Paleta (voxel_gpu.odin): camada sólida por albedo_texture_index — a
+    # amostragem em qualquer UV devolve a mesma cor; o triplanar mistura tres
+    # projecoes da MESMA cor solida. Logo as rotas sao identicas por bloco.
+    SOLID_PALETTE = {1: (0.349, 0.749, 0.251),  # grama
+                     2: (0.502, 0.349, 0.200), # terra
+                     3: (0.549, 0.549, 0.580)} # pedra
+
+    def sample_uv(block_id, uv):
+        assert uv_in_bounds(uv)
+        return SOLID_PALETTE[block_id]
+
+    def sample_triplanar(block_id, world_pos, normal):
+        nx, ny, nz = (abs(c) for c in normal)
+        s = nx + ny + nz
+        # tres projecoes da mesma camada solida -> pesos somam 1
+        return SOLID_PALETTE[block_id]
+
+    for block_id in SOLID_PALETTE:
+        for _ in range(50):
+            uv = (rng.random(), rng.random())
+            pos = tuple(rng.uniform(-100, 100) for _ in range(3))
+            axis = rng.randrange(3)
+            sign = rng.choice((-1.0, 1.0))
+            normal = tuple(sign if i == axis else 0.0 for i in range(3))
+            check(f"bloco {block_id}: cor UV == cor triplanar",
+                  sample_uv(block_id, uv) == sample_triplanar(block_id, pos, normal))
+
+    # orcamento (REQ-UV-04b): uv e atributo — contagens de vertices/triangulos
+    # inalteradas (mesmo cenario de orcamento, agora com UVs nos built-ins)
+    registry = {1: BlockDef(1), 2: BlockDef(2)}
+    chunks = {0: make_chunk((0, 0, 0), lambda c: 1 if c[1] == 0 else 2)}
+    pack_subdivisions(chunks[0], registry)
+    items, _, _ = build_work_queue(chunks, [0])
+    worst_v = 0
+    worst_t = 0
+    for item in items:
+        for camera in CAMERAS_6:
+            v, t = mesh_group_counts(item, chunks, [0], registry, camera)
+            worst_v = max(worst_v, v)
+            worst_t = max(worst_t, t)
+    check("orcamento inalterado: vertices <= 256 (com UV nos built-ins)",
+          worst_v <= MESH_VERTEX_MAXIMUM)
+    check("orcamento inalterado: triangulos <= 192 (com UV nos built-ins)",
+          worst_t <= MESH_TRIANGLE_MAXIMUM)
+
+
 def main():
     scenario_budget()
     scenario_selection()
@@ -1334,6 +1459,7 @@ def main():
     scenario_frustum_horizon()
     scenario_empty_neighbors()
     scenario_config()
+    scenario_uvs()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
 

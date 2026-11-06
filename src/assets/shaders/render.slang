@@ -193,6 +193,10 @@ void build_brick_mesh(
     if (!active || v_cnt == 0u) return;
 
     // ------------------------- Emissão de vértices -------------------------
+    // VS-11 (REQ-UV-02): template com pool de UVs emite a UV do pool; sem
+    // pool (uv_offset == NO_TEMPLATE_UV_OFFSET) emite a sentinela (-1,-1) —
+    // o fragment cai no triplanar (fallback para mods procedurais).
+    bool has_uvs = tmpl.uv_offset != NO_TEMPLATE_UV_OFFSET;
     float3 voxel_min_world = float3(chunk.chunk_world_origin + voxel_coord);
     for (uint i = 0; i < tmpl.vertex_count; i++) {
         float3 local_pos = template_vertices[tmpl.vertex_offset + i].xyz;
@@ -202,6 +206,7 @@ void build_brick_mesh(
         v.world_position = voxel_min_world + local_pos;
         v.clip_position = mul(push_constants.view_projection_matrix, float4(v.world_position, 1.0));
         v.block_id = block_id;
+        v.uv = has_uvs ? template_uvs[tmpl.uv_offset + i] : float2(-1.0, -1.0);
         verts[first_v + i] = v;
     }
 
@@ -237,7 +242,12 @@ float4 shade_voxel(MeshVertex input) : SV_Target {
     float3 normal_y = ddy(input.world_position);
     float3 normal = normalize(cross(normal_x, normal_y));
 
-    float3 albedo = sample_triplanar_albedo(input.world_position, normal, def.albedo_texture_index);
+    // VS-11 (REQ-UV-03): com UV (uv.x >= 0) amostra a camada de albedo por
+    // UV; com a sentinela cai no triplanar (fallback inalterado da VS-02).
+    // Na paleta de cores sólidas as duas rotas são idênticas por construção.
+    float3 albedo = input.uv.x >= 0.0
+        ? block_albedo_textures.Sample(float3(input.uv, float(def.albedo_texture_index))).rgb
+        : sample_triplanar_albedo(input.world_position, normal, def.albedo_texture_index);
 
     float3 light_dir = normalize(float3(0.5, 0.8, 0.3));
     float diffuse = max(dot(normal, light_dir), 0.0);

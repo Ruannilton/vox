@@ -158,7 +158,7 @@ Voxels totalmente ocluídos (todos os triângulos culpados) emitem zero vértice
 
 ## 6. Caminho B — templates de malha (data-driven)
 
-A tabela de templates é o equivalente geométrico do dicionário de blocos: três buffers device-local (bindings 10/11/12) — `mesh_templates` (metadados), `template_vertices` (float3 em [0,1]³) e `template_triangles` (u32 packed).
+A tabela de templates é o equivalente geométrico do dicionário de blocos: quatro buffers device-local (bindings 10/11/12/19) — `mesh_templates` (metadados), `template_vertices` (float3 em [0,1]³, stride 16), `template_triangles` (u32 packed) e `template_uvs` (float2 por vértice, stride 8 — VS-11, paralelo e indexado como `template_vertices`).
 
 **Triângulo packed em 32 bits:** 3 índices locais (8 bits cada) + tag de culling (8 bits): `v0 | v1<<8 | v2<<16 | face_culling<<24`.
 
@@ -169,13 +169,15 @@ MeshTemplate :: struct {
     triangle_offset, triangle_count: u32, // no pool template_triangles
     worst_case_tris:                 u32, // pre-computado no load (orcamento do pack)
     flags:                           u32, // bit 0: HAS_FLUSH_FACES
-    padding_0, padding_1:            u32,
+    uv_offset:                       u32, // no pool template_uvs (VS-11); 0xFFFFFFFF = sem UVs
+    padding_1:                       u32,
 }
 ```
 
 ### 6.1 Contrato de carga
 
 - **Regra do voxel unitário:** todo voxel ocupa 1 unidade³; vértices do template devem estar em [0,1]³ (rejeitados no load caso contrário). Objetos maiores são divididos em múltiplos voxels-parte no registro.
+- **Regra das UVs (VS-11):** quando o template tem pool de UVs (`uv_offset != 0xFFFFFFFF`), todo vértice deve ter UV em [0,1]² — o load rejeita com o índice do template e do vértice (mesmo padrão da regra do voxel unitário). Template sem pool de UVs é válido: o mesh shader emite a sentinela `(-1,-1)` e o fragment usa o triplanar (fallback).
 - **Limites por template:** até 32 vértices e 24 triângulos pior-caso. Com esses limites, a subdivisão ×4 (8 voxels/grupo) sempre cabe no orçamento: 8×32 = 256 vértices, 8×24 = 192 triângulos.
 - **worst_case_tris** é pré-computado pela CPU: triângulos nunca culpados +, por eixo, max(tris na face+, tris na face−).
 - **Tag de culling:** 0..5 = triângulo colado na face do voxel (culpado por vizinho sólido ou câmera atrás do plano); 7 = nunca culpado (interior, diagonais, plantas).
