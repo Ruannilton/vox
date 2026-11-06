@@ -45,6 +45,8 @@ O jogador movimenta a câmera e o mundo precisa carregar. Para evitar que blocos
 
 **Bolhas e slots (B5 absorvida pela VS-08):** os slots de chunk deixaram de ser um teto fixo de 4.096 e passam a ser derivados em runtime (VS-08, emendada 2026-11-06: `resident_slots = ⌈|esfera(unload)| × 1,05⌉` — era `|esfera(generation)|`, o que esgotava o pool estruturalmente, pois o conjunto vivo inclui CACHED até o raio de unload + transitório de aposentadoria B1; 4.378 com os defaults de `vox.ini`) — a bolha de geração cabe no pool por construção.
 
+**Chunks vazios virtuais (VS-10, ADR-V1, 2026-11-06):** chunk que conclui a geração composto só de ar deixa de ocupar slot, de ser publicado e de despachar builder — vira um registro `EMPTY` no map de chunks, sem slot (`storage_slot_index` inválido), custando só índice na CPU. O pack exporta as flags de cada chunk num buffer host-visible minúsculo (`chunk_result_flags`, binding 18) e o handler de conclusão (já ordenado pela timeline, B1) devolve o slot ao pool no instante da conclusão quando `CHUNK_FLAG_EMPTY` e não há edições pendentes. Edição em chunk `EMPTY` materializa o chunk (aloca slot + geração + pendência do E1, com retry por frame se o pool estiver seco); ar-em-ar é no-op. No terreno atual ~metade da bolha de visão é ar puro (medido: 9,5–11 mil chunks `EMPTY` com vision=20 em câmera alta, readback da fila caindo de ~3,9 mil para 1.911 itens por frame).
+
 ## 3. Etapa 2: A ponte (Vulkan 1.4 Sync)
 
 A submissão de trabalho usa **timeline semaphores** e o `vkQueueSubmit2`. Em vez de bloquear a CPU esperando a placa, usamos frames em voo num sistema de anel: lotes de compute são despachados e incrementam um valor na linha do tempo; a thread principal lê esse valor para saber quando um chunk pode sair de GENERATING para CACHED. Na fila gráfica, a GPU só lê blocos cuja fabricação já foi sinalizada — zero defeitos visuais por corrida de dados.
@@ -101,7 +103,7 @@ Cada workgroup de 128 threads avalia um chunk visível: células grossas vazias 
 
 ### 5.2 O mesh shader (a usina) e o Caminho B
 
-**Correção B2 — fronteiras:** leituras que cruzam a borda do chunk são redirecionadas à ocupação real dos 6 vizinhos (publicada por frame pela CPU). Faces internas entre chunks sólidos não são mais emitidas em dobro. Como a geometria é refeita a cada frame, um vizinho ainda em geração é tratado como ar e a face some sozinha no frame em que ele concluir — sem dirty flags.
+**Correção B2 — fronteiras:** leituras que cruzam a borda do chunk são redirecionadas à ocupação real dos 6 vizinhos (publicada por frame pela CPU). Faces internas entre chunks sólidos não são mais emitidas em dobro. Como a geometria é refeita a cada frame, um vizinho ainda em geração é tratado como ar e a face some sozinha no frame em que ele concluir — sem dirty flags. Desde a VS-10, vizinhos no estado `EMPTY` (chunk de ar virtual, sem slot) publicam `NEIGHBOR_SLOT_INVALID` — que o shader já trata como ar — com resultado visual idêntico ao chunk de ar com slot.
 
 **Culling de frustum (VS-06, ADR-B11):** o builder da fila de trabalho deriva os 6 planos do frustum (Gribb-Hartmann) da `view_projection_matrix` já presente nos push constants — a mesma matriz que leva `clip_position` no mesh shader. Em dois níveis: early-out do chunk (AABB 32³ fora → o workgroup inteiro retorna sem ler ocupação) e por brick (AABB 4×2×4 fora → nenhum item), com teste conservador de p-vertex na ordem vazio → frustum → oclusão. Sem push constants novos e sem nenhum pixel alterado para geometria visível.
 
@@ -197,6 +199,7 @@ Estados: PENDING_READBACK → (fence + memcpy + replay pending) → MATERIALIZED
 | C2 | recurso | Mirror CPU-side: ChunkPage denso u16 y-major + ring host-visible | Implementado |
 | Eventos | recurso | Bus de eventos de input/comando com gravação JSONL e replay 1× (VS-07) | Implementado |
 | E1 | correção | Flush do journal não era mais chamado (removido com os testes em 6897431) e `last_flush`/`force_next_flush` eram consumidos pelo ring write todo frame, matando o gating de 100 ms; restaurado via `edit_update` no loop | Corrigido |
+| VS-10 | otimização | Chunks vazios virtuais: estado `EMPTY` sem slot, feedback do pack por binding 18, liberação imediata do slot na conclusão, edição materializa com retry | Implementado |
 | B5 | backlog | Raio de geração > slots — **absorvida pela VS-08** (slots derivados da esfera de unload ×1,05 — emenda 2026-11-06) | Absorvida |
 | B6 | backlog | Plantas sem alpha-test; CULL_MODE_NONE | Pendente |
 | B7 | backlog | PBR não amostrado (só Lambert + emissão) | Pendente |

@@ -41,6 +41,9 @@ WORK_QUEUE_INDIRECT_X_WORD   :: 2
 // Ordem igual a FACE_NORMALS no common.slang (+X,-X,+Y,-Y,+Z,-Z).
 NEIGHBOR_OFFSETS :: [6]ChunkCoordinate{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}
 
+// VS-10 (REQ-VRT-01): registro EMPTY não possui slot de GPU.
+SLOT_INDEX_INVALID :: max(u32)
+
 ALBEDO_PALETTE_LAYERS     :: 256
 ALBEDO_PALETTE_LAYER_SIZE :: 4
 

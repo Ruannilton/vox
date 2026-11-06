@@ -209,7 +209,8 @@ struct MeshVertex {
 [[vk::push_constant]] PushConstants push_constants;
 
 // ----------------------------------------------------------------------------
-// Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–15 = VS-03; 16 = VS-04)
+// Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–15 = VS-03;
+// 16 = VS-04; 18 = VS-10)
 // ----------------------------------------------------------------------------
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint>               temporary_dense_chunks;
 [[vk::binding(1, 0)]] StructuredBuffer<ChunkGenerationJob>   generation_jobs;
@@ -229,6 +230,9 @@ struct MeshVertex {
 [[vk::binding(15, 0)]] RWStructuredBuffer<uint>              edit_results;
 [[vk::binding(16, 0)]] RWStructuredBuffer<uint16_t>          mirror_export_ring;
 [[vk::binding(17, 0)]] RWStructuredBuffer<uint>                work_queue;
+// VS-10 (REQ-VRT-02): flags do header por slot, escritas pelo pack e lidas
+// pelo handler de conclusão (host-visible) após a timeline do lote.
+[[vk::binding(18, 0)]] RWStructuredBuffer<uint>                chunk_result_flags;
 
 
 uint work_queue_base_words() {

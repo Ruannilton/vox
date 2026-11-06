@@ -32,6 +32,9 @@ VoxelGpu :: struct {
 	edit_results_mapped:    [^]u32,
 	mirror_export_ring:        GpuBuffer,
 	mirror_export_ring_mapped: [^]u16,
+	// VS-10 (REQ-VRT-02): flags do pack por slot (binding 18, host-visible).
+	chunk_result_flags:        GpuBuffer,
+	chunk_result_flags_mapped: [^]u32,
 	dummy_buffer:           GpuBuffer, 
 	albedo_palette_image:      vk.Image,
 	albedo_palette_allocation: vma.Allocation,
@@ -427,6 +430,13 @@ voxel_gpu_init :: proc() {
 		{.HOST_ACCESS_RANDOM, .MAPPED},
 	)
 	voxel_gpu.mirror_export_ring_mapped = cast([^]u16)mapped_mirror_ring
+	mapped_result_flags: rawptr
+	voxel_gpu.chunk_result_flags, mapped_result_flags = gpu_buffer_create_host_flags(
+		vk.DeviceSize(config.resident_slots * size_of(u32)),
+		{.STORAGE_BUFFER},
+		{.HOST_ACCESS_RANDOM, .MAPPED}, // CPU lê após a timeline do lote (B1)
+	)
+	voxel_gpu.chunk_result_flags_mapped = cast([^]u32)mapped_result_flags
 	voxel_gpu.dummy_buffer = gpu_buffer_create(vk.DeviceSize(16), {.STORAGE_BUFFER})
 
 	upload_builtin_templates()
@@ -590,7 +600,8 @@ voxel_gpu_init :: proc() {
 		14 = voxel_gpu.voxel_edits.handle, 
 		15 = voxel_gpu.edit_results.handle,
 		16 = voxel_gpu.mirror_export_ring.handle,
-		17 = voxel_gpu.work_queue.handle, 
+		17 = voxel_gpu.work_queue.handle,
+		18 = voxel_gpu.chunk_result_flags.handle,
 	}
 	buffer_infos: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorBufferInfo
 	writes: [DESCRIPTOR_SET_BINDING_COUNT]vk.WriteDescriptorSet
@@ -638,6 +649,7 @@ voxel_gpu_init :: proc() {
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.voxel_edits.handle, .BUFFER, "voxel_edits")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_results.handle, .BUFFER, "edit_results")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.mirror_export_ring.handle, .BUFFER, "mirror_export_ring")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.chunk_result_flags.handle, .BUFFER, "chunk_result_flags")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.generation_pipeline, .PIPELINE, "pipeline_generate")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.packing_pipeline, .PIPELINE, "pipeline_pack")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_pipeline, .PIPELINE, "pipeline_apply_voxel_edits")
@@ -675,6 +687,7 @@ voxel_gpu_destroy :: proc() {
 	vma.DestroyImage(app.vmaAllocator, voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation)
 
 	gpu_buffer_destroy(&voxel_gpu.dummy_buffer)
+	gpu_buffer_destroy(&voxel_gpu.chunk_result_flags)
 	gpu_buffer_destroy(&voxel_gpu.mirror_export_ring)
 	gpu_buffer_destroy(&voxel_gpu.edit_results)
 	gpu_buffer_destroy(&voxel_gpu.voxel_edits)
@@ -876,8 +889,8 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 
 debug_readback_decode_voxels :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate, local_voxels: [][3]i32, tag: string) {
 	record, found := ve.active_chunks[chunk_coord]
-	if !found || record.state == .GENERATING {
-		log.infof("DEBUG VOXEL {}: chunk {} ausente/gerando", tag, chunk_coord)
+	if !found || record.state == .GENERATING || record.state == .EMPTY {
+		log.infof("DEBUG VOXEL {}: chunk {} ausente/gerando/vazio", tag, chunk_coord)
 		return
 	}
 	slot := record.storage_slot_index
@@ -954,8 +967,8 @@ debug_mirror_parity :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate) {
 		return
 	}
 	record, active := ve.active_chunks[chunk_coord]
-	if !active || record.state == .GENERATING {
-		log.warnf("DEBUG MIRROR PARITY: chunk {} ausente/gerando", chunk_coord)
+	if !active || record.state == .GENERATING || record.state == .EMPTY {
+		log.warnf("DEBUG MIRROR PARITY: chunk {} ausente/gerando/vazio", chunk_coord)
 		return
 	}
 	slot := record.storage_slot_index

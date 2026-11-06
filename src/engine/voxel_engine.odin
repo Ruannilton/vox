@@ -5,12 +5,15 @@ import "core:log"
 import "core:math"
 import "core:sync"
 import "core:thread"
+import "core:time"
+import vma "shared:vma"
 import vk "vendor:vulkan"
 
 ChunkState :: enum {
 	GENERATING,
 	CACHED,
 	RENDERABLE,
+	EMPTY, // VS-10: chunk de ar puro — registro sem slot, nunca publicado
 }
 
 ChunkRecord :: struct {
@@ -55,6 +58,10 @@ VoxelEngine :: struct {
 	slots_starved:                  bool,
 	first_update:                   bool,
 	highest_completed_compute_value: u64,
+	// VS-10 (REQ-VRT-05): contadores de chunks vazios virtuais.
+	empty_chunks_active:            int,   // registros no estado EMPTY
+	slots_saved_total:              u64,   // slots devolvidos ao pool (acumulado)
+	last_empty_log_time:            time.Tick,
 	edit:                           EditManager,
 	mirror:                         MirrorManager,
 
@@ -159,21 +166,50 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 	vk_check(vk.GetSemaphoreCounterValue(app.vkDevice, app.computeTimelineSemaphore, &completed_compute))
 
 	sync.mutex_lock(&ve.queue_mutex)
+	// VS-10 (REQ-VRT-02): as flags do pack são lidas pela CPU após a
+	// timeline do lote (mesma ordenação da promoção a CACHED, mesmo anti-ABA).
+	vk_check(
+		vma.InvalidateAllocation(
+			app.vmaAllocator,
+			voxel_gpu.chunk_result_flags.allocation,
+			0,
+			vk.DeviceSize(voxel_gpu.chunk_result_flags.size),
+		),
+	)
 	completed_count := 0
 	for b in ve.submitted_batches {
 		if b.compute_timeline_value > completed_compute do break
 		for task in b.tasks {
+			to_empty := false
 			if task.coordinate in ve.active_chunks {
 				rec := &ve.active_chunks[task.coordinate]
 				if rec.state == .GENERATING &&
 				   rec.storage_slot_index == task.storage_slot_index &&
 				   rec.generation == task.generation {
-					rec.state = .CACHED
+					flags := voxel_gpu.chunk_result_flags_mapped[task.storage_slot_index]
+					_, has_pending := ve.edit.pending[task.coordinate]
+					if (flags & CHUNK_FLAG_EMPTY) != 0 && !has_pending {
+						// Chunk de ar puro: vira registro virtual e o slot
+						// volta ao pool. Adiado p/ depois do materialize do
+						// mirror (ele valida slot+geração do registro).
+						to_empty = true
+					} else {
+						rec.state = .CACHED
+					}
 				}
 			}
 
 			if task.mirror_ring_slot >= 0 {
 				mirror_materialize_from_ring(ve, task, b.compute_timeline_value)
+			}
+
+			if to_empty {
+				rec := &ve.active_chunks[task.coordinate]
+				rec.state = .EMPTY
+				rec.storage_slot_index = SLOT_INDEX_INVALID
+				append(&ve.free_storage_slots, task.storage_slot_index)
+				ve.empty_chunks_active += 1
+				ve.slots_saved_total += 1
 			}
 		}
 		ve.highest_completed_compute_value = max(ve.highest_completed_compute_value, b.compute_timeline_value)
@@ -203,8 +239,7 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 }
 
 
-retire_generating_slot :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {
-	sync.mutex_lock(&ve.queue_mutex)
+retire_generating_slot :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {	sync.mutex_lock(&ve.queue_mutex)
 	defer sync.mutex_unlock(&ve.queue_mutex)
 
 	for task, i in ve.pending_tasks {
@@ -248,7 +283,10 @@ voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 
 			if neighbor_coord in ve.active_chunks {
 				neighbor_record := ve.active_chunks[neighbor_coord]
 
-				if neighbor_record.state != .GENERATING {
+				// VS-10 (REQ-VRT-03): vizinho contribui slot só se
+				// materializado (CACHED/RENDERABLE); EMPTY/GENERATING =
+				// NEIGHBOR_SLOT_INVALID, que o shader já trata como ar (B2).
+				if neighbor_record.state == .CACHED || neighbor_record.state == .RENDERABLE {
 					entry.neighbor_slots[i] = neighbor_record.storage_slot_index
 				}
 			}
@@ -257,6 +295,24 @@ voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 
 		count += 1
 	}
 	return count
+}
+
+
+// VS-10 (REQ-VRT-05): log periódico dos contadores de chunks vazios
+// virtuais (reativos são recontados no map; economia é acumulada).
+ve_log_empty_stats :: proc(ve: ^VoxelEngine) {
+	actives := 0
+	for _, record in ve.active_chunks {
+		if record.state == .EMPTY do actives += 1
+	}
+	ve.empty_chunks_active = actives
+	ve.last_empty_log_time = time.tick_now()
+	log.infof(
+		"VS-10: chunks EMPTY ativos={} (slots economizados acumulados={}, slots livres={})",
+		actives,
+		ve.slots_saved_total,
+		len(ve.free_storage_slots),
+	)
 }
 
 
@@ -279,7 +335,14 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 		}
 		for coord in to_unload {
 			record := ve.active_chunks[coord]
-			mirror_forget_chunk(ve, coord, record) 
+			mirror_forget_chunk(ve, coord, record)
+			if record.state == .EMPTY {
+				// VS-10 (REQ-VRT-01): registro virtual — sem aposentadoria
+				// (nada GPU-side); apenas deleta do map. O contador de
+				// ativos é recontado no log periódico.
+				delete_key(&ve.active_chunks, coord)
+				continue
+			}
 			if record.state == .GENERATING {
 				retire_generating_slot(ve, coord, record)
 			} else {
@@ -346,4 +409,13 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 
 	mirror_update_bubble(ve, camera_chunk)
 	mirror_service_retries(ve)
+
+	// VS-10 (REQ-VRT-04): edições em chunk EMPTY com pool esgotado ficam na
+	// fila; a materialização é retentada a cada update (sem erro, sem perda).
+	ve_retry_empty_edits(ve)
+
+	// VS-10 (REQ-VRT-05): log periódico dos contadores de chunks vazios.
+	if time.duration_seconds(time.tick_since(ve.last_empty_log_time)) >= 5.0 {
+		ve_log_empty_stats(ve)
+	}
 }

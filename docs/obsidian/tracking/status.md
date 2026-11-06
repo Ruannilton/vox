@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 10 |
-| Specs aprovadas | 10 |
+| Specs registradas | 11 |
+| Specs aprovadas | 11 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 10 |
-| Validações verificadas | 8 |
+| Implementações concluídas | 11 |
+| Validações verificadas | 9 |
 
-Dez especificações registradas; VS-00 a VS-04, VS-06, VS-08 e VS-09 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-07 implementada e validada nos ACs 01/03/04 (AC-02 aguarda smoke interativo manual).
+Onze especificações registradas; VS-00 a VS-04, VS-06 e VS-08 a VS-10 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-07 implementada e validada nos ACs 01/03/04 (AC-02 aguarda smoke interativo manual); VS-10 (chunks vazios virtuais) implementada e validada em 2026-11-06 (ACs 01–03: sims, smoke de contadores + readback da fila e replay de edição no céu).
 
 ## Tracking das especificações
 
@@ -31,6 +31,7 @@ Dez especificações registradas; VS-00 a VS-04, VS-06, VS-08 e VS-09 estão int
 | VS-07 | [[VS-07-eventos-input-replay|Eventos de input, comandos e replay]] | `aprovada` | `concluida` | `em-validacao` | VS-03 | Smoke interativo manual do AC-02 (paridade record→replay e revisão de código já verificados) |
 | VS-08 | [[VS-08-config-ini-provisionamento|Configuração via INI e provisionamento runtime]] | `aprovada` | `concluida` | `verificada` | VS-05 | — |
 | VS-09 | [[VS-09-visible-index-16-bits|Visible index de 16 bits na fila de trabalho]] | `aprovada` | `concluida` | `verificada` | VS-08 | — |
+| VS-10 | [[VS-10-chunks-vazios-virtuais|Chunks vazios virtuais]] | `aprovada` | `concluida` | `verificada` | VS-04 | — |
 
 ## Decisões
 
@@ -56,6 +57,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-I1 | [[ADR-I1-bus-eventos-input-replay|Bus de eventos de input com gravação e replay]] | `aceita` | VS-07 |
 | ADR-C1 | [[ADR-C1-config-ini-provisionamento|Configuração runtime via INI com provisionamento derivado]] | `aceita` | VS-08 |
 | ADR-B12 | [[ADR-B12-visible-index-16-bits|visible_index de 16 bits no item da fila de trabalho]] | `aceita` | VS-09 |
+| ADR-V1 | [[ADR-V1-chunks-vazios-virtuais|Chunks vazios virtuais sem slot]] | `aceita` | VS-10 |
 
 ## Vocabulário de status
 

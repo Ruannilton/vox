@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simulacao bit-a-bit do pack_chunk (VS-01, REQ-SIM-01).
+"""Simulacao bit-a-bit do pack_chunk (VS-01, REQ-SIM-01; VS-10, REQ-SIM-07).
 
 Espelha src/assets/shaders/common.slang + pack_chunk (voxel.slang).
 Invariantes verificadas (por cenario):
@@ -7,6 +7,11 @@ Invariantes verificadas (por cenario):
   ranking popcount == ordenacao por ID, ocupacao/coarse consistentes,
   refcounts == recontagem, overflow -> flag + SpecialVoxelRecord,
   subdivisao respeita o orcamento 256v/192t por grupo.
+
+VS-10 (REQ-SIM-07): o pack exporta as flags de cada chunk em
+chunk_result_flags[slot] (binding 18, host-visible); o handler de conclusao
+(B1) le as flags apos a timeline: CHUNK_FLAG_EMPTY sem pendencias ->
+estado EMPTY + slot devolvido ao pool; caso contrario -> CACHED.
 """
 
 CHUNK_SIZE = 32
@@ -285,6 +290,88 @@ def dense_fill(fn):
     return [fn(coordinate_from_dense_index(i)) for i in range(CHUNK_VOXEL_COUNT)]
 
 
+# --- VS-10 (REQ-SIM-07): chunk_result_flags + transicao EMPTY na conclusao ---
+
+CHUNK_STATE_GENERATING = 0
+CHUNK_STATE_CACHED = 1
+CHUNK_STATE_EMPTY = 2  # registro sem slot (storage_slot_index invalido)
+SLOT_INDEX_INVALID = 0xFFFFFFFF
+
+
+class CompletionModel:
+    """Modelo minimo do handler de conclusao (B1) com feedback do pack.
+
+    Espelha voxel_engine_service_completions: apos a timeline do lote, cada
+    tarefa valida (coord+slot+geracao) le chunk_result_flags[slot]; vazio sem
+    pendencias -> EMPTY + slot livre imediato; senao -> CACHED."""
+
+    def __init__(self, slot_count):
+        self.chunk_result_flags = [0] * slot_count  # binding 18 (escrito pelo pack)
+        self.free_slots = list(range(slot_count))
+        self.records = {}  # coord -> [state, slot, generation]
+        self.slot_generations = [0] * slot_count
+        self.stats_empty = 0  # transicoes para EMPTY (slots economizados)
+
+    def submit(self, coord):
+        slot = self.free_slots.pop(0)
+        self.slot_generations[slot] += 1
+        self.records[coord] = [CHUNK_STATE_GENERATING, slot, self.slot_generations[slot]]
+        return slot
+
+    def complete(self, coord, packed_flags, has_pending_edits):
+        state, slot, generation = self.records[coord]
+        assert state == CHUNK_STATE_GENERATING
+        self.chunk_result_flags[slot] = packed_flags  # write do pack (thread 0, fase B3)
+        if (packed_flags & CHUNK_FLAG_EMPTY) != 0 and not has_pending_edits:
+            self.records[coord] = [CHUNK_STATE_EMPTY, SLOT_INDEX_INVALID, generation]
+            self.free_slots.append(slot)
+            self.free_slots.sort()
+            self.stats_empty += 1
+        else:
+            self.records[coord] = [CHUNK_STATE_CACHED, slot, generation]
+
+
+def scenario_empty_transitions():
+    print("[cenario] VS-10: chunk_result_flags + transicao EMPTY (com/sem pendencias)")
+    block_templates = {1: 1}
+    model = CompletionModel(slot_count=4)
+
+    # lote 1: dois chunks de ar puros e um solido
+    coords = [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
+    slots = [model.submit(c) for c in coords]
+    flags = []
+    for c in coords:
+        dense = dense_fill(lambda _c, cc=c: 0 if cc[0] < 2 else 1)
+        flags.append(pack_chunk(dense, block_templates).flags)
+    model.complete(coords[0], flags[0], has_pending_edits=False)
+    model.complete(coords[1], flags[1], has_pending_edits=False)
+    model.complete(coords[2], flags[2], has_pending_edits=False)
+    check("flags por slot escritas (EMPTY, EMPTY, 0)", model.chunk_result_flags[slots[0]] & CHUNK_FLAG_EMPTY
+          and model.chunk_result_flags[slots[1]] & CHUNK_FLAG_EMPTY
+          and model.chunk_result_flags[slots[2]] == 0)
+    check("chunks de ar -> EMPTY sem slot", all(
+        model.records[c] == [CHUNK_STATE_EMPTY, SLOT_INDEX_INVALID, 1] for c in coords[:2]))
+    check("chunk solido -> CACHED com slot", model.records[coords[2]][0] == CHUNK_STATE_CACHED
+          and model.records[coords[2]][1] == slots[2])
+    check("slots dos vazios devolvidos ao pool", model.free_slots == sorted([slots[0], slots[1], 3]))
+    check("contador: 2 slots economizados", model.stats_empty == 2)
+
+    # lote 2: reutilizacao dos slots liberados + vazio COM pendencias materializa
+    coords2 = [(3, 0, 0), (4, 0, 0)]
+    slots2 = [model.submit(c) for c in coords2]
+    check("slots reciclados dos empties", sorted(slots2) == sorted([slots[0], slots[1]]))
+    flags2 = []
+    for c in coords2:
+        dense = dense_fill(lambda _c: 0)  # ambos ar puro
+        flags2.append(pack_chunk(dense, block_templates).flags)
+    model.complete(coords2[0], flags2[0], has_pending_edits=True)   # pendencia do E1
+    model.complete(coords2[1], flags2[1], has_pending_edits=False)  # ar puro
+    check("vazio com pendencias -> CACHED (materializa, E1 aplica depois)",
+          model.records[coords2[0]][0] == CHUNK_STATE_CACHED and model.records[coords2[0]][1] == slots2[0])
+    check("vazio sem pendencias -> EMPTY", model.records[coords2[1]][0] == CHUNK_STATE_EMPTY)
+    check("contador acumula: 3 slots economizados", model.stats_empty == 3)
+
+
 def main():
     block_templates = {1: 1, 2: 2, 3: 1}  # grama=cubo, terra=planta(p/ex), pedra=cubo
 
@@ -331,6 +418,9 @@ def main():
     r = validate("brick de plantas (sem subdivisao)", dense_fill(lambda c: 2 if c[0] < 4 and c[1] < 2 and c[2] < 4 else 0), {2: 2})
     subd = (r.occupancy[SUBDIVISION_WORD_BASE] >> 0) & 3
     check("brick 0 sem subdivisao", subd == 0)
+
+    # 9. VS-10: flags por slot + transicoes EMPTY (com/sem pendencias)
+    scenario_empty_transitions()
 
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)

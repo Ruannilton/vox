@@ -199,6 +199,8 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
         }
 
         chunk_headers[slot] = header;
+        // VS-10 (REQ-VRT-02): feedback por slot p/ o handler de conclusão.
+        chunk_result_flags[slot] = header.flags;
     }
     GroupMemoryBarrierWithGroupSync();
 

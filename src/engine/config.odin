@@ -286,7 +286,11 @@ config_device_bytes_required :: proc() -> u64 {
 		1024 * size_of(u32) + // template_triangles
 		16 // dummy_buffer
 
-	return pools + work_queue + scratch_bytes + visible_chunks + generation_jobs + fixed
+	// VS-10 (REQ-VRT-05): feedback de flags do pack por slot (binding 18,
+	// host-visible) — residual (4 B × slots).
+	result_flags := slots * size_of(u32)
+
+	return pools + work_queue + scratch_bytes + visible_chunks + generation_jobs + fixed + result_flags
 }
 
 // Validação de máquina (REQ-CFG-04): requerido × budget device-local × 0,9.

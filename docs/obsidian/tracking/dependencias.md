@@ -16,6 +16,7 @@ graph TD
     VS07[VS-07 — Eventos de input e replay]
     VS08[VS-08 — Configuração INI e provisionamento]
     VS09[VS-09 — Visible index 16 bits]
+    VS10[VS-10 — Chunks vazios virtuais]
 
     VS00 --> VS01
     VS01 --> VS02
@@ -26,6 +27,7 @@ graph TD
     VS06 --> VS07
     VS07 --> VS08
     VS08 --> VS09
+    VS09 --> VS10
 ```
 
 ## Registro normativo
@@ -42,6 +44,7 @@ graph TD
 | [[VS-07-eventos-input-replay|VS-07]] | VS-03 | — | — |
 | [[VS-08-config-ini-provisionamento|VS-08]] | VS-05 | — | — |
 | [[VS-09-visible-index-16-bits|VS-09]] | VS-08 | — | — |
+| [[VS-10-chunks-vazios-virtuais|VS-10]] | VS-04 | — | — |
 
 ## Decisões incorporadas
 
@@ -53,6 +56,7 @@ graph TD
 - ADR-I1: VS-07 usa bus central de eventos (callbacks produzem, loop drena por frame) com gravação JSONL e replay best-effort em tempo de parede relativo ao início da aplicação — sem polling de teclas; determinismo bit-exato fica em backlog.
 - ADR-C1: VS-08 carrega os parâmetros de streaming/compute de um INI e provisiona os recursos em runtime — capacidades derivadas das esferas (visíveis/slots/páginas), validação de coerência + limites de formato (12 bits do visible_index) e de máquina (memory budget da VS-05); push constant estendido para 92 B.
 - ADR-B12: VS-09 amplia o visible_index do item da fila para 16 bits (cap de formato vision ≤ 9 → ≤ 25), resolvendo o backlog da ADR-C1; contrato do item da VS-02 emendado nos três pontos de encode/decode (Slang pack, decode do mesh, sim).
+- ADR-V1: VS-10 introduz chunks vazios virtuais — chunk só-ar concluído vira estado EMPTY sem slot (feedback das flags do pack por binding 18, liberação imediata na conclusão B1), nunca publicado/despachado; edição materializa via geração + pending do E1; vizinhos o veem como ar (NEIGHBOR_SLOT_INVALID, B2) sem mudança de shader de render.
 
 ## Dependências transversais a registrar nas specs
 

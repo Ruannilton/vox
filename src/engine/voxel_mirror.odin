@@ -148,21 +148,46 @@ mirror_service_retries :: proc(ve: ^VoxelEngine) {
 		if page.state != .PENDING_READBACK || page.ring_slot >= 0 do continue
 		record, active := ve.active_chunks[coord]
 		if !active do continue
-		if record.state == .GENERATING {
+		#partial switch record.state {
+		case .GENERATING:
 			mirror_try_attach_to_generation(ve, coord, record, page)
-		} else {
+		case .EMPTY:
+			// VS-10: página de chunk vazio — zeros + journal, sem export.
+			mirror_page_fill_empty(ve, coord, page)
+		case:
 			mirror_schedule_export(ve, coord, record)
 		}
 	}
 }
 
+// VS-10 (REQ-VRT-04): um chunk EMPTY tem conteúdo worldgen conhecido (ar
+// puro): a página é preenchida com zeros e o journal do E1 é replayado por
+// cima — correta por construção, sem leitura GPU (o registro não tem slot).
+mirror_page_fill_empty :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, page: ^MirrorChunkPage) {
+	for &id in page.ids do id = 0
+	for &word in page.solid do word = 0
+	for edit in page.pending {
+		mirror_page_apply(page, edit.world_voxel, edit.block_id)
+		append(&page.applied_log, edit)
+	}
+	clear(&page.pending)
+	page.state = .MATERIALIZED
+	page.ring_slot = -1
+	page.edit_seq += 1
+}
+
 
 mirror_request_page :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {
 	page := mirror_page_acquire(ve, coord)
-	if page == nil do return 
-	if record.state == .GENERATING {
+	if page == nil do return
+	#partial switch record.state {
+	case .GENERATING:
 		mirror_try_attach_to_generation(ve, coord, record, page)
-	} else {
+	case .EMPTY:
+		// VS-10 (REQ-VRT-04): conteúdo worldgen conhecido (ar puro) —
+		// preenche na CPU, sem export GPU (o registro não tem slot).
+		mirror_page_fill_empty(ve, coord, page)
+	case:
 		mirror_schedule_export(ve, coord, record)
 	}
 }
@@ -305,8 +330,7 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 		page.ring_slot == ring_slot &&
 		entry.coord == task.coordinate && entry.generation == task.generation &&
 		active && record.generation == task.generation &&
-		record.storage_slot_index == task.storage_slot_index &&
-		record.state != .GENERATING
+		record.storage_slot_index == task.storage_slot_index
 
 	if !valid {
 		entry.used = false

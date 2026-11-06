@@ -1,6 +1,7 @@
 package engine
 
 import "core:log"
+import "core:sync"
 import "core:time"
 import vma "shared:vma"
 import vk "vendor:vulkan"
@@ -49,12 +50,93 @@ voxel_chunk_and_index :: proc "contextless" (world_voxel: [3]i32) -> (chunk: Chu
 
 ve_request_voxel_edit :: proc(ve: ^VoxelEngine, world_voxel: [3]i32, block_id: u32) {
 	if block_id > 65535 do return // fora do domínio de 16 bits do registro do lote
+	// VS-10 (REQ-VRT-04): edição em chunk EMPTY. Ar-em-ar é no-op puro;
+	// bloco sólido materializa o chunk (geração + pendência do E1).
+	chunk, _ := voxel_chunk_and_index(world_voxel)
+	if record, found := ve.active_chunks[chunk]; found && record.state == .EMPTY {
+		if block_id == 0 {
+			log.debugf("VS-10: edição de ar-em-ar em chunk EMPTY {} descartada (no-op)", chunk)
+			return
+		}
+		if !ve_try_materialize_empty(ve, chunk) {
+			// pool esgotado: a edição permanece na fila e a materialização
+			// é retentada a cada update (ve_retry_empty_edits).
+			log.debugf("VS-10: pool de slots esgotado; edição em {} aguarda materialização", chunk)
+		}
+	}
 	if index, found := ve.edit.lookup[world_voxel]; found {
 		ve.edit.queue[index].block_id = block_id // última escrita vence
 		return
 	}
 	append(&ve.edit.queue, VoxelEditRequest{world_voxel, block_id})
 	ve.edit.lookup[world_voxel] = len(ve.edit.queue) - 1
+}
+
+// VS-10 (REQ-VRT-04): materializa um chunk EMPTY — aloca slot, enfileira a
+// geração (com mirror sintetizado se na bolha de simulação) e volta para
+// GENERATING. A edição segue para a fila/pendências do E1 normalmente.
+// Retorna false se o pool de slots estiver vazio (retry por update).
+ve_try_materialize_empty :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) -> bool {
+	if len(ve.free_storage_slots) == 0 do return false
+	slot := pop(&ve.free_storage_slots)
+	ve.slot_generations[slot] += 1
+	generation := ve.slot_generations[slot]
+	rec := &ve.active_chunks[coord]
+	rec.state = .GENERATING
+	rec.storage_slot_index = slot
+	rec.generation = generation
+	ve.empty_chunks_active -= 1
+
+	// Mirror: se o chunk está na bolha de simulação e a página não existe,
+	// sintetiza zeros (conteúdo worldgen = ar conhecido) antes do journal.
+	if coord in ve.mirror.pages {
+		// página existente (zeros do ring ou já sintetizada): nada a fazer.
+	} else {
+		sim_radius2 := i64(config.radius_simulation) * i64(config.radius_simulation)
+		if calculate_squared_distance(ve.last_camera_chunk, coord) <= sim_radius2 {
+			if page := mirror_page_acquire(ve, coord); page != nil {
+				mirror_page_fill_empty(ve, coord, page)
+			}
+		}
+	}
+
+	task := GenerationTask {
+		coordinate         = coord,
+		storage_slot_index = slot,
+		generation         = generation,
+		mirror_ring_slot   = -1,
+	}
+	sync.mutex_lock(&ve.queue_mutex)
+	append(&ve.pending_tasks, task)
+	sync.cond_signal(&ve.queue_condition)
+	sync.mutex_unlock(&ve.queue_mutex)
+	log.infof("VS-10: materializando chunk EMPTY {} (slot {}, geração {})", coord, slot, generation)
+	return true
+}
+
+// VS-10 (REQ-VRT-04): retenta a materialização de edições cujo chunk ainda
+// está EMPTY (pool esgotado na solicitação). No-op de ar-em-ar é removido.
+ve_retry_empty_edits :: proc(ve: ^VoxelEngine) {
+	if len(ve.edit.queue) == 0 do return
+	kept := make([dynamic]VoxelEditRequest, context.temp_allocator)
+	for request in ve.edit.queue {
+		chunk, _ := voxel_chunk_and_index(request.world_voxel)
+		record, found := ve.active_chunks[chunk]
+		if found && record.state == .EMPTY {
+			if request.block_id == 0 do continue // ar-em-ar: descartar
+			ve_try_materialize_empty(ve, chunk)
+		}
+		append(&kept, request)
+	}
+	if len(kept) != len(ve.edit.queue) {
+		delete(ve.edit.queue)
+		ve.edit.queue = make([dynamic]VoxelEditRequest)
+		clear(&ve.edit.lookup)
+		for request in kept {
+			append(&ve.edit.queue, request)
+			ve.edit.lookup[request.world_voxel] = len(ve.edit.queue) - 1
+		}
+	}
 }
 
 ve_request_voxel_edits_in_box :: proc(ve: ^VoxelEngine, min_corner, max_corner: [3]i32, block_id: u32) {
@@ -100,7 +182,9 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 	ready := make([dynamic]ChunkCoordinate, context.temp_allocator)
 	for coord in ve.edit.pending {
 		record, found := ve.active_chunks[coord]
-		if found && record.state != .GENERATING {
+		// VS-10: chunk EMPTY (sem slot) não está pronto — a edição só sai da
+		// pendência quando a materialização concluir (CACHED/RENDERABLE).
+		if found && (record.state == .CACHED || record.state == .RENDERABLE) {
 			append(&ready, coord)
 		}
 	}
@@ -120,7 +204,9 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 	for request in ve.edit.queue {
 		chunk, voxel_index := voxel_chunk_and_index(request.world_voxel)
 		record, found := ve.active_chunks[chunk]
-		if !found || record.state == .GENERATING {
+		// VS-10: chunk EMPTY não tem slot — sem materialização não há para
+		// onde despachar (a materialização é retentada por ve_retry_empty_edits).
+		if !found || record.state == .GENERATING || record.state == .EMPTY {
 			edit_defer_to_pending(ve, chunk, request)
 			continue
 		}

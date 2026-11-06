@@ -1084,6 +1084,81 @@ def scenario_frustum_horizon():
               selection_invariant)
 
 
+# --- VS-10 (REQ-SIM-07): publish/vizinhos com chunks EMPTY ---
+
+CHUNK_STATE_GENERATING = 0
+CHUNK_STATE_CACHED = 1
+CHUNK_STATE_RENDERABLE = 2
+CHUNK_STATE_EMPTY = 3  # registro sem slot — nunca publicado
+
+
+def ve_publish_visible(records):
+    """Espelha ve_publish_visible (VS-10/REQ-VRT-03): publica só
+    CACHED/RENDERABLE (EMPTY nunca é RENDERABLE); vizinho contribui slot só
+    se CACHED/RENDERABLE materializado — EMPTY/GENERATING = INVALID."""
+    visible = []
+    for coord in sorted(records):
+        state, slot = records[coord]
+        if state != CHUNK_STATE_RENDERABLE:
+            continue
+        entry = {"coord": coord, "slot": slot, "neighbors": [NEIGHBOR_SLOT_INVALID] * 6}
+        for i, off in enumerate(FACE_NORMALS):
+            nrec = records.get((coord[0] + off[0], coord[1] + off[1], coord[2] + off[2]))
+            if nrec is not None and nrec[0] in (CHUNK_STATE_CACHED, CHUNK_STATE_RENDERABLE):
+                entry["neighbors"][i] = nrec[1]
+        visible.append(entry)
+    return visible
+
+
+def scenario_empty_neighbors():
+    print("[cenario] VS-10: publish com EMPTY + vizinho INVALID == ar com slot")
+    registry = {1: BlockDef(1)}
+    camera = (16, 1e6, 16)  # muito acima
+
+    def build_world(neighbor_mode):
+        """Mundo A: vizinho +X = chunk de ar COM slot (CACHED).
+        Mundo B: vizinho +X = registro EMPTY (sem slot). Geometria de A
+        (chunk solido em x=0) deve ser identica nos dois."""
+        chunks = {
+            0: make_chunk((0, 0, 0), lambda c: 1),
+            1: make_chunk((32, 0, 0), lambda c: 0),  # ar puro
+        }
+        for c in chunks.values():
+            pack_subdivisions(c, registry)
+        if neighbor_mode == "slot":
+            records = {(0, 0, 0): (CHUNK_STATE_RENDERABLE, 0), (1, 0, 0): (CHUNK_STATE_CACHED, 1)}
+        else:
+            records = {(0, 0, 0): (CHUNK_STATE_RENDERABLE, 0), (1, 0, 0): (CHUNK_STATE_EMPTY, NEIGHBOR_SLOT_INVALID)}
+        visible = ve_publish_visible(records)
+        return chunks, visible
+
+    worlds = {}
+    for mode in ("slot", "empty"):
+        chunks, visible = build_world(mode)
+        # publica: preenche neighbor_slots do chunk visivel conforme o publish
+        entry = visible[0]
+        chunks[0]["neighbors"][0] = entry["neighbors"][0]
+        check("somente RENDERABLE publicado (1 visivel)", len(visible) == 1)
+        items, total, _ = build_work_queue(chunks, [0])
+        tris = set()
+        for item in items:
+            v, t = mesh_group_counts(item, chunks, [0], registry, camera)
+            if t > 0:
+                tris.add(item)
+        worlds[mode] = (set(items), tris, entry["neighbors"][0])
+
+    check("vizinho EMPTY: slot INVALID publicado", worlds["empty"][2] == NEIGHBOR_SLOT_INVALID)
+    check("vizinho ar-com-slot: slot publicado", worlds["slot"][2] == 1)
+    check("render identico: mesma fila de trabalho", worlds["empty"][0] == worlds["slot"][0])
+    check("render identico: mesma geometria emitida", worlds["empty"][1] == worlds["slot"][1])
+
+    # EMPTY visivel na bolha nao publica nem despacha builder
+    chunks, visible = build_world("empty")
+    check("EMPTY: zero workgroups na fila", build_work_queue(chunks, [0])[1] > 0)
+    empty_items, _, _ = build_work_queue({1: chunks[1]}, [1])
+    check("chunk de ar (com slot): workgroup early-out, 0 itens", empty_items == [])
+
+
 # --- VS-08 (REQ-SIM-05): capacidade parametrizada + regras de validação ---
 
 def sphere_count_reference():
@@ -1257,6 +1332,7 @@ def main():
     scenario_frustum_edge_cases()
     scenario_frustum_granularity()
     scenario_frustum_horizon()
+    scenario_empty_neighbors()
     scenario_config()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
