@@ -1,0 +1,34 @@
+{
+  "meshes": [
+    {
+      "name": "cubo",
+      "vertices": [
+        [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
+        [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]
+      ],
+      "triangles": [
+        [1, 3, 7], [1, 7, 5],
+        [0, 4, 6], [0, 6, 2],
+        [2, 7, 3], [2, 6, 7],
+        [0, 1, 5], [0, 5, 4],
+        [4, 5, 7], [4, 7, 6],
+        [0, 3, 1], [0, 2, 3]
+      ],
+      "cull_tags": [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+      "uvs": [
+        [0, 0], [1, 0], [0, 0], [1, 0],
+        [0, 1], [1, 1], [0, 1], [1, 1]
+      ]
+    }
+  ],
+  "textures": [
+    { "name": "grama", "path": "textures/grama.png" },
+    { "name": "terra", "path": "textures/terra.png" },
+    { "name": "pedra", "path": "textures/pedra.png" }
+  ],
+  "blocks": [
+    { "id": 1, "name": "grama", "mesh": "cubo", "texture": "grama" },
+    { "id": 2, "name": "terra", "mesh": "cubo", "texture": "terra" },
+    { "id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra" }
+  ]
+}

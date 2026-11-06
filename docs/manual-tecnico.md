@@ -185,6 +185,8 @@ MeshTemplate :: struct {
 
 **Built-ins:** índice 0 = vazio (AR, 0 vértices/0 triângulos), 1 = cubo (8 vértices, 12 triângulos, 2 por face), 2 = planta (dois quads cruzados, 4 triângulos com tag 7). O comportamento do cubo é bit a bit idêntico ao código hardcoded anterior (verificado por simulação). **Nota de integração (B6):** tags 7 exigem `CULL_MODE_NONE` no pipeline.
 
+**Carga data-driven (VS-12, ADR-A1):** desde a VS-12 os templates, o registry de blocos e o albedo vêm de `assets/blocks.json` (seções `meshes`/`textures`/`blocks`, referências por nome), carregado e validado antes de `CreateEngine` por `src/engine/voxel_assets.odin` e formatado bit a bit nos contratos acima (mesmas regras de validação, agora citando o nome do objeto). As texturas são PNGs de dimensão uniforme (máx. 256×256 nesta fatia), decodificadas com `core:image/png` e enviadas como `Texture2DArray` com uma camada por textura na ordem de definição — o caminho de amostragem (índice de camada + UV) não muda. Com o JSON ausente, o init usa os built-ins desta seção + paleta procedural (fallback com paridade verificada). Validação offline espelhada em `tools/sim/assets_check.py`.
+
 ## 7. E1 — edição de voxels bufferizada (novo na v3.0)
 
 Toda edição, de qualquer origem, entra por `request_voxel_edit(world_voxel, block_id)`. Uma fila na CPU faz dedup «última escrita vence» por voxel (`map[[3]i32]int`) e o flush periódico (`EDIT_FLUSH_INTERVAL_MS = 100`; 0 = todo frame; `force_next_flush` para latência mínima) agrupa as edições por chunk e despacha um compute **no command buffer do frame, antes do render pass**, com barreira COMPUTE → TASK|MESH.

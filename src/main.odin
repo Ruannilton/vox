@@ -26,6 +26,9 @@ main :: proc() {
 	engine.events_init()
 	defer engine.events_destroy()
 	engine.config_load()
+	// VS-12 (REQ-AST-06): parse + validação de assets antes de criar a janela;
+	// ausente → warning + fallback built-ins/paleta no init do voxel engine.
+	engine.assets_load()
 
 	engine.CreateEngine()
 	defer engine.DestroyEngine()

@@ -403,7 +403,8 @@ voxel_gpu_init :: proc() {
 	// VS-11 (REQ-UV-02): 1 float2 por vértice de template (stride 8 B std430).
 	voxel_gpu.template_uvs = gpu_buffer_create(
 		vk.DeviceSize(1024 * 2 * size_of(f32)),
-		{.STORAGE_BUFFER, .TRANSFER_DST},
+		// VS-12: TRANSFER_SRC para o readback de validação (debug_readback_validate)
+		{.STORAGE_BUFFER, .TRANSFER_SRC, .TRANSFER_DST},
 	)
 
 	voxel_gpu.work_queue = gpu_buffer_create(
@@ -447,9 +448,17 @@ voxel_gpu_init :: proc() {
 	voxel_gpu.chunk_result_flags_mapped = cast([^]u32)mapped_result_flags
 	voxel_gpu.dummy_buffer = gpu_buffer_create(vk.DeviceSize(16), {.STORAGE_BUFFER})
 
-	upload_builtin_templates()
-	upload_block_registry()
-	upload_palette_textures()
+	// VS-12: assets data-driven substituem built-ins quando assets/blocks.json
+	// existe (fallback = comportamento anterior, paridade total).
+	if voxel_assets.loaded {
+		upload_asset_templates()
+		upload_asset_registry()
+		upload_asset_textures()
+	} else {
+		upload_builtin_templates()
+		upload_block_registry()
+		upload_palette_textures()
+	}
 
 	// --- pipelines de compute (generate + pack) ---
 	voxel_gpu.shader_module = load_shader_module("./voxel.spv")
@@ -744,8 +753,18 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	slot := record.storage_slot_index
 
 	{
-		vtx_size := vk.DeviceSize(16 * 4 * size_of(f32))
-		vtx_rb, vtx_mapped := gpu_buffer_create_host(vtx_size, {.TRANSFER_DST})
+		// VS-12: com assets carregados, o readback casa com os dados do JSON
+		// (vértices + UVs); sem assets, mantém a regresso contra os built-ins.
+		vertex_count := 16
+		uv_count := 0
+		if voxel_assets.loaded {
+			vertex_count = len(voxel_assets.vertices)
+			uv_count = len(voxel_assets.uvs)
+		}
+		vtx_size := vk.DeviceSize(vertex_count * 4 * size_of(f32))
+		uv_size := vk.DeviceSize(uv_count * 2 * size_of(f32))
+		rb_size := vtx_size + uv_size
+		vtx_rb, vtx_mapped := gpu_buffer_create_host(rb_size, {.TRANSFER_DST})
 		vk_check(vk.DeviceWaitIdle(app.vkDevice))
 		cmd := voxel_gpu.compute_command_buffers[0]
 		vk_check(vk.ResetCommandBuffer(cmd, {}))
@@ -756,6 +775,11 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 			),
 		)
 		vk.CmdCopyBuffer(cmd, voxel_gpu.template_vertices.handle, vtx_rb.handle, 1, &vk.BufferCopy{size = vtx_size})
+		// buffer único de readback: copia UVs para depois dos vértices
+		if uv_size > 0 {
+			uv_copy := vk.BufferCopy{dstOffset = vtx_size, size = uv_size}
+			vk.CmdCopyBuffer(cmd, voxel_gpu.template_uvs.handle, vtx_rb.handle, 1, &uv_copy)
+		}
 		vk_check(vk.EndCommandBuffer(cmd))
 		vk_check(
 			vk.QueueSubmit2(
@@ -776,16 +800,39 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 
 		gpu_vertices := cast([^][4]f32)vtx_mapped
 		vtx_errors := 0
-		for v, i in BUILTIN_CUBE_VERTICES {
-			if gpu_vertices[i].xyz != v { vtx_errors += 1 }
-		}
-		for v, i in BUILTIN_PLANT_VERTICES {
-			if gpu_vertices[8 + i].xyz != v { vtx_errors += 1 }
+		if voxel_assets.loaded {
+			for v, i in voxel_assets.vertices {
+				if gpu_vertices[i] != v { vtx_errors += 1 }
+			}
+		} else {
+			for v, i in BUILTIN_CUBE_VERTICES {
+				if gpu_vertices[i].xyz != v { vtx_errors += 1 }
+			}
+			for v, i in BUILTIN_PLANT_VERTICES {
+				if gpu_vertices[8 + i].xyz != v { vtx_errors += 1 }
+			}
 		}
 		if vtx_errors == 0 {
-			log.info("DEBUG READBACK OK: template_vertices (16 vértices, stride 16) == built-ins")
+			if voxel_assets.loaded {
+				log.infof("DEBUG READBACK OK: template_vertices ({} vértices, stride 16) == assets JSON", vertex_count)
+			} else {
+				log.info("DEBUG READBACK OK: template_vertices (16 vértices, stride 16) == built-ins")
+			}
 		} else {
 			log.errorf("DEBUG READBACK FALHOU: template_vertices — {} vértices divergentes", vtx_errors)
+		}
+
+		if uv_size > 0 {
+			gpu_uvs := cast([^][2]f32)mem.ptr_offset(cast(^u8)vtx_mapped, int(vtx_size))
+			uv_errors := 0
+			for uv, i in voxel_assets.uvs {
+				if gpu_uvs[i] != uv { uv_errors += 1 }
+			}
+			if uv_errors == 0 {
+				log.infof("DEBUG READBACK OK: template_uvs ({} UVs, stride 8) == assets JSON", uv_count)
+			} else {
+				log.errorf("DEBUG READBACK FALHOU: template_uvs — {} UVs divergentes", uv_errors)
+			}
 		}
 		gpu_buffer_destroy(&vtx_rb)
 	}
@@ -1080,6 +1127,83 @@ BUILTIN_PLANT_VERTICES :: [8][3]f32 {
 BUILTIN_PLANT_TRIANGLES :: [4][4]u32 {
 	{0, 1, 2, CULL_FACE_NEVER}, {0, 2, 3, CULL_FACE_NEVER},
 	{4, 5, 6, CULL_FACE_NEVER}, {4, 6, 7, CULL_FACE_NEVER},
+}
+
+@(private)
+upload_asset_templates :: proc() {
+	upload_to_device_buffer(
+		raw_data(voxel_assets.templates),
+		vk.DeviceSize(len(voxel_assets.templates) * size_of(MeshTemplate)),
+		voxel_gpu.mesh_templates.handle,
+	)
+	upload_to_device_buffer(
+		raw_data(voxel_assets.vertices),
+		vk.DeviceSize(len(voxel_assets.vertices) * size_of([4]f32)),
+		voxel_gpu.template_vertices.handle,
+	)
+	upload_to_device_buffer(
+		raw_data(voxel_assets.triangles),
+		vk.DeviceSize(len(voxel_assets.triangles) * size_of(u32)),
+		voxel_gpu.template_triangles.handle,
+	)
+	upload_to_device_buffer(
+		raw_data(voxel_assets.uvs),
+		vk.DeviceSize(len(voxel_assets.uvs) * size_of([2]f32)),
+		voxel_gpu.template_uvs.handle,
+	)
+}
+
+@(private)
+upload_asset_registry :: proc() {
+	upload_to_device_buffer(
+		&voxel_assets.registry,
+		size_of(voxel_assets.registry),
+		voxel_gpu.block_registry.handle,
+	)
+}
+
+// VS-12 (REQ-AST-03/05): Texture2DArray de albedo com uma camada por textura
+// (ordem de definição), no lugar da paleta procedural. Caminho de amostragem
+// (índice de camada + UV) inalterado — zero mudança de shader.
+@(private)
+upload_asset_textures :: proc() {
+	w := voxel_assets.texture_width
+	h := voxel_assets.texture_height
+	layers := voxel_assets.texture_layers
+
+	voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation =
+		gpu_image_2d_array_create(w, h, layers)
+	voxel_gpu.albedo_palette_view = gpu_image_2d_array_view_create(voxel_gpu.albedo_palette_image, layers)
+
+	voxel_gpu.pbr_dummy_image, voxel_gpu.pbr_dummy_allocation = gpu_image_2d_array_create(1, 1, 1)
+	voxel_gpu.pbr_dummy_view = gpu_image_2d_array_view_create(voxel_gpu.pbr_dummy_image, 1)
+
+	vk_check(
+		vk.CreateSampler(
+			app.vkDevice,
+			&vk.SamplerCreateInfo {
+				sType = .SAMPLER_CREATE_INFO,
+				magFilter = .LINEAR,
+				minFilter = .LINEAR,
+				addressModeU = .REPEAT,
+				addressModeV = .REPEAT,
+				addressModeW = .REPEAT,
+				maxLod = 0.0,
+			},
+			nil,
+			&voxel_gpu.texture_sampler,
+		),
+	)
+
+	upload_to_device_image(
+		raw_data(voxel_assets.texture_pixels),
+		vk.DeviceSize(len(voxel_assets.texture_pixels)),
+		voxel_gpu.albedo_palette_image,
+		w, h, layers,
+	)
+
+	black := [4]u8{0, 0, 0, 255}
+	upload_to_device_image(&black, vk.DeviceSize(4), voxel_gpu.pbr_dummy_image, 1, 1, 1)
 }
 
 @(private)

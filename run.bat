@@ -21,6 +21,12 @@ for %%I in ("%IN_DIR%\*.slang") do (
 )
 
 echo.
+echo Copiando assets (VS-12)...
+:: assets/ versionado na raiz; o app roda com cwd em bin/ e le assets/blocks.json
+if not exist ".\assets" mkdir ".\assets"
+xcopy /E /I /Y ".\assets" ".\bin\assets" >nul
+
+echo.
 echo Finalizado!
 
 odin build .\src\  -out:./bin/vox.exe
