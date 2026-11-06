@@ -1,26 +1,5 @@
 package engine
 
-// VS-03 (E1) — Journal de edição de voxels (ADR-E1). Toda alteração do mundo
-// vira um VoxelEditRequest em coordenada de MUNDO via ve_request_voxel_edit,
-// com dedup "última escrita vence" por voxel. O flush (temporal ou forçado)
-// agrupa as edições por chunk (1 EditChunkJob = 1 workgroup no
-// apply_voxel_edits) e grava jobs+edições no ring host-visible deste frame.
-//
-//   1. Pedidos cujo chunk está CACHED/RENDERABLE entram no lote; pedidos
-//      cujo chunk está GENERATING ou ausente ficam em pending e reintegram
-//      quando o chunk ficar pronto (a geração recomeça o terreno do zero —
-//      a edição cai DEPOIS do pack).
-//   2. O dispatch do compute roda NO COMMAND BUFFER DO FRAME, antes do
-//      builder da fila de trabalho, com barreira COMPUTE->COMPUTE (ADR-B10)
-//      — a malha do mesmo frame já nasce refletindo a edição.
-//   3. O feedback (edit_results) é colhido no edit_ring_write do slot
-//      seguinte (2 frames depois, protegido pela espera de frames em voo).
-//
-// Tetos do lote: MAX_EDITS_PER_FLUSH, MAX_EDIT_JOBS_PER_FLUSH e
-// MAX_EDITS_PER_CHUNK_PER_FLUSH; o excedente permanece na fila para o
-// próximo ciclo (backpressure natural, contabilizado em stats_deferred).
-// Domínio: tudo aqui roda na thread principal.
-
 import "core:log"
 import "core:time"
 import vma "shared:vma"
@@ -37,30 +16,23 @@ EditRingCounts :: struct {
 }
 
 EditManager :: struct {
-	// Fila ativa com dedup "última escrita vence" por voxel de mundo —
-	// invariante que torna os refcounts exatos (1 edição por voxel por flush).
 	queue:             [dynamic]VoxelEditRequest,
 	lookup:            map[[3]i32]int,
-	// Pedidos cujo chunk está GENERATING ou fora do raio: reaplicados quando
-	// o chunk ficar pronto. (Sem persistência em disco — ver não-escopo.)
 	pending:           map[ChunkCoordinate][dynamic]VoxelEditRequest,
 	last_flush:        time.Tick,
 	force_next_flush:  bool,
-	// Staging do flush corrente: montado antes da espera de frames em voo e
-	// copiado ao ring depois dela (mesma garantia do visible_chunks).
 	staged_jobs:       [dynamic]EditChunkJob,
 	staged_edits:      [dynamic]u32,
-	// Contadores por slot do ring para o readback de edit_results.
 	ring_counts:       [NUM_FRAMES_IN_FLIGHT]EditRingCounts,
-	// Estatísticas acumuladas do feedback (diagnóstico/evidência).
 	stats_applied:     u64,
 	stats_noop:        u64,
 	stats_rejected:    u64,
-	stats_deferred:    u64, // ficaram para o próximo flush (tetos do lote)
+	stats_deferred:    u64, 
 }
 
 // Mundo -> (chunk, índice denso do voxel). Layout denso igual ao Slang:
 // x | z<<5 | y<<10.
+@(private)
 voxel_chunk_and_index :: proc "contextless" (world_voxel: [3]i32) -> (chunk: ChunkCoordinate, voxel_index: u32) {
 	chunk = ChunkCoordinate{
 		floor_div_i32(world_voxel.x, CHUNK_SIZE),
@@ -74,9 +46,7 @@ voxel_chunk_and_index :: proc "contextless" (world_voxel: [3]i32) -> (chunk: Chu
 	return
 }
 
-// API pública: empilha (ou sobrescreve) um pedido de alteração. Deve ser
-// chamada na thread principal (mesma do loop); se gameplay ganhar threads
-// próprias, proteger queue+lookup com uma trava.
+
 ve_request_voxel_edit :: proc(ve: ^VoxelEngine, world_voxel: [3]i32, block_id: u32) {
 	if block_id > 65535 do return // fora do domínio de 16 bits do registro do lote
 	if index, found := ve.edit.lookup[world_voxel]; found {
@@ -87,7 +57,6 @@ ve_request_voxel_edit :: proc(ve: ^VoxelEngine, world_voxel: [3]i32, block_id: u
 	ve.edit.lookup[world_voxel] = len(ve.edit.queue) - 1
 }
 
-// Atalho para explosões/pincéis: mesma semântica, um voxel por chamada.
 ve_request_voxel_edits_in_box :: proc(ve: ^VoxelEngine, min_corner, max_corner: [3]i32, block_id: u32) {
 	for x in min_corner.x ..= max_corner.x {
 		for y in min_corner.y ..= max_corner.y {
@@ -98,8 +67,7 @@ ve_request_voxel_edits_in_box :: proc(ve: ^VoxelEngine, min_corner, max_corner: 
 	}
 }
 
-// Move o pedido para a lista pendente do chunk (chunk gerando ou ausente),
-// com dedup por voxel dentro da lista.
+
 @(private)
 edit_defer_to_pending :: proc(ve: ^VoxelEngine, chunk: ChunkCoordinate, request: VoxelEditRequest) {
 	list := ve.edit.pending[chunk] // dynamic array compartilha o backing
@@ -116,6 +84,7 @@ edit_defer_to_pending :: proc(ve: ^VoxelEngine, chunk: ChunkCoordinate, request:
 	// memória (capar por TTL/quantidade fica no backlog, junto ao save).
 }
 
+@(private)
 edit_flush_due :: proc(ve: ^VoxelEngine) -> bool {
 	if ve.edit.force_next_flush do return len(ve.edit.queue) > 0 || len(ve.edit.pending) > 0
 	if len(ve.edit.queue) == 0 && len(ve.edit.pending) == 0 do return false
@@ -123,14 +92,11 @@ edit_flush_due :: proc(ve: ^VoxelEngine) -> bool {
 	return time.duration_milliseconds(time.tick_since(ve.edit.last_flush)) >= EDIT_FLUSH_INTERVAL_MS
 }
 
-// Monta o staging do flush: drena pendências prontas, converte mundo->slot,
-// agrupa por chunk e aplica os tetos do lote. O que não couber permanece na
-// fila para o próximo intervalo (backpressure natural).
+
 flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 	clear(&ve.edit.staged_jobs)
 	clear(&ve.edit.staged_edits)
 
-	// 1. Reintegra pendências de chunks que ficaram prontos desde o último flush.
 	ready := make([dynamic]ChunkCoordinate, context.temp_allocator)
 	for coord in ve.edit.pending {
 		record, found := ve.active_chunks[coord]
@@ -147,7 +113,6 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 		delete_key(&ve.edit.pending, coord)
 	}
 
-	// 2. Drena a fila ativa agrupando por slot (edições contíguas por job).
 	buckets := make(map[u32][dynamic]u32, context.temp_allocator) // slot -> packed edits
 	total_staged := 0
 	kept := make([dynamic]VoxelEditRequest, context.temp_allocator)
@@ -181,15 +146,9 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 		append(&bucket, pack_voxel_edit(voxel_index, request.block_id))
 		buckets[record.storage_slot_index] = bucket
 		total_staged += 1
-		// VS-04 (C2): a MESMA edição staged p/ a GPU alimenta o mirror (mesma
-		// ordem, mesmo dedup, mesmo teto — convergência por construção).
-		// Edições retidas (kept/pending) NÃO se aplicam aqui: passarão por
-		// este mesmo caminho no flush em que forem staged.
 		mirror_journal_apply(ve, chunk, request.world_voxel, request.block_id)
 	}
 
-	// 3. Emite os jobs com as edições contíguas (first_edit local do staging;
-	//    edit_ring_write soma a base do ring ao copiar).
 	for slot, bucket in buckets {
 		job := EditChunkJob {
 			storage_slot_index = slot,
@@ -200,7 +159,6 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 		append(&ve.edit.staged_edits, ..bucket[:])
 	}
 
-	// 4. Recompacta a fila com o que ficou e reconstrói o lookup.
 	delete(ve.edit.queue)
 	ve.edit.queue = make([dynamic]VoxelEditRequest)
 	clear(&ve.edit.lookup)
@@ -218,9 +176,7 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 	}
 }
 
-// VS-04 (REQ-MIRROR-09): mapeia uma posição rejeitada do ring de resultados
-// de volta a (chunk, voxel, bloco) usando os rings de jobs/edições do mesmo
-// slot (intactos na colheita) e reconcilia a página do mirror.
+
 @(private)
 mirror_reconcile_ring_position :: proc(ve: ^VoxelEngine, frame_idx: int, counts: EditRingCounts, index: u32) {
 	// job que cobre a posição (edições contíguas por chunk)
@@ -256,10 +212,6 @@ mirror_reconcile_ring_position :: proc(ve: ^VoxelEngine, frame_idx: int, counts:
 	mirror_reconcile_rejection(ve, coord, VoxelEditRequest{world_voxel, packed_edit >> 16})
 }
 
-// Copia o staging para o slot do ring deste frame e colhe o feedback do uso
-// anterior daquele slot (2 frames atrás — a espera de frames em voo já
-// garantiu a conclusão). Chamada DEPOIS da espera, nunca antes.
-// Retorna o job_count do frame (0 => nenhum dispatch de edição é gravado).
 edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	frame_idx := int(frame_index % NUM_FRAMES_IN_FLIGHT)
 
@@ -344,7 +296,7 @@ edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	return job_count
 }
 
-// Estatísticas do feedback (diagnóstico/evidência da VS-03).
+
 edit_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
 	log.infof(
 		"{} applied={} noop={} rejected={} deferred={} (fila={}, pendências={})",

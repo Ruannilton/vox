@@ -1,8 +1,5 @@
 package engine
 
-// VS-01-IMPL-07 — Buffers GPU, tabelas do Caminho B, pipelines de compute e
-// descriptor set da fundação de voxels. Layouts e tamanhos: common.slang
-// (fonte única de verdade) e voxel_types.odin.
 
 import "core:log"
 import "core:mem"
@@ -16,37 +13,29 @@ BLOCK_REGISTRY_CAPACITY :: 256
 MESH_TEMPLATE_CAPACITY  :: 256
 
 VoxelGpu :: struct {
-	scratch:                GpuBuffer, // ring 3×16 chunks × 128 KiB (device-local)
-	generation_jobs:        GpuBuffer, // ring 3×16 jobs (host-visible)
+	scratch:                GpuBuffer, 
+	generation_jobs:        GpuBuffer,
 	generation_jobs_mapped: [^]ChunkGenerationJob,
 	occupancy_pool:         GpuBuffer,
 	material_plane_pool:    GpuBuffer,
 	chunk_headers:          GpuBuffer,
 	special_voxel_records:  GpuBuffer,
 	block_registry:         GpuBuffer,
-	visible_chunks:         GpuBuffer, // ring 2×4096 × 48 B (host-visible, VS-02)
+	visible_chunks:         GpuBuffer,
 	visible_chunks_mapped:  [^]VisibleChunk,
 	mesh_templates:         GpuBuffer,
 	template_vertices:      GpuBuffer,
 	template_triangles:     GpuBuffer,
-	// VS-02 (correção): fila de trabalho global — ring 2×(estado + itens);
-	// builder compute anexa, draw mesh-only indireto consome (device-local).
 	work_queue:             GpuBuffer,
-	// VS-03 (E1): rings de edição host-visible (2 slots de frame).
 	edit_jobs:              GpuBuffer,
 	edit_jobs_mapped:       [^]EditChunkJob,
 	voxel_edits:            GpuBuffer,
 	voxel_edits_mapped:     [^]u32,
-	edit_results:           GpuBuffer, // HOST_ACCESS_RANDOM: CPU lê o feedback
+	edit_results:           GpuBuffer,
 	edit_results_mapped:    [^]u32,
-	// VS-04 (C2): ring de export do mirror — host-coerente (a escrita do
-	// generate É o readback; CPU lê no handler de conclusão).
 	mirror_export_ring:        GpuBuffer,
 	mirror_export_ring_mapped: [^]u16,
-	dummy_buffer:           GpuBuffer, // reservado para uso futuro
-
-	// VS-02: texturas (bindings 8/9) — paleta procedural de cores sólidas +
-	// dummy PBR (ADR-B7).
+	dummy_buffer:           GpuBuffer, 
 	albedo_palette_image:      vk.Image,
 	albedo_palette_allocation: vma.Allocation,
 	albedo_palette_view:       vk.ImageView,
@@ -57,20 +46,17 @@ VoxelGpu :: struct {
 
 	descriptor_pool:        vk.DescriptorPool,
 	descriptor_set:         vk.DescriptorSet,
-	// Módulos separados por família de estágio: `groupshared` global no Slang
-	// é a UNIÃO do módulo inteiro — num módulo único, o mesh shader herdava a
-	// shared memory do pack+edição (37,9 KiB > maxMeshSharedMemorySize).
-	shader_module:          vk.ShaderModule, // voxel.spv: generate + pack
-	edit_shader_module:     vk.ShaderModule, // edit.spv: apply_voxel_edits
-	render_shader_module:   vk.ShaderModule, // render.spv: builder + finalize + mesh + fragment
+
+	shader_module:          vk.ShaderModule, 
+	edit_shader_module:     vk.ShaderModule, 
+	render_shader_module:   vk.ShaderModule, 
 	generation_pipeline:    vk.Pipeline,
 	packing_pipeline:       vk.Pipeline,
-	// VS-02 (correção): builder + finalize da fila de trabalho (compute
-	// despachado na fila gráfica, antes do render pass).
+
 	build_work_queue_pipeline:    vk.Pipeline,
 	finalize_work_queue_pipeline: vk.Pipeline,
-	edit_pipeline:                vk.Pipeline, // VS-03: apply_voxel_edits (compute na fila gráfica)
-	mesh_pipeline:          vk.Pipeline, // VS-02: mesh/fragment (mesh-only)
+	edit_pipeline:                vk.Pipeline, 
+	mesh_pipeline:          vk.Pipeline,
 
 	compute_command_pool:    vk.CommandPool,
 	compute_command_buffers: [MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT]vk.CommandBuffer,
@@ -83,7 +69,6 @@ gpu_buffer_create_host :: proc(size: vk.DeviceSize, usage: vk.BufferUsageFlags) 
 	return gpu_buffer_create_host_flags(size, usage, {.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED})
 }
 
-// Carrega um .spv do diretório de trabalho (bin/) e cria o shader module.
 @(private)
 load_shader_module :: proc(path: string) -> (module: vk.ShaderModule) {
 	shader_code := load_file(path, context.temp_allocator)
@@ -102,9 +87,6 @@ load_shader_module :: proc(path: string) -> (module: vk.ShaderModule) {
 	return
 }
 
-// HOST_ACCESS_RANDOM para buffers lidos pela CPU (ex.: edit_results); nesse
-// caso chamar vma.InvalidateAllocation antes da leitura se a memória não for
-// coerente.
 @(private)
 gpu_buffer_create_host_flags :: proc(
 	size: vk.DeviceSize,
@@ -130,9 +112,6 @@ gpu_buffer_create_host_flags :: proc(
 	return
 }
 
-// Upload via staging: copia para buffer host-visible temporário e grava no
-// device-local com um submit único na fila de compute (chamado só no init,
-// antes da worker começar).
 @(private)
 upload_to_device_buffer :: proc(data: rawptr, size: vk.DeviceSize, dst: vk.Buffer) {
 	staging, staging_mapped := gpu_buffer_create_host(size, {.TRANSFER_SRC})
@@ -162,8 +141,6 @@ upload_to_device_buffer :: proc(data: rawptr, size: vk.DeviceSize, dst: vk.Buffe
 	vk_check(vk.DeviceWaitIdle(app.vkDevice))
 }
 
-// VS-02 (REQ-SHADE-03): cria uma imagem 2D array RGBA8 compartilhada entre as
-// filas de compute (upload no init) e gráfica (amostragem no fragment).
 @(private)
 gpu_image_2d_array_create :: proc(
 	width, height, layers: u32,
@@ -214,8 +191,6 @@ gpu_image_2d_array_view_create :: proc(image: vk.Image, layers: u32) -> (view: v
 	return
 }
 
-// Upload de pixels RGBA8 para uma imagem 2D array via staging, com as duas
-// transições de layout, num submit único na fila de compute (só no init).
 @(private)
 upload_to_device_image :: proc(pixels: rawptr, size: vk.DeviceSize, dst: vk.Image, width, height, layers: u32) {
 	staging, staging_mapped := gpu_buffer_create_host(size, {.TRANSFER_SRC})
@@ -252,9 +227,6 @@ upload_to_device_image :: proc(pixels: rawptr, size: vk.DeviceSize, dst: vk.Imag
 	}
 	vk.CmdCopyBufferToImage(cmd, staging.handle, dst, .TRANSFER_DST_OPTIMAL, 1, &region)
 
-	// A família de compute não aceita estágios gráficos; a transição de layout
-	// não exige dstStage de leitura — o DeviceWaitIdle do init ordena o uso
-	// posterior pela fila gráfica.
 	to_read := vk.ImageMemoryBarrier2 {
 		sType = .IMAGE_MEMORY_BARRIER_2,
 		image = dst,
@@ -289,8 +261,6 @@ upload_to_device_image :: proc(pixels: rawptr, size: vk.DeviceSize, dst: vk.Imag
 	vk_check(vk.DeviceWaitIdle(app.vkDevice))
 }
 
-// VS-02: paleta de cores sólidas por entrada de albedo (sem arquivos de
-// asset) + dummy PBR do mesmo tipo para validar o binding 9 (ADR-B7).
 @(private)
 upload_palette_textures :: proc() {
 	LAYER :: ALBEDO_PALETTE_LAYER_SIZE
@@ -320,8 +290,6 @@ upload_palette_textures :: proc() {
 		),
 	)
 
-	// Cores: fallback cinza; 0 = ar (nunca amostrado); 1 = grama; 2 = terra;
-	// 3 = pedra. O índice do bloco no dicionário aponta para a camada.
 	colors: [LAYERS][3]u8
 	for &c in colors do c = {128, 128, 128}
 	colors[0] = {0, 0, 0}
@@ -350,7 +318,6 @@ upload_palette_textures :: proc() {
 voxel_gpu_init :: proc() {
 	log.info("Inicializando recursos GPU do voxel engine")
 
-	// --- command pool/buffers de compute (ring de 3 lotes em voo) ---
 	vk_check(
 		vk.CreateCommandPool(
 			app.vkDevice,
@@ -408,7 +375,7 @@ voxel_gpu_init :: proc() {
 		vk.DeviceSize(BLOCK_REGISTRY_CAPACITY * size_of(BlockDefinition)),
 		{.STORAGE_BUFFER, .TRANSFER_DST},
 	)
-	// VS-02 (REQ-VIS-01): ring de visíveis, reconstruído pela CPU a cada frame.
+
 	visible_mapped: rawptr
 	voxel_gpu.visible_chunks, visible_mapped = gpu_buffer_create_host(
 		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * MAXIMUM_VISIBLE_CHUNKS * size_of(VisibleChunk)),
@@ -427,16 +394,12 @@ voxel_gpu_init :: proc() {
 		vk.DeviceSize(1024 * size_of(u32)),
 		{.STORAGE_BUFFER, .TRANSFER_DST},
 	)
-	// VS-02 (correção): fila de trabalho global — INDIRECT para o
-	// CmdDrawMeshTasksIndirectEXT, TRANSFER_DST para o fill do estado,
-	// TRANSFER_SRC para readbacks de debug.
+
 	voxel_gpu.work_queue = gpu_buffer_create(
 		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * WORK_QUEUE_SLOT_WORDS * size_of(u32)),
 		{.STORAGE_BUFFER, .INDIRECT_BUFFER, .TRANSFER_DST, .TRANSFER_SRC},
 	)
-	// VS-03 (E1): rings de edição host-visible (2 slots de frame; mesma
-	// garantia de reescrita do visible_chunks — slot só regravado após a
-	// espera de frames em voo).
+
 	mapped_edit_jobs: rawptr
 	voxel_gpu.edit_jobs, mapped_edit_jobs = gpu_buffer_create_host(
 		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * MAX_EDIT_JOBS_PER_FLUSH * size_of(EditChunkJob)),
@@ -456,8 +419,7 @@ voxel_gpu_init :: proc() {
 		{.HOST_ACCESS_RANDOM, .MAPPED}, // CPU lê o feedback 2 frames depois
 	)
 	voxel_gpu.edit_results_mapped = cast([^]u32)mapped_edit_results
-	// VS-04 (C2): ring de export do mirror (64 slots × 64 KiB = 4 MiB,
-	// u16 denso y-contíguo; a CPU lê após o acquire da timeline do lote).
+
 	mapped_mirror_ring: rawptr
 	voxel_gpu.mirror_export_ring, mapped_mirror_ring = gpu_buffer_create_host_flags(
 		vk.DeviceSize(MIRROR_RING_SLOTS * CHUNK_VOXEL_COUNT * size_of(u16)),
@@ -517,8 +479,6 @@ voxel_gpu_init :: proc() {
 		),
 	)
 
-	// VS-02 (correção): pipelines compute do builder/finalize da fila de
-	// trabalho (módulo render.spv) + gráfica mesh-only (mesh/fragment).
 	build_queue_stage := vk.PipelineShaderStageCreateInfo {
 		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 		stage  = {.COMPUTE},
@@ -559,9 +519,7 @@ voxel_gpu_init :: proc() {
 			&voxel_gpu.finalize_work_queue_pipeline,
 		),
 	)
-	// VS-03 (E1): pipeline do apply_voxel_edits (compute na fila gráfica,
-	// antes do builder da fila de trabalho — mesma layout de compute).
-	// O edit.spv tem UMA entry point, então o slangc a emite como "main".
+
 	edit_stage := vk.PipelineShaderStageCreateInfo {
 		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 		stage  = {.COMPUTE},
@@ -584,7 +542,6 @@ voxel_gpu_init :: proc() {
 	)
 	voxel_render_pipeline_create()
 
-	// --- descriptor set (layout da VS-00, com 8/9 revisados pela VS-02) ---
 	pool_sizes := [2]vk.DescriptorPoolSize {
 		{type = .STORAGE_BUFFER, descriptorCount = DESCRIPTOR_SET_BINDING_COUNT},
 		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = 2},
@@ -629,11 +586,11 @@ voxel_gpu_init :: proc() {
 		10 = voxel_gpu.mesh_templates.handle,
 		11 = voxel_gpu.template_vertices.handle,
 		12 = voxel_gpu.template_triangles.handle,
-		13 = voxel_gpu.edit_jobs.handle,    // ring de jobs de edição (VS-03)
-		14 = voxel_gpu.voxel_edits.handle,  // ring de edições packed (VS-03)
-		15 = voxel_gpu.edit_results.handle, // ring de resultados (VS-03)
-		16 = voxel_gpu.mirror_export_ring.handle, // ring de export do mirror (VS-04)
-		17 = voxel_gpu.work_queue.handle,   // fila de trabalho (VS-02)
+		13 = voxel_gpu.edit_jobs.handle,
+		14 = voxel_gpu.voxel_edits.handle, 
+		15 = voxel_gpu.edit_results.handle,
+		16 = voxel_gpu.mirror_export_ring.handle,
+		17 = voxel_gpu.work_queue.handle, 
 	}
 	buffer_infos: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorBufferInfo
 	writes: [DESCRIPTOR_SET_BINDING_COUNT]vk.WriteDescriptorSet
@@ -652,7 +609,7 @@ voxel_gpu_init :: proc() {
 		}
 		write_count += 1
 	}
-	// VS-02 (REQ-PIPE-02): bindings 8/9 são COMBINED_IMAGE_SAMPLER.
+
 	image_infos := [2]vk.DescriptorImageInfo {
 		{sampler = voxel_gpu.texture_sampler, imageView = voxel_gpu.albedo_palette_view, imageLayout = .SHADER_READ_ONLY_OPTIMAL},
 		{sampler = voxel_gpu.texture_sampler, imageView = voxel_gpu.pbr_dummy_view, imageLayout = .SHADER_READ_ONLY_OPTIMAL},
@@ -671,8 +628,6 @@ voxel_gpu_init :: proc() {
 	}
 	vk.UpdateDescriptorSets(app.vkDevice, u32(write_count), raw_data(&writes), 0, nil)
 
-	// VS-05 (REQ-PROF-01): nomes dos objetos-chave para as capturas
-	// Nsight/RenderDoc (no-op quando a telemetria está desligada).
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.scratch.handle, .BUFFER, "scratch_dense")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.occupancy_pool.handle, .BUFFER, "occupancy_pool")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.material_plane_pool.handle, .BUFFER, "material_plane_pool")
@@ -739,13 +694,8 @@ voxel_gpu_destroy :: proc() {
 	voxel_gpu = {}
 }
 
-// --- Readback de debug (AC-01): decodifica um chunk real na CPU e compara ---
-// com a verdade do worldgen (determinístico). Só roda em diagnóstico, sob
-// demanda, com a GPU idle.
 
 debug_readback_validate :: proc(ve: ^VoxelEngine) {
-	// Escolhe o primeiro chunk concluído que contenha camadas sólidas do
-	// worldgen (y ≤ 1); fallback para qualquer chunk concluído.
 	coord: ChunkCoordinate
 	record: ChunkRecord
 	found := false
@@ -769,10 +719,6 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	}
 	slot := record.storage_slot_index
 
-	// Regressão (VS-02): o shader lê template_vertices como float4 (stride
-	// 16 B, std430). Compara o conteúdo do buffer com os built-ins —
-	// historicamente o upload usava stride 12 e o shader lia vértices
-	// desalinhados (faces malformadas).
 	{
 		vtx_size := vk.DeviceSize(16 * 4 * size_of(f32))
 		vtx_rb, vtx_mapped := gpu_buffer_create_host(vtx_size, {.TRANSFER_DST})
@@ -881,7 +827,6 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	)
 	vk_check(vk.DeviceWaitIdle(app.vkDevice))
 
-	// Decodifica na CPU espelhando read_block_identifier do common.slang.
 	header := cast(^ChunkHeader)readback_mapped
 	occupancy := cast([^]u32)mem.ptr_offset(cast(^u8)readback_mapped, int(header_size))
 	planes := cast([^]u32)mem.ptr_offset(cast(^u8)readback_mapped, int(header_size + occupancy_size))
@@ -901,7 +846,6 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 				clamped := min(palette_index, max(header.palette_size, 1) - 1)
 				decoded := header.palette[clamped]
 
-				// Verdade do worldgen da referência.
 				world_y := coord.y * CHUNK_SIZE + i32(y)
 				truth: u32 = 0
 				if world_y < 0 do truth = 3
@@ -930,9 +874,6 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	}
 }
 
-
-// TEMPORÁRIO (diagnóstico VS-03): decodifica voxels específicos de um chunk
-// via readback (header + planos), para inspecionar o cenário roteirizado.
 debug_readback_decode_voxels :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate, local_voxels: [][3]i32, tag: string) {
 	record, found := ve.active_chunks[chunk_coord]
 	if !found || record.state == .GENERATING {
@@ -1005,8 +946,7 @@ debug_readback_decode_voxels :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordin
 }
 
 
-// TEMPORÁRIO (diagnóstico VS-04): paridade bit a bit GPU (packed) x mirror
-// (página densa) para um chunk materializado — 32.768 voxels comparados.
+
 debug_mirror_parity :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate) {
 	page, found := ve.mirror.pages[chunk_coord]
 	if !found || page.state != .MATERIALIZED {
@@ -1094,14 +1034,11 @@ debug_mirror_parity :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate) {
 }
 
 
-// --- Caminho B: templates built-in (0 = ar, 1 = cubo, 2 = planta) ---
-
 BUILTIN_CUBE_VERTICES :: [8][3]f32 {
 	{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0},
 	{0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1},
 }
 
-// (v0, v1, v2, face) — winding CCW visto de fora; face 0..5 = +X,-X,+Y,-Y,+Z,-Z
 BUILTIN_CUBE_TRIANGLES :: [12][4]u32 {
 	{1, 3, 7, 0}, {1, 7, 5, 0}, // +X
 	{0, 4, 6, 1}, {0, 6, 2, 1}, // -X
@@ -1156,7 +1093,6 @@ upload_builtin_templates :: proc() {
 		},
 	}
 
-	// std430: o shader lê float4 (stride 16 B) — upload com w=0 de padding.
 	vertices: [16][4]f32
 	for v, i in cube_verts do vertices[i] = {v[0], v[1], v[2], 0}
 	for v, i in plant_verts do vertices[8 + i] = {v[0], v[1], v[2], 0}
@@ -1169,10 +1105,7 @@ upload_builtin_templates :: proc() {
 	upload_to_device_buffer(&triangles, size_of(triangles), voxel_gpu.template_triangles.handle)
 }
 
-// Dicionário mínimo do worldgen da referência: 1 = grama, 2 = terra,
-// 3 = pedra (todos com o template cubo). 0 = ar (não é registrado).
-// VS-02 (REQ-SHADE-03): albedo_texture_index aponta para a camada de cor
-// sólida da paleta procedural (1 = verde, 2 = marrom, 3 = cinza).
+
 @(private)
 upload_block_registry :: proc() {
 	registry: [BLOCK_REGISTRY_CAPACITY]BlockDefinition

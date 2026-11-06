@@ -1,18 +1,5 @@
 package engine
 
-// VS-02-IMPL-06 — Pipeline gráfica mesh/fragment (mesh-only) e gravação do
-// draw. CORREÇÃO pós-validação: o payload task→mesh chegava sempre zerado
-// neste ambiente (driver NVIDIA 1.4.351), então a seleção de grupos roda num
-// builder compute na fila gráfica (voxel_render_prepare, ANTES do render
-// pass) que anexa itens de 32 bits numa fila global; o draw é indireto
-// (vkCmdDrawMeshTasksIndirectEXT, um comando com x = contagem de itens) e
-// cada workgroup lê o seu item por
-// SV_GroupID. Layout da VS-00 (graphicsPipelineLayout, push constants de
-// 88 B); dynamic rendering com os formatos da swapchain/depth; viewport/
-// scissor dinâmicos (REQ-PIPE-04); cullMode NONE — o culling direcional
-// acontece no shader por tags (a correção visual de plantas é a ADR-B6,
-// adiada).
-
 import "core:log"
 import vk "vendor:vulkan"
 
@@ -92,16 +79,6 @@ voxel_render_pipeline_create :: proc() {
 	log.info("Pipeline mesh (mesh-only/fragment) criada")
 }
 
-// VS-02 (correção): grava o builder da fila de trabalho ANTES do render pass.
-// Sequência por frame no slot do ring: zera o estado (fill de 32 B) →
-// barrier transfer→compute → dispatch build_work_queue (1 workgroup por chunk
-// visível) → barrier compute→compute → dispatch finalize_work_queue (1
-// thread: fecha o x do draw indireto com clamp) → barrier compute→mesh/
-// indirect. A reutilização do slot (2 frames atrás) já foi ordenada pela
-// espera da timeline gráfica no host — mesma garantia do ring de visíveis.
-// VS-03 (E1): o dispatch do apply_voxel_edits (se houver jobs) precede tudo,
-// com barreira COMPUTE(write)→COMPUTE(read) — a ocupação/planos/header já
-// refletem a edição quando o builder e o mesh leem (mesmo frame).
 voxel_render_prepare :: proc(
 	cmd: vk.CommandBuffer,
 	vp: matrix[4, 4]f32,
@@ -121,8 +98,6 @@ voxel_render_prepare :: proc(
 	vk.CmdBindDescriptorSets(cmd, .COMPUTE, app.computePipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 0, nil)
 	vk.CmdPushConstants(cmd, app.computePipelineLayout, {.COMPUTE}, 0, PUSH_CONSTANTS_SIZE, &push_constants)
 
-	// VS-03 (E1): aplica as edições do flush antes de qualquer leitura da
-	// ocupação/planos neste frame.
 	if edit_job_count > 0 {
 		gfx_pool := telemetry.gfx_pools[frame_index]
 		telemetry_timestamp_begin(cmd, gfx_pool, 2)
@@ -180,8 +155,6 @@ voxel_render_prepare :: proc(
 	telemetry_end_label(cmd)
 	telemetry_timestamp_end(cmd, telemetry.gfx_pools[frame_index], 5)
 
-	// builder → finalize: o append_count escrito pelo builder precisa estar
-	// visível para a leitura do finalize.
 	builder_barrier := vk.BufferMemoryBarrier2 {
 		sType         = .BUFFER_MEMORY_BARRIER_2,
 		srcStageMask  = {.COMPUTE_SHADER},
@@ -208,8 +181,6 @@ voxel_render_prepare :: proc(
 	telemetry_end_label(cmd)
 	telemetry_timestamp_end(cmd, telemetry.gfx_pools[frame_index], 7)
 
-	// finalize/builder → draw: o estado (x,y,z) vira INDIRECT_COMMAND_READ e
-	// os itens viram SHADER_READ no estágio mesh.
 	draw_barrier := vk.BufferMemoryBarrier2 {
 		sType         = .BUFFER_MEMORY_BARRIER_2,
 		srcStageMask  = {.COMPUTE_SHADER},
@@ -230,11 +201,6 @@ voxel_render_prepare :: proc(
 	)
 }
 
-// Grava o draw indireto dos visíveis dentro do render pass do frame
-// (REQ-PIPE-03): UM comando VkDrawMeshTasksIndirectCommandEXT com x =
-// min(append_count, capacidade), y = z = 1, produzido pelo finalize (fila
-// vazia ⇒ x = 0, no-op). NÃO usar a variante IndirectCount: ela executaria
-// `count` comandos de 12 B lidos da região de itens (TDR garantido).
 voxel_render_record :: proc(
 	cmd: vk.CommandBuffer,
 	vp: matrix[4, 4]f32,

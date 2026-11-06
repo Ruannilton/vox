@@ -17,7 +17,6 @@ create_vulkan_instance :: proc() {
 	vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
 	log.assert(vk.CreateInstance != nil, "Failed to load Vulkan API")
 
-	// REQ-FND-PLAT-02: validation layers apenas quando disponíveis; ausência gera warning e a execução continua.
 	requested_layers := []cstring{"VK_LAYER_KHRONOS_validation"}
 	layers := make([dynamic]cstring, 0, len(requested_layers), context.temp_allocator)
 	available_layer_count: u32
@@ -130,15 +129,15 @@ destroy_vulkan_surface :: proc() {
 	log.info("Vulkan surface destroyed successfully")
 }
 
-// REQ-FND-DEV-02: extensões de dispositivo obrigatórias.
+
 REQUIRED_DEVICE_EXTENSIONS :: []cstring {
 	vk.KHR_SWAPCHAIN_EXTENSION_NAME,
 	vk.EXT_MESH_SHADER_EXTENSION_NAME,
 	vk.EXT_SHADER_OBJECT_EXTENSION_NAME,
-	vk.EXT_MEMORY_BUDGET_EXTENSION_NAME, // VS-05 (REQ-PROF-03): budgets reais de VRAM
+	vk.EXT_MEMORY_BUDGET_EXTENSION_NAME, 
 }
 
-// Cadeia completa de features consultada (REQ-FND-DEV-01) e habilitada (REQ-FND-DEV-03).
+
 DeviceFeatureChain :: struct {
 	base:          vk.PhysicalDeviceFeatures,
 	v11:           vk.PhysicalDeviceVulkan11Features,
@@ -152,13 +151,13 @@ DeviceFeatureChain :: struct {
 @(private)
 init_device_feature_chain :: proc(chain: ^DeviceFeatureChain) {
 	chain.base = {
-		shaderInt16 = true, // C2 (VS-04): uint16_t no SSBO do mirror
+		shaderInt16 = true, 
 	}
 	chain.v11 = {
 		sType                 = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
 		shaderDrawParameters  = true,
 		storageBuffer16BitAccess = true,
-		uniformAndStorageBuffer16BitAccess = true, // C2 (VS-04): uint16_t no SSBO do mirror
+		uniformAndStorageBuffer16BitAccess = true,
 	}
 	chain.v12 = {
 		sType            = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -189,7 +188,6 @@ init_device_feature_chain :: proc(chain: ^DeviceFeatureChain) {
 	}
 }
 
-// Anexa à lista `missing` o nome de cada feature obrigatória não suportada.
 @(private)
 collect_missing_features :: proc(chain: ^DeviceFeatureChain, missing: ^[dynamic]string) {
 	if !chain.base.shaderInt16 do append(missing, "shaderInt16")
@@ -219,7 +217,7 @@ query_device_features :: proc(device: vk.PhysicalDevice) -> DeviceFeatureChain {
 		pNext = &chain.mesh_shader,
 	}
 	vk.GetPhysicalDeviceFeatures2(device, &features2)
-	chain.base = features2.features // preenchida junto (features do núcleo)
+	chain.base = features2.features 
 	return chain
 }
 
@@ -275,7 +273,7 @@ create_vulkan_device :: proc() {
 		vk.EXT_MESH_SHADER_EXTENSION_NAME,
 		vk.KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME,
 		vk.KHR_SPIRV_1_4_EXTENSION_NAME,
-		vk.EXT_MEMORY_BUDGET_EXTENSION_NAME, // VS-05 (REQ-PROF-03)
+		vk.EXT_MEMORY_BUDGET_EXTENSION_NAME,
 	}
 
 	enabled_features: DeviceFeatureChain
@@ -288,7 +286,7 @@ create_vulkan_device :: proc() {
 		enabledExtensionCount   = u32(len(extensions)),
 		ppEnabledExtensionNames = raw_data(extensions),
 		pNext                   = &enabled_features.mesh_shader,
-		pEnabledFeatures        = &enabled_features.base, // shaderInt16 (C2, VS-04)
+		pEnabledFeatures        = &enabled_features.base,
 	}
 
 	vk_check(vk.CreateDevice(app.vkPhysicalDevice, &device_create_info, nil, &app.vkDevice))
@@ -379,7 +377,7 @@ create_vma_allocator :: proc() {
 	log.info("Creating VMA allocator")
 	vma_functions := vma.create_vulkan_functions()
 	allocator_create_info := vma.AllocatorCreateInfo {
-		flags            = {.EXT_MEMORY_BUDGET}, // VS-05 (REQ-PROF-03): budgets reais no GetHeapBudgets
+		flags            = {.EXT_MEMORY_BUDGET},
 		physicalDevice   = app.vkPhysicalDevice,
 		device           = app.vkDevice,
 		instance         = app.vkInstance,
@@ -460,8 +458,6 @@ destroy_depth_buffer :: proc() {
 	log.info("Depth buffer destroyed successfully")
 }
 
-// REQ-FND-SYNC-01: duas timelines — gráfica (valor inicial NUM_FRAMES_IN_FLIGHT)
-// e compute (valor inicial 0; 1 lote = 1 valor, exercitada a partir de VS-01).
 @(private)
 create_sync_objects :: proc() {
 	log.info("Creating sync objects")
@@ -490,9 +486,6 @@ destroy_sync_objects :: proc() {
 	log.info("Sync objects destroyed successfully")
 }
 
-// REQ-FND-DESC-01: set 0 = recursos globais (bindings 0..17; storage buffers,
-// exceto 8/9 = texturas combinadas desde a VS-02), visível a compute e
-// mesh/fragment; pipeline layouts com push constants de 88 B.
 DESCRIPTOR_SET_BINDING_COUNT :: 18
 PUSH_CONSTANTS_SIZE :: 88
 
@@ -527,7 +520,7 @@ create_descriptor_layouts :: proc() {
 			stageFlags      = shader_stages,
 		}
 	}
-	// VS-02 (REQ-PIPE-02): bindings 8/9 são texturas (albedo/PBR), não buffers.
+
 	bindings[8].descriptorType = .COMBINED_IMAGE_SAMPLER
 	bindings[9].descriptorType = .COMBINED_IMAGE_SAMPLER
 	set_layout_info := vk.DescriptorSetLayoutCreateInfo {
@@ -588,7 +581,6 @@ create_frame_data :: proc() {
 	log.info("Creating frame data")
 	for &frame in app.frameData {
 
-		// command pool
 		command_pool_create_info := vk.CommandPoolCreateInfo {
 			sType            = .COMMAND_POOL_CREATE_INFO,
 			queueFamilyIndex = app.queues[QueueType.Graphics].familyIndex,
@@ -603,7 +595,6 @@ create_frame_data :: proc() {
 			),
 		)
 
-		// command buffer
 		command_buffer_allocate_info := vk.CommandBufferAllocateInfo {
 			sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 			commandBufferCount = 1,
@@ -618,7 +609,6 @@ create_frame_data :: proc() {
 			),
 		)
 
-		// semaphore
 		semaphore_create_info := vk.SemaphoreCreateInfo {
 			sType = .SEMAPHORE_CREATE_INFO,
 		}
@@ -645,8 +635,6 @@ destroy_frame_data :: proc() {
 	log.info("Frame data destroyed successfully")
 }
 
-// REQ-FND-DEV-01: seleção por verificação explícita de extensões, features e filas.
-// Cada candidato rejeitado tem os itens faltantes nomeados no log.
 @(private)
 select_physical_device :: proc() -> bool {
 	device_count: u32
@@ -682,7 +670,7 @@ select_physical_device :: proc() -> bool {
 		app.queues[.Graphics] = QueueTuple{familyIndex = u32(graphics_family)}
 		app.queues[.Compute] = QueueTuple{familyIndex = u32(compute_family)}
 		log.infof("Dispositivo selecionado: {} (todas as capabilities obrigatórias presentes)", name)
-		// REQ-FND-DEV-04: fallback registrado quando não há família de compute dedicada.
+
 		if compute_family == graphics_family {
 			log.warn("Sem família de compute dedicada; fila de compute compartilha a família gráfica")
 		} else {
@@ -694,8 +682,6 @@ select_physical_device :: proc() -> bool {
 	return false
 }
 
-// Gráfica: GRAPHICS + COMPUTE + present. Compute (REQ-FND-DEV-04): prefere família
-// dedicada (COMPUTE sem GRAPHICS); fallback para a família gráfica.
 @(private)
 find_queue_families :: proc(device: vk.PhysicalDevice) -> (graphics, compute: int, ok: bool) {
 	graphics = -1

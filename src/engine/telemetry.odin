@@ -1,11 +1,5 @@
 package engine
 
-// VS-05 (ADR-T1, Opção A) — Telemetria e profiling GPU: tempos por passagem
-// (query pools), VRAM (EXT_memory_budget + VMA), regiões nomeadas para
-// Nsight/RenderDoc (EXT_debug_utils) e export para arquivo (bin/telemetry/).
-// Opt-in em runtime (telemetry.enabled; F8 alterna): quando desligada, nenhum
-// objeto é criado e nenhum comando extra é gravado nos command buffers
-// (REQ-PROF-05).
 
 import "core:fmt"
 import "core:log"
@@ -18,9 +12,6 @@ import vk "vendor:vulkan"
 
 TELEMETRY_DEFAULT_ENABLED :: true
 
-// Operações medidas (REQ-PROF-02). Na fila gráfica cada uma ocupa um PAR de
-// queries no pool do slot do frame; na fila de compute (worker) só Generate e
-// Pack são medidas, no pool do slot do ring de lotes.
 TelemetryOperation :: enum {
 	Generate,
 	Pack,
@@ -35,8 +26,7 @@ TELEMETRY_OPERATION_COUNT :: 7
 TELEMETRY_GFX_QUERY_COUNT     :: 16 // 5 operações + frame total (pares) = 12 ≤ 16
 TELEMETRY_COMPUTE_QUERY_COUNT :: 8  // generate + pack (pares) = 4 ≤ 8
 
-// Amostra de VRAM por heap (REQ-PROF-03): usage/budget reais do driver
-// (EXT_memory_budget via GetHeapBudgets) + statistics da VMA.
+
 TelemetryHeapSample :: struct {
 	used_bytes:       u64,
 	budget_bytes:     u64,
@@ -48,21 +38,14 @@ TelemetryHeapSample :: struct {
 
 Telemetry :: struct {
 	enabled:             bool,
-	// Timestamps (REQ-PROF-02): pools por slot de frame (gráfica) e por slot
-	// do ring de lotes (compute). Só criados quando habilitada no init.
 	times_available:     bool,
 	timestamp_period_ns: f64,
 	gfx_pools:           [NUM_FRAMES_IN_FLIGHT]vk.QueryPool,
 	compute_pools:       [MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT]vk.QueryPool,
-	// Últimos tempos válidos por operação (µs) — escritos pela thread
-	// principal (passagens gráficas) e pela worker (generate/pack); acesso
-	// sempre sob results_mutex.
 	results_mutex:       sync.Mutex,
 	last_times_us:       [TELEMETRY_OPERATION_COUNT]f64,
-	// VRAM (REQ-PROF-03): última amostra por heap.
 	heap_count:          u32,
 	heaps:               [vk.MAX_MEMORY_HEAPS]TelemetryHeapSample,
-	// Export (REQ-PROF-04): série temporal CSV (append por intervalo).
 	csv_file:            ^os.File,
 	last_csv_tick:       time.Tick,
 }
@@ -84,17 +67,12 @@ telemetry_init :: proc() {
 	telemetry.enabled = TELEMETRY_DEFAULT_ENABLED
 	if !telemetry.enabled do return
 
-	// Heaps de memória (REQ-PROF-03): índices estáveis para as amostras.
 	memory_properties: vk.PhysicalDeviceMemoryProperties
 	vk.GetPhysicalDeviceMemoryProperties(app.vkPhysicalDevice, &memory_properties)
 	telemetry.heap_count = memory_properties.memoryHeapCount
 
-	// Série temporal (REQ-PROF-04): independente de timestamps — VRAM sempre exporta.
 	telemetry_csv_open()
 
-	// Disponibilidade de timestamps (REQ-PROF-02): período de calibração +
-	// suporte nas duas filas. Sem isso, a telemetria de tempo fica
-	// "indisponível" e o restante (labels, VRAM) segue funcionando.
 	properties: vk.PhysicalDeviceProperties
 	vk.GetPhysicalDeviceProperties(app.vkPhysicalDevice, &properties)
 	telemetry.timestamp_period_ns = f64(properties.limits.timestampPeriod)
@@ -144,9 +122,6 @@ telemetry_destroy :: proc() {
 	}
 }
 
-// Alterna a telemetria em runtime (F8 no loop principal). REQ-PROF-05:
-// objetos já criados permanecem; os pontos de instrumentação não gravam
-// nada a partir do frame seguinte.
 telemetry_toggle :: proc() {
 	telemetry.enabled = !telemetry.enabled
 }
@@ -185,9 +160,6 @@ telemetry_name_object :: proc(object: u64, type: vk.ObjectType, name: cstring) {
 
 // --- Timestamps GPU (REQ-PROF-02) ---
 
-// Grava um timestamp numa query do pool (início: TOP_OF_PIPE — executa em
-// ordem de fila; fim: BOTTOM_OF_PIPE — quando todo o trabalho anterior
-// concluiu). No-op com a telemetria desligada ou indisponível.
 telemetry_timestamp_begin :: proc(cmd: vk.CommandBuffer, pool: vk.QueryPool, query: u32) {
 	if !telemetry.enabled || !telemetry.times_available do return
 	vk.CmdWriteTimestamp2(cmd, {.TOP_OF_PIPE}, pool, query)
@@ -198,16 +170,11 @@ telemetry_timestamp_end :: proc(cmd: vk.CommandBuffer, pool: vk.QueryPool, query
 	vk.CmdWriteTimestamp2(cmd, {.BOTTOM_OF_PIPE}, pool, query)
 }
 
-// Reseta o pool do slot antes de regravar (o host já garantiu a conclusão do
-// uso anterior — espera de frames em voo / backpressure de lotes).
 telemetry_reset_pool :: proc(cmd: vk.CommandBuffer, pool: vk.QueryPool, query_count: u32) {
 	if !telemetry.enabled || !telemetry.times_available do return
 	vk.CmdResetQueryPool(cmd, pool, 0, query_count)
 }
 
-// Converte um par (begin, end) de ticks para µs e publica. Layout
-// WITH_AVAILABILITY: (valor, disponibilidade) por query — passagens que não
-// rodaram no frame (ex.: frame sem edições) simplesmente não atualizam.
 @(private)
 telemetry_publish_pair :: proc(op: TelemetryOperation, values: []u64) {
 	begin_value, begin_ok := values[0], values[1]
@@ -219,19 +186,11 @@ telemetry_publish_pair :: proc(op: TelemetryOperation, values: []u64) {
 	sync.mutex_unlock(&telemetry.results_mutex)
 }
 
-// Fila gráfica: lê o pool do slot prestes a ser regravado (o trabalho de 2
-// frames atrás já concluiu — espera de frames em voo no host). Nunca
-// bloqueante: WITH_AVAILABILITY devolve (valor, disponibilidade) por query e
-// as passagens não escritas no frame simplesmente não atualizam.
 telemetry_collect_graphics :: proc(frame_index: u32) {
 	if !telemetry.enabled || !telemetry.times_available do return
 	pool := telemetry.gfx_pools[frame_index]
 	if pool == 0 do return
 
-	// O driver (NVIDIA) responde NOT_READY para a chamada INTEIRA se qualquer
-	// query da faixa estiver indisponível — então cada operação é lida numa
-	// chamada separada: o par não escrito no frame (ex.: frame sem edições)
-	// simplesmente não atualiza (mantém o último valor válido).
 	OpQuery :: struct {
 		op:    TelemetryOperation,
 		first: u32,
@@ -260,8 +219,6 @@ telemetry_collect_graphics :: proc(frame_index: u32) {
 	}
 }
 
-// Fila de compute (worker): lê o pool do slot prestes a ser regravado (o lote
-// de 3 posições atrás já concluiu — backpressure da worker).
 telemetry_collect_compute :: proc(ring_index: int) {
 	if !telemetry.enabled || !telemetry.times_available do return
 	pool := telemetry.compute_pools[ring_index]
@@ -287,9 +244,6 @@ telemetry_collect_compute :: proc(ring_index: int) {
 
 // --- VRAM (REQ-PROF-03) ---
 
-// Coleta uma amostra por heap: usage/budget reais (EXT_memory_budget) +
-// statistics da VMA (blockBytes/allocationBytes por heap). Barata o bastante
-// para a série temporal; o snapshot JSON detalha com o dump completo.
 telemetry_collect_vram :: proc() {
 	if !telemetry.enabled do return
 
@@ -337,8 +291,6 @@ telemetry_csv_open :: proc() {
 	log.infof("VS-05: série temporal de telemetria em {}", path)
 }
 
-// Ponto de serviço por frame (loop principal): amostra CSV por intervalo.
-// Nunca bloqueia: apenas lê os últimos valores coletados.
 telemetry_service :: proc() {
 	if !telemetry.enabled || telemetry.csv_file == nil do return
 	if time.duration_milliseconds(time.tick_since(telemetry.last_csv_tick)) < TELEMETRY_CSV_INTERVAL_MS do return
@@ -365,8 +317,6 @@ telemetry_service :: proc() {
 
 session_start_tick := time.tick_now()
 
-// Snapshot JSON sob demanda (F9): budgets, statistics VMA, tempos do último
-// frame e o dump completo de alocações do BuildStatsString.
 telemetry_snapshot :: proc() {
 	if !telemetry.enabled do return
 
@@ -380,8 +330,7 @@ telemetry_snapshot :: proc() {
 	sync.mutex_unlock(&telemetry.results_mutex)
 
 	sb := strings.builder_make(context.temp_allocator)
-	// Chaves literais fora das format strings (o fmt do toolchain trata { }
-	// como sintaxe de formatação e os escapes são inconsistentes).
+
 	strings.write_string(&sb, "{\n")
 	fmt.sbprintf(&sb, "  \"captured_at\": \"%s\",\n", telemetry_timestamp_string())
 	fmt.sbprintf(&sb, "  \"tick\": %d,\n", app.tick)

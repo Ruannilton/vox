@@ -87,8 +87,6 @@ CreateEngine :: proc(widht: u32 = 800, height: u32 = 600) {
 	log.info("Engine created successfully")
 }
 
-// REQ-FND-SYNC-02: nenhum recurso destruído em uso — DeviceWaitIdle antes de tudo,
-// destruição na ordem inversa da criação.
 DestroyEngine :: proc() {
 	vk_check(vk.DeviceWaitIdle(app.vkDevice))
 	telemetry_destroy()
@@ -116,9 +114,6 @@ Update :: proc() {
 	app.nextTimelineValue += 1
 }
 
-// REQ-FND-FRM-03: recria swapchain e depth buffer quando sinalizado (callback de
-// resize ou acquire/present fora de data). Retorna false enquanto a janela estiver
-// minimizada (extent 0×0) — o chamador pula o frame.
 recreate_swapchain :: proc() -> bool {
 	width, height := glfw.GetFramebufferSize(app.glfwWindow)
 	if width == 0 || height == 0 {
@@ -133,13 +128,9 @@ recreate_swapchain :: proc() -> bool {
 	return true
 }
 
-// Timeout finito no acquire: no Windows, vkAcquireNextImageKHR com timeout infinito
-// pode bloquear para sempre com a janela minimizada (o callback de framebuffer nem
-// sempre dispara na minimização), congelando a thread principal.
 ACQUIRE_TIMEOUT_NS :: 100_000_000 // 100 ms
 
-// Retorna ok=false quando o frame deve ser pulado (janela minimizada ou swapchain
-// recriada/fora de data) — nunca encerra o processo por swapchain obsoleta.
+
 AcquireNextImage :: proc() -> (frame: SwapChainFrameData, ok: bool) {
 	if app.swapchainNeedsRecreate {
 		if !recreate_swapchain() {
@@ -192,10 +183,6 @@ Present :: proc() {
 	}
 }
 
-// Desfaz a reserva feita por Update quando o frame é pulado (janela minimizada
-// ou swapchain fora de data). Sem isso, a sequência da timeline gráfica abre uma
-// lacuna e WaitTimelineSemaphore passa a aguardar um valor nunca sinalizado —
-// deadlock da thread principal (REQ-FND-SYNC-01).
 CancelFrameReservation :: proc() {
 	app.frameIndex = (app.frameIndex + NUM_FRAMES_IN_FLIGHT - 1) % NUM_FRAMES_IN_FLIGHT
 	app.currentTimelineValue -= 1
@@ -248,7 +235,6 @@ initGlfw :: proc() {
 			context = app.runtimeContext
 			app.windowWidth = u32(width)
 			app.windowHeight = u32(height)
-			// REQ-FND-FRM-03: recriação adiada para o loop, após o dispositivo ficar idle.
 			app.swapchainNeedsRecreate = true
 		},
 	)
@@ -260,8 +246,6 @@ initGlfw :: proc() {
 vk_check :: proc(result: vk.Result, exp := #caller_expression, location := #caller_location) {
 	if result != .SUCCESS {
 		log.panicf("Vulkan failure: {} ({})", result, exp, location = location)
-	} else {
-		//	log.info(" Success:", exp, location = location)
 	}
 }
 

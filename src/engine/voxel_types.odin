@@ -1,8 +1,6 @@
 package engine
 
-// Constantes e layouts compartilhados com src/assets/shaders/common.slang —
-// o .slang é a fonte única de verdade (AGENTS.md); mudanças devem ser
-// espelhadas nos dois lados.
+
 
 CHUNK_SIZE         :: 32
 CHUNK_VOXEL_COUNT  :: CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE
@@ -31,12 +29,9 @@ MAX_TEMPLATE_TRIANGLES :: 24
 TEMPLATE_FLAG_HAS_FLUSH_FACES :: 1
 CULL_FACE_NEVER        :: 7
 
-// --- Renderização (VS-02) ---
+// --- Renderização 
 NEIGHBOR_SLOT_INVALID       :: max(u32)
 MAXIMUM_VISIBLE_CHUNKS      :: 4096
-// Fila de trabalho global (correção pós-validação: substitui o payload
-// task→mesh, que chegava zerado neste ambiente; ver common.slang).
-// Item de 32 bits por slot do ring (2 frames): [8 words de estado][itens].
 WORK_ITEM_CAPACITY           :: MAXIMUM_VISIBLE_CHUNKS * BRICKS_PER_CHUNK
 WORK_QUEUE_STATE_WORDS       :: 8
 WORK_QUEUE_APPEND_COUNT_WORD :: 0
@@ -47,14 +42,12 @@ WORK_QUEUE_SLOT_WORDS        :: WORK_QUEUE_STATE_WORDS + WORK_ITEM_CAPACITY
 // Ordem igual a FACE_NORMALS no common.slang (+X,-X,+Y,-Y,+Z,-Z).
 NEIGHBOR_OFFSETS :: [6]ChunkCoordinate{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}
 
-// --- Textura de paleta procedural (VS-02, REQ-SHADE-03) ---
-// Uma camada por entrada de albedo; cada camada é uma cor sólida.
 ALBEDO_PALETTE_LAYERS     :: 256
 ALBEDO_PALETTE_LAYER_SIZE :: 4
 
-// --- Streaming (ADR-B5) ---
+// --- Streaming 
 RADIUS_VISION     :: 8
-RADIUS_GENERATION :: 8
+RADIUS_GENERATION :: 9
 RADIUS_UNLOAD     :: 10
 
 MAXIMUM_RESIDENT_CHUNKS       :: 4096
@@ -67,7 +60,7 @@ ChunkCoordinate :: [3]i32
 ChunkGenerationJob :: struct {
 	chunk_world_origin: [3]i32,
 	storage_slot_index: u32,
-	mirror_ring_slot:   i32, // C2 (VS-04): sempre -1 nesta fatia
+	mirror_ring_slot:   i32, 
 	padding:            [3]u32,
 }
 
@@ -113,7 +106,7 @@ MeshTemplate :: struct {
 	padding_1:       u32,
 }
 
-// 48 B — espelha o Slang (B2: ring de visíveis, binding 6).
+// 48 B — espelha o Slang
 VisibleChunk :: struct {
 	chunk_world_origin: [3]i32,
 	storage_slot_index: u32,
@@ -121,8 +114,8 @@ VisibleChunk :: struct {
 	padding:            [2]u32,
 }
 
-// --- Edição E1 (VS-03) ---
-// Limites do flush (ADR-E1). MAX_EDITS_PER_CHUNK_PER_FLUSH também é usado
+
+// Limites do flush. MAX_EDITS_PER_CHUNK_PER_FLUSH também é usado
 // pelo shader (arrays groupshared) — espelhar com o common.slang.
 EDIT_FLUSH_INTERVAL_MS        :: 100.0 // intervalo entre flushes (0 = todo frame)
 MAX_EDITS_PER_FLUSH           :: 4096
@@ -147,8 +140,7 @@ pack_voxel_edit :: proc "contextless" (voxel_index: u32, block_id: u32) -> u32 {
 	return (voxel_index & 0x7FFF) | (block_id << 16)
 }
 
-// --- Mirror C2 (VS-04) ---
-// Bolha de simulação independente da bolha de render (ADR-C2).
+// Bolha de simulação independente da bolha de render.
 RADIUS_SIMULATION     :: 5
 MIRROR_RING_SLOTS     :: 64  // exports em voo: 64 × 64 KiB = 4 MiB host-visible
 MIRROR_PAGE_POOL_SIZE :: 768 // páginas fixas (~50 MiB; bolha ~523 chunks + folga)
@@ -164,23 +156,14 @@ VoxelSample :: struct {
 	solid:    bool, // derivado de id != 0 — mesma regra da ocupação na GPU
 }
 
-// Página-espelho de um chunk 32³ (~68,1 KiB). Denso SEM PALETA: na RAM o ID
-// é direto (u16), o que elimina divergência de paleta e mantém chunks com
-// PALETTE_OVERFLOW representáveis. Layout y-contíguo (y | z<<5 | x<<10) —
-// regra 7: NUNCA misturar com o denso x-contíguo do GPU/E1.
+
 MirrorChunkPage :: struct {
 	coord:       ChunkCoordinate,
 	edit_seq:    u32, // revisão do journal aplicada (paridade com a GPU em debug)
 	state:       MirrorPageState,
 	ring_slot:   i32, // slot do ring de export reservado p/ o preenchimento (-1 = nenhum)
-	// Edições staged p/ a GPU enquanto PENDING_READBACK (o export contém só
-	// worldgen): replay na materialização (dedup última-escrita-vence).
 	pending:     [dynamic]VoxelEditRequest,
-	// Journal aplicado desde a materialização — base do replay da
-	// reconciliação de rejeições (REQ-MIRROR-09); liberado na evicção.
 	applied_log: [dynamic]VoxelEditRequest,
-	// Pares (voxel, bloco) rejeitados pela GPU aguardando a rematerialização
-	// (o replay filtra o applied_log removendo a ocorrência mais recente).
 	rejected_log: [dynamic]VoxelEditRequest,
 	solid:       [CHUNK_VOXEL_COUNT / 32]u32, // 4 KiB: derivado de id != 0
 	ids:         [CHUNK_VOXEL_COUNT]u16,      // 64 KiB densos
@@ -225,7 +208,6 @@ compute_worst_case_tris :: proc(packed_triangles: []u32) -> u32 {
 		max(face_count[4], face_count[5])
 }
 
-// Contrato de carga (ADR-CAMINHO-B): vértices em [0,1]³, limites por template.
 validate_template :: proc(vertices: [][3]f32, packed_triangles: []u32) -> bool {
 	if len(vertices) > MAX_TEMPLATE_VERTICES do return false
 	if compute_worst_case_tris(packed_triangles) > MAX_TEMPLATE_TRIANGLES do return false

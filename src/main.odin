@@ -4,9 +4,7 @@ import "base:runtime"
 import "core:log"
 import glm "core:math/linalg/glsl"
 import "core:os"
-import "core:slice"
 import "engine"
-import vma "shared:vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
@@ -25,8 +23,8 @@ main :: proc() {
 	engine.CreateEngine()
 	defer engine.DestroyEngine()
 
-	voxel_engine := engine.ve_init()
-	defer engine.ve_destroy(voxel_engine)
+	voxel_engine := engine.voxel_engine_init()
+	defer engine.voxel_engine_destroy(voxel_engine)
 	
 	camera = camera_create(glm.vec3{32, 75, 60}, glm.vec3{-50, -90, 0}, 45.0)
 	projection := glm.mat4Perspective(
@@ -57,12 +55,10 @@ main :: proc() {
 				return
 			}
 			if key == glfw.KEY_F8 && action == glfw.PRESS {
-				// VS-05 (REQ-PROF-05): liga/desliga a telemetria em runtime.
 				engine.telemetry_toggle()
 				return
 			}
 			if key == glfw.KEY_F9 && action == glfw.PRESS {
-				// VS-05 (REQ-PROF-04): snapshot JSON de telemetria sob demanda.
 				engine.telemetry_snapshot()
 				return
 			}
@@ -95,15 +91,13 @@ main :: proc() {
 		glfw.PollEvents()
 
 		engine.Update()
-		engine.telemetry_service() // VS-05 (REQ-PROF-04): amostra CSV por intervalo
+		engine.telemetry_service()
 		update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
 
-		engine.ve_update(voxel_engine, camera.position)
+		engine.voxel_engine_update(voxel_engine, camera.position)
 
 
 		signal_value := engine.WaitTimelineSemaphore()
-		// VS-05 (REQ-PROF-02): o pool deste slot foi usado 2 frames atrás e já
-		// concluiu (a espera acima); colhe os tempos antes de regravar.
 		engine.telemetry_collect_graphics(engine.app.frameIndex)
 		view := camera_view(&camera)
 		vp := GL_TO_VK_CLIP * projection * view
@@ -111,19 +105,12 @@ main :: proc() {
 		frame_resource := engine.AcquireFrameResource()
 		swapchain_frame, acquired := engine.AcquireNextImage()
 		if !acquired {
-			// Janela minimizada ou swapchain recriada/fora de data: pula o frame
-			// e desfaz a reserva da timeline para não abrir lacuna na sequência.
 			engine.CancelFrameReservation()
 			continue
 		}
 
-		// VS-02: reconstrói os visíveis desta posição do ring (o slot já foi
-		// liberado pela espera da timeline gráfica acima).
-		visible_count := engine.ve_publish_visible(voxel_engine, engine.app.frameIndex)
-		// VS-03 (E1): colhe o feedback do slot do ring (2 frames atrás) e
-		// copia o staging do flush para o ring deste frame.
+		visible_count := engine.voxel_engine_publish_visible(voxel_engine, engine.app.frameIndex)
 		edit_job_count := engine.edit_ring_write(voxel_engine, engine.app.frameIndex)
-
 
 		vk_check(vk.ResetCommandPool(engine.app.vkDevice, frame_resource.vkCommandPool, {}))
 
@@ -134,8 +121,6 @@ main :: proc() {
 		cmd := frame_resource.vkCommandBuffer
 		vk_check(vk.BeginCommandBuffer(cmd, &begin_command_info))
 
-		// VS-05 (REQ-PROF-02): frame total gráfico — pool do slot resetado e
-		// timestamps de início/fim abrangendo todo o command buffer.
 		gfx_pool := engine.telemetry.gfx_pools[engine.app.frameIndex]
 		engine.telemetry_reset_pool(cmd, gfx_pool, engine.TELEMETRY_GFX_QUERY_COUNT)
 		engine.telemetry_timestamp_begin(cmd, gfx_pool, 0)
@@ -200,8 +185,7 @@ main :: proc() {
 			pColorAttachments = &color_attachment,
 			pDepthAttachment = &depth_attachment,
 		}
-		// VS-02 (correção): builder da fila de trabalho roda na fila gráfica ANTES
-		// do render pass — o draw indireto consome os resultados via barreiras.
+
 		engine.voxel_render_prepare(
 			cmd,
 			vp,
@@ -247,9 +231,7 @@ main :: proc() {
 			semaphore = frame_resource.vkAcquireSemaphore,
 			stageMask = {.COLOR_ATTACHMENT_OUTPUT},
 		}
-		// VS-02 (REQ-VIS-03): o builder (compute na fila gráfica) e o mesh só
-		// leem a ocupação após os lotes de compute concluídos sinalizarem a
-		// timeline.
+
 		compute_wait_info := vk.SemaphoreSubmitInfo {
 			sType     = .SEMAPHORE_SUBMIT_INFO,
 			semaphore = engine.app.computeTimelineSemaphore,

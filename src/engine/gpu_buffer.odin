@@ -18,7 +18,7 @@ gpu_buffer_create :: proc(size: vk.DeviceSize, usage: vk.BufferUsageFlags) -> (b
 		usage       = usage,
 		sharingMode = .EXCLUSIVE,
 	}
-	// Sem flags de acesso do host, o VMA escolhe memória device-local (VRAM).
+
 	allocation_info := vma.AllocationCreateInfo {
 		usage = .AUTO,
 		flags = {},

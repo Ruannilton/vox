@@ -1,14 +1,8 @@
 package engine
 
-import glm "core:math/linalg/glsl"
 import vma "shared:vma"
 import vk "vendor:vulkan"
 
-
-import "base:runtime"
-import "core:c"
-import "core:log"
-import "vendor:glfw"
 
 QueueType :: enum {
 	Graphics,

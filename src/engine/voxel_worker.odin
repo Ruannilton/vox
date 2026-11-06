@@ -1,10 +1,6 @@
 package engine
 
-// VS-01-IMPL-06 — Worker thread: claim atômico (B1), lotes de até 16 chunks
-// (B4), ring de 3 lotes em voo e um vkQueueSubmit2 por lote na fila de
-// compute. 1 claim = 1 lote = 1 valor de timeline (determinístico = nº do lote).
 
-import "core:log"
 import "core:sync"
 import "core:thread"
 import vk "vendor:vulkan"
@@ -47,16 +43,14 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		claimed_batch := SubmittedBatch {
 			compute_timeline_value = submitted_batch_count + 1,
 		}
-		// C2 (VS-04): re-exports do mirror embarcam 1 por lote, antes do dreno
-		// normal (são raros e não podem morrer de fome), e pulam o pack abaixo.
+	
 		export_only := false
 		if len(ve.pending_export_tasks) > 0 {
 			claimed_batch.tasks[0] = pop(&ve.pending_export_tasks)
 			claimed_batch.task_count = 1
 			export_only = true
 		} else {
-		// B4: drena até 16 tarefas por lote, sempre as mais próximas da câmera
-		// (varredura linear nesta fatia — heap fica no backlog de performance).
+
 		for claimed_batch.task_count < MAXIMUM_CHUNKS_PER_BATCH && len(ve.pending_tasks) > 0 {
 			best_idx := 0
 			best_dist := max(i64)
@@ -73,10 +67,6 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		}
 		}
 
-		// B1 — CLAIM ATÔMICO: o lote é publicado em submitted_batches ANTES de
-		// qualquer trabalho Vulkan, ainda sob queue_mutex. O descarregamento
-		// (thread principal) varre os dois conjuntos sob a mesma trava: não
-		// existe janela em que a tarefa esteja fora de ambos.
 		assigned_timeline := claimed_batch.compute_timeline_value
 		append(&ve.submitted_batches, claimed_batch)
 		sync.mutex_unlock(&ve.queue_mutex)
@@ -88,9 +78,6 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 
 		ring_index := int(submitted_batch_count % MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT)
 
-		// VS-05 (REQ-PROF-02): o pool deste slot foi usado pelo lote de 3
-		// posições atrás (já concluído pelo backpressure acima) — colhe antes
-		// de regravar.
 		if submitted_batch_count >= MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT {
 			telemetry_collect_compute(ring_index)
 		}
@@ -101,7 +88,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 			voxel_gpu.generation_jobs_mapped[job_offset + i] = ChunkGenerationJob {
 				chunk_world_origin = task.coordinate * CHUNK_SIZE,
 				storage_slot_index = task.storage_slot_index,
-				mirror_ring_slot   = task.mirror_ring_slot, // C2: -1 = sem export
+				mirror_ring_slot   = task.mirror_ring_slot,
 			}
 		}
 
@@ -140,8 +127,6 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 			&push_constants,
 		)
 
-		// B4/B9: generate cobre N chunks (thread_id.z / 32 = job local);
-		// pack cobre N chunks (group_id.x = job local).
 		compute_pool := telemetry.compute_pools[ring_index]
 		telemetry_reset_pool(cmd, compute_pool, TELEMETRY_COMPUTE_QUERY_COUNT)
 		telemetry_timestamp_begin(cmd, compute_pool, 0)
@@ -150,10 +135,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		vk.CmdDispatch(cmd, 4, 4, 4 * u32(claimed_batch.task_count))
 		telemetry_end_label(cmd)
 		telemetry_timestamp_end(cmd, compute_pool, 1)
-
-		// C2 (VS-04): lote export_only (re-export do mirror) NÃO roda o pack —
-		// o packed já existe e contém edições; repackar a partir do scratch
-		// (só worldgen) as apagaria. O ring já saiu escrito pelo generate.
+		
 		if !export_only {
 		vk.CmdPipelineBarrier2(
 			cmd,

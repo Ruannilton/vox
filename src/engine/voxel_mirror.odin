@@ -1,17 +1,5 @@
 package engine
 
-// VS-04 (C2) — Mirror CPU-side (ADR-C2). A verdade do mundo é worldgen +
-// journal E1; a GPU (packed) e a RAM (ChunkPage densa u16) são views
-// materializadas do MESMO fluxo, na mesma ordem — convergência por
-// construção. Sem paleta na RAM: o ID é direto (u16), o que elimina
-// divergência de paleta e mantém chunks em PALETTE_OVERFLOW representáveis.
-//
-// Layout da página: y-contíguo (idx = y | z<<5 | x<<10 — uma coluna vertical
-// = 64 B = 1 linha de cache). REGRA 7: nunca misturar com o denso
-// x-contíguo do scratch GPU / das edições packed.
-//
-// Domínio: tudo roda na thread principal, EXCETO as seções que tomam
-// queue_mutex (tarefas de geração/re-export são compartilhadas com a worker).
 
 import "core:log"
 import "core:sync"
@@ -30,7 +18,6 @@ MirrorManager :: struct {
 	stats_ring_misses: u64,
 }
 
-// Mundo -> (chunk, coordenada local). Mesmo floor-div do E1.
 mirror_chunk_and_local :: proc "contextless" (world_voxel: [3]i32) -> (chunk: ChunkCoordinate, local: [3]i32) {
 	chunk = ChunkCoordinate{
 		floor_div_i32(world_voxel.x, CHUNK_SIZE),
@@ -77,10 +64,9 @@ mirror_page_acquire :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) -> ^Mirror
 	page.edit_seq = 0
 	page.state = .PENDING_READBACK
 	page.ring_slot = -1
-	page.pending = nil     // o backing da vida anterior foi liberado no release
-	page.applied_log = nil // idem
-	page.rejected_log = nil // idem
-	// solid/ids não precisam de zero: a materialização sobrescreve tudo.
+	page.pending = nil     
+	page.applied_log = nil 
+	page.rejected_log = nil 
 	ve.mirror.pages[coord] = page
 	ve.mirror.stats_pages_live += 1
 	return page
@@ -101,8 +87,6 @@ mirror_page_release :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
 	ve.mirror.stats_pages_live -= 1
 }
 
-// --- Ring de export (regra 4: slot em voo só o handler de conclusão libera) ---
-
 mirror_ring_try_reserve :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, generation: u32) -> i32 {
 	for &entry, i in ve.mirror.ring {
 		if !entry.used {
@@ -113,11 +97,9 @@ mirror_ring_try_reserve :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, genera
 		}
 	}
 	ve.mirror.stats_ring_misses += 1
-	return -1 // ring cheio: mirror_service_retries tenta nos próximos frames
+	return -1 
 }
 
-// Só vale para exports AINDA NÃO submetidos (tarefas canceladas localmente).
-// A checagem por (coord, geração) impede liberar uma entrada já reutilizada.
 mirror_ring_release :: proc(ve: ^VoxelEngine, ring_slot: i32, coord: ChunkCoordinate, generation: u32) {
 	entry := &ve.mirror.ring[ring_slot]
 	if entry.used && entry.coord == coord && entry.generation == generation {
@@ -126,9 +108,6 @@ mirror_ring_release :: proc(ve: ^VoxelEngine, ring_slot: i32, coord: ChunkCoordi
 }
 
 // --- Agendamento de preenchimento ---
-
-// Chunk ainda em GENERATING com a tarefa pendente: acopla um slot de ring a
-// ela — o export sai de graça, junto com o próprio generate.
 mirror_try_attach_to_generation :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord, page: ^MirrorChunkPage) -> bool {
 	sync.mutex_lock(&ve.queue_mutex)
 	defer sync.mutex_unlock(&ve.queue_mutex)
@@ -144,10 +123,6 @@ mirror_try_attach_to_generation :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate
 	return false
 }
 
-// Chunk já CACHED/RENDERABLE: agenda um RE-EXPORT (tarefa export_only — roda
-// só o generate; o pack NÃO pode rodar de novo, pois reescreveria o packed a
-// partir do worldgen e apagaria edições já aplicadas — AC-03). O scratch do
-// slot é sobrescrito, mas é transitório por definição — ninguém mais o lê.
 mirror_schedule_export :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) -> bool {
 	page, found := ve.mirror.pages[coord]
 	if !found || page.state != .PENDING_READBACK || page.ring_slot >= 0 do return false
@@ -168,10 +143,6 @@ mirror_schedule_export :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record:
 	return true
 }
 
-// Páginas PENDING sem export agendado: (a) tarefa de geração ainda pendente
-// -> acopla um slot de ring agora; (b) chunk já CACHED -> agenda o re-export.
-// Chamada todo frame, depois do handler de conclusão (é quando slots de ring
-// são liberados).
 mirror_service_retries :: proc(ve: ^VoxelEngine) {
 	for coord, page in ve.mirror.pages {
 		if page.state != .PENDING_READBACK || page.ring_slot >= 0 do continue
@@ -185,17 +156,12 @@ mirror_service_retries :: proc(ve: ^VoxelEngine) {
 	}
 }
 
-// Puxa a página de um chunk sob demanda (ex.: um sistema prestes a consultar
-// um chunk fora da bolha de simulação). Não bloqueia: a página entra como
-// PENDING_READBACK e abre quando o export concluir.
+
 mirror_request_page :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {
 	page := mirror_page_acquire(ve, coord)
-	if page == nil do return // pool cheio: tenta no próximo frame/movimento
+	if page == nil do return 
 	if record.state == .GENERATING {
 		mirror_try_attach_to_generation(ve, coord, record, page)
-		// Se a tarefa já foi reivindicada (ou o ring está cheio), a página fica
-		// PENDING sem slot: mirror_service_retries agenda o re-export quando o
-		// chunk ficar CACHED.
 	} else {
 		mirror_schedule_export(ve, coord, record)
 	}
@@ -208,13 +174,6 @@ mirror_request :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
 	mirror_request_page(ve, coord, record)
 }
 
-// Descarte do espelho de um chunk (descarregado ou fora da bolha). A página é
-// liberada; exports PENDENTES são desacoplados/cancelados e seus slots de
-// ring voltam ao pool; exports EM VOO são descartados pelo handler de
-// conclusão (página ausente / geração não bate -> entry liberada lá). A tarefa
-// de GERAÇÃO em si nunca é cancelada aqui — o descarregamento de GENERATING
-// já passou por retire_generating_slot, e um chunk fora da bolha continua
-// renderizando.
 mirror_forget_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {
 	sync.mutex_lock(&ve.queue_mutex)
 	for i := len(ve.pending_export_tasks) - 1; i >= 0; i -= 1 {
@@ -232,9 +191,7 @@ mirror_forget_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: Ch
 			task.mirror_ring_slot = -1
 		}
 	}
-	// Se NADA em voo referencia este (coord, geração), qualquer entrada de ring
-	// residual pode ser liberada na hora — a GPU nunca a escreverá. Se há lote
-	// em voo, quem libera é o handler de conclusão (regra 4).
+
 	in_flight := false
 	for batch in ve.submitted_batches {
 		for i in 0 ..< batch.task_count {
@@ -255,17 +212,10 @@ mirror_forget_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: Ch
 	mirror_page_release(ve, coord)
 }
 
-// --- Aplicação de edições (dupla materialização, REQ-MIRROR-07) ---
-
-// O MESMO pedido staged para a GPU alimenta o mirror — mesma ordem, mesmo
-// dedup, mesmo teto de lote (chamada só no caminho "staged" do flush).
-// Convergência por construção: os dois lados aplicam o mesmo journal.
 mirror_journal_apply :: proc(ve: ^VoxelEngine, chunk: ChunkCoordinate, world_voxel: [3]i32, block_id: u32) {
 	page, found := ve.mirror.pages[chunk]
-	if !found do return // fora da bolha de simulação: só a GPU recebe o journal
+	if !found do return 
 	if page.state == .PENDING_READBACK {
-		// O export em voo contém APENAS worldgen: retém a edição (dedup
-		// "última escrita vence", mesma regra do E1) p/ replay na materialização.
 		for &existing in page.pending {
 			if existing.world_voxel == world_voxel {
 				existing.block_id = block_id
@@ -280,14 +230,10 @@ mirror_journal_apply :: proc(ve: ^VoxelEngine, chunk: ChunkCoordinate, world_vox
 	page.edit_seq += 1
 }
 
-// Reconciliação de uma rejeição reportada pelo feedback do E1 (2 frames
-// depois). A GPU NÃO aplicou a edição; o mirror aplicou otimisticamente.
 mirror_reconcile_rejection :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, rejected: VoxelEditRequest) {
 	page, found := ve.mirror.pages[coord]
-	if !found do return // página evictada: a GPU não mudou, nada a reconciliar
+	if !found do return 
 	if page.state == .PENDING_READBACK && len(page.rejected_log) == 0 {
-		// Primeiro preenchimento: a rejeitada ainda está retida — remove antes
-		// do replay (não precisa de re-export).
 		for i := len(page.pending) - 1; i >= 0; i -= 1 {
 			if page.pending[i] == rejected {
 				ordered_remove(&page.pending, i)
@@ -296,8 +242,7 @@ mirror_reconcile_rejection :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, rej
 		}
 		return
 	}
-	// MATERIALIZED (ou reconciliação já em voo): acumula no filtro e agenda
-	// o re-export; a rematerialização faz o replay do applied_log sem ela.
+
 	append(&page.rejected_log, rejected)
 	page.state = .PENDING_READBACK
 	if record, active := ve.active_chunks[coord]; active {
@@ -305,12 +250,7 @@ mirror_reconcile_rejection :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, rej
 	}
 }
 
-// --- API pública do mirror (gameplay — thread principal, REQ-MIRROR-08) ---
 
-// Consulta tri-state canônica ("qual o voxel em (x,y,z)?"): (amostra, true) =
-// leitura válida; ({}, false) = DESCONHECIDO (chunk sem página ou página em
-// PENDING_READBACK). A política do desconhecido — bloquear, chutar, aguardar —
-// é do consumidor; mirror_request puxa a página sob demanda.
 voxel_get :: proc(ve: ^VoxelEngine, world_voxel: [3]i32) -> (sample: VoxelSample, ok: bool) {
 	chunk, local := mirror_chunk_and_local(world_voxel)
 	page, found := ve.mirror.pages[chunk]
@@ -324,10 +264,6 @@ voxel_is_solid :: proc(ve: ^VoxelEngine, world_voxel: [3]i32) -> (solid: bool, o
 	return sample.solid, valid
 }
 
-// Varredura colunar: primeiro sólido indo de y_from para baixo (raycast de
-// coluna — o layout y-contíguo faz a coluna inteira caber em 1 linha de cache
-// por chunk). Cruza fronteiras de chunk; retorna ok=false se a varredura
-// atingir uma página desconhecida (o chamador decide a política).
 mirror_column_ground :: proc(ve: ^VoxelEngine, world_x, world_z, y_from: i32) -> (ground_y: i32, ok: bool) {
 	y := y_from
 	for {
@@ -351,10 +287,7 @@ mirror_column_ground :: proc(ve: ^VoxelEngine, world_x, world_z, y_from: i32) ->
 	}
 }
 
-// --- Materialização (handler de conclusão de lote, thread principal) ---
 
-// Aplica uma edição na página (ids + bitmask). Usada pelo replay da
-// materialização, pelo dual-apply do journal e pela reconciliação.
 mirror_page_apply :: proc(page: ^MirrorChunkPage, world_voxel: [3]i32, block_id: u32) {
 	_, local := mirror_chunk_and_local(world_voxel)
 	index := mirror_index_from_local(local)
@@ -362,17 +295,13 @@ mirror_page_apply :: proc(page: ^MirrorChunkPage, world_voxel: [3]i32, block_id:
 	mirror_bit_write(page.solid[:], index, block_id != 0)
 }
 
-// Copia o export do ring para a página (y-contíguo u16), reconstrói a
-// bitmask de sólidos, faz o replay das edições retidas e abre a página.
 mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, batch_timeline_value: u64) {
 	ring_slot := task.mirror_ring_slot
 	entry := &ve.mirror.ring[ring_slot]
 
 	page, page_found := ve.mirror.pages[task.coordinate]
 	record, active := ve.active_chunks[task.coordinate]
-	// Mesma disciplina anti-ABA do B1: o conteúdo do ring só é válido para
-	// exatamente o (coord, slot, geração) que pediu o export. Chunk recriado,
-	// página evicta (saída da bolha) ou export vencido -> descarta e libera.
+
 	valid := page_found && entry.used &&
 		page.ring_slot == ring_slot &&
 		entry.coord == task.coordinate && entry.generation == task.generation &&
@@ -385,10 +314,6 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 		return
 	}
 
-	// Acquire p/ o host: GetSemaphoreCounterValue NÃO é sincronização. Um
-	// WaitSemaphores(0) sobre valor já alcançado retorna na hora e estabelece
-	// a visibilidade das escritas do compute para a CPU (mesmo padrão do
-	// readback de edit_results).
 	semaphore := app.computeTimelineSemaphore
 	value := batch_timeline_value
 	vk_check(
@@ -403,8 +328,7 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 			0,
 		),
 	)
-	// O buffer é HOST_ACCESS_RANDOM: invalida antes de ler (no-op em memória
-	// coerente) — somente o slot lido.
+
 	vk_check(
 		vma.InvalidateAllocation(
 			app.vmaAllocator,
@@ -422,9 +346,7 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 		mirror_bit_write(page.solid[:], u32(i), id != 0)
 	}
 	if len(page.rejected_log) > 0 {
-		// RECONCILIAÇÃO (REQ-MIRROR-09): o re-export trouxe só worldgen; o
-		// journal aceito é reaplicado do applied_log SEM as edições rejeitadas
-		// (remove a ocorrência mais recente de cada par — convergência exata).
+
 		for rejected in page.rejected_log {
 			for i := len(page.applied_log) - 1; i >= 0; i -= 1 {
 				if page.applied_log[i] == rejected {
@@ -438,9 +360,7 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 			mirror_page_apply(page, edit.world_voxel, edit.block_id)
 		}
 	}
-	// Replay das edições staged p/ a GPU enquanto PENDING_READBACK: a edição
-	// cai no packed DEPOIS do pack, então o export não a contém — sem o replay
-	// os dois lados divergiriam.
+
 	for edit in page.pending {
 		mirror_page_apply(page, edit.world_voxel, edit.block_id)
 		append(&page.applied_log, edit)
@@ -452,9 +372,6 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 	entry.used = false
 }
 
-// Gestão da bolha de simulação (raio 5, independente da bolha de render):
-// evicta páginas cujo chunk saiu e pede páginas para os chunks presentes.
-// Todo frame (barata), na thread principal.
 mirror_update_bubble :: proc(ve: ^VoxelEngine, camera_chunk: ChunkCoordinate) {
 	sim_radius2 := i64(RADIUS_SIMULATION) * RADIUS_SIMULATION
 	to_forget := make([dynamic]ChunkCoordinate, context.temp_allocator)
@@ -478,7 +395,6 @@ mirror_update_bubble :: proc(ve: ^VoxelEngine, camera_chunk: ChunkCoordinate) {
 	}
 }
 
-// Estatísticas do mirror (diagnóstico/evidência da VS-04).
 mirror_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
 	log.infof(
 		"{} páginas vivas={} (pool {}), ring misses={}, pool misses={}",
