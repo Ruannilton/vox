@@ -154,17 +154,16 @@ struct EditChunkJob {
 // testado é exatamente o renderizado. Convenção Vulkan: clip = VP × mundo,
 // NDC x,y ∈ [−1,1], z ∈ [0,1]. Ordem: left, right, bottom, top, near, far;
 // xyz = normal para dentro, w = offset; normalizados.
-// Atenção: com column_major, vp[i] é a COLUNA i — as linhas (que definem as
-// inequações de clip) são rederivadas aqui por transposição.
+// Atenção: no Slang, vp[i] é a LINHA i (indexação lógica estilo HLSL,
+// independente do layout column_major em memória) — as inequações de clip
+// saem diretamente das linhas, SEM transposição. (Uma versão anterior
+// transpunha a VP por assumir vp[i] = coluna i, e derivava os planos do
+// frustum trocado — culpava geometria visível.)
 float4[6] frustum_planes_from_vp(column_major float4x4 vp) {
-    float4 c0 = vp[0];
-    float4 c1 = vp[1];
-    float4 c2 = vp[2];
-    float4 c3 = vp[3];
-    float4 r0 = float4(c0.x, c1.x, c2.x, c3.x); // clip.x = r0 · p
-    float4 r1 = float4(c0.y, c1.y, c2.y, c3.y); // clip.y = r1 · p
-    float4 r2 = float4(c0.z, c1.z, c2.z, c3.z); // clip.z = r2 · p
-    float4 r3 = float4(c0.w, c1.w, c2.w, c3.w); // clip.w = r3 · p
+    float4 r0 = vp[0]; // clip.x = r0 · p
+    float4 r1 = vp[1]; // clip.y = r1 · p
+    float4 r2 = vp[2]; // clip.z = r2 · p
+    float4 r3 = vp[3]; // clip.w = r3 · p
     float4[6] planes;
     planes[0] = r3 + r0; // left:   x_ndc >= -1
     planes[1] = r3 - r0; // right:  x_ndc <=  1

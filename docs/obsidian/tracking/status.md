@@ -13,9 +13,9 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
 | Implementações concluídas | 7 |
-| Validações verificadas | 5 |
+| Validações verificadas | 6 |
 
-Sete especificações registradas; VS-00 a VS-04 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-06 (culling de frustum) tem implementação concluída e validação em andamento (AC-01 e AC-03 verificados; AC-02 com ressalva de z-fighting pré-existente aguardando confirmação visual humana — ver histórico da spec).
+Sete especificações registradas; VS-00 a VS-04 e VS-06 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-06 (culling de frustum) verificada após correção pós-validação da extração de planos (vp[i] é linha i no Slang — ver histórico da spec).
 
 ## Tracking das especificações
 
@@ -27,7 +27,7 @@ Sete especificações registradas; VS-00 a VS-04 estão integralmente concluída
 | VS-03 | [[VS-03-edicao-e1|Edição E1]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
 | VS-04 | [[VS-04-mirror-c2|Mirror C2]] | `aprovada` | `concluida` | `verificada` | VS-03 | — |
 | VS-05 | [[VS-05-telemetria-profiling|Telemetria e profiling GPU]] | `aprovada` | `concluida` | `em-validacao` | VS-04 | — |
-| VS-06 | [[VS-06-culling-frustum|Culling de frustum]] | `aprovada` | `concluida` | `em-validacao` | VS-02 | — |
+| VS-06 | [[VS-06-culling-frustum|Culling de frustum]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
 
 ## Decisões
 

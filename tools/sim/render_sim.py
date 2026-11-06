@@ -92,9 +92,9 @@ def make_vp(eye, target, fov=60.0, aspect=16.0 / 9.0, near=0.5, far=500.0):
 def frustum_planes_from_vp(vp):
     """Gribb-Hartmann float32 (espelha common.slang). Retorna 6 float4:
     left, right, bottom, top, near, far — normal xyz para dentro, w offset,
-    normalizados. No shader a VP é column_major e vp[i] é a COLUNA i, então
-    as linhas são rederivadas por transposição — aqui `vp` já é a matriz em
-    linhas (matematicamente idêntico)."""
+    normalizados. No shader a VP é column_major na memória, mas vp[i] é a
+    LINHA i (indexação lógica estilo HLSL) — aqui `vp` já é a matriz em
+    linhas, exatamente como o shader a enxerga."""
     r0, r1, r2, r3 = vp[0], vp[1], vp[2], vp[3]
     raw = [
         [f32(r3[i] + r0[i]) for i in range(4)],  # left

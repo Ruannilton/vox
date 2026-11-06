@@ -9,6 +9,7 @@ import "vendor:glfw"
 import vk "vendor:vulkan"
 
 last_x, last_y: f64
+first_cursor_event: bool
 camera: Camera
 main :: proc() {
 	file_logger, err := os.create("log.txt")
@@ -44,6 +45,10 @@ main :: proc() {
 
 	glfw.SetInputMode(engine.app.glfwWindow, glfw.CURSOR, glfw.CURSOR_DISABLED)
 	last_x, last_y = glfw.GetCursorPos(engine.app.glfwWindow)
+	// o recentering do CURSOR_DISABLED dispara um evento com posição absoluta
+	// defasada; o primeiro evento só ressincroniza last_x/last_y, sem aplicar
+	// delta (senão a pose padrão muda sozinha na inicialização)
+	first_cursor_event = true
 
 	glfw.SetKeyCallback(
 		engine.app.glfwWindow,
@@ -69,6 +74,12 @@ main :: proc() {
 		engine.app.glfwWindow,
 		proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
 			context = engine.app.runtimeContext
+
+			if first_cursor_event {
+				first_cursor_event = false
+				last_x, last_y = xpos, ypos
+				return
+			}
 
 			xoffset := f32(xpos - last_x)
 			yoffset := f32(last_y - ypos) // Invertido, pois o eixo Y cresce para baixo
