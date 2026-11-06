@@ -29,8 +29,7 @@ GenerationTask :: struct {
 
 SubmittedBatch :: struct {
 	compute_timeline_value: u64,
-	task_count:             int,
-	tasks:                  [MAXIMUM_CHUNKS_PER_BATCH]GenerationTask,
+	tasks:                  [dynamic]GenerationTask, // cap = config.chunks_per_batch (VS-08)
 }
 
 
@@ -106,14 +105,14 @@ voxel_engine_init :: proc() -> ^VoxelEngine {
 	ve := new(VoxelEngine)
 	ve^ = VoxelEngine {
 		active_chunks         = make(map[ChunkCoordinate]ChunkRecord),
-		free_storage_slots    = make([dynamic]u32, 0, MAXIMUM_RESIDENT_CHUNKS),
-		slot_generations      = make([]u32, MAXIMUM_RESIDENT_CHUNKS), 
+		free_storage_slots    = make([dynamic]u32, 0, config.resident_slots),
+		slot_generations      = make([]u32, config.resident_slots),
 		pending_tasks         = make([dynamic]GenerationTask),
 		pending_export_tasks  = make([dynamic]GenerationTask),
 		submitted_batches     = make([dynamic]SubmittedBatch),
-		last_camera_chunk     = {max(i32), max(i32), max(i32)}, 
+		last_camera_chunk     = {max(i32), max(i32), max(i32)},
 	}
-	for i in 0 ..< MAXIMUM_RESIDENT_CHUNKS {
+	for i in 0 ..< config.resident_slots {
 		append(&ve.free_storage_slots, u32(i))
 	}
 	edit_manager_init(ve)
@@ -125,7 +124,7 @@ voxel_engine_init :: proc() -> ^VoxelEngine {
 	ve.worker = thread.create(worker_thread_process)
 	thread.start(ve.worker)
 
-	log.infof("Voxel engine inicializada: {} slots de chunk", MAXIMUM_RESIDENT_CHUNKS)
+	log.infof("Voxel engine inicializada: {} slots de chunk", config.resident_slots)
 	return ve
 }
 
@@ -162,8 +161,7 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 	completed_count := 0
 	for b in ve.submitted_batches {
 		if b.compute_timeline_value > completed_compute do break
-		for i in 0 ..< b.task_count {
-			task := b.tasks[i]
+		for task in b.tasks {
 			if task.coordinate in ve.active_chunks {
 				rec := &ve.active_chunks[task.coordinate]
 				if rec.state == .GENERATING &&
@@ -179,6 +177,9 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 		}
 		ve.highest_completed_compute_value = max(ve.highest_completed_compute_value, b.compute_timeline_value)
 		completed_count += 1
+	}
+	for &b in ve.submitted_batches[0:completed_count] {
+		delete(b.tasks)
 	}
 	remove_range(&ve.submitted_batches, 0, completed_count)
 	sync.mutex_unlock(&ve.queue_mutex)
@@ -214,8 +215,7 @@ retire_generating_slot :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record:
 	}
 
 	for batch in ve.submitted_batches {
-		for i in 0 ..< batch.task_count {
-			task := batch.tasks[i]
+		for task in batch.tasks {
 			if task_matches(task, coord, record) {
 				append(
 					&ve.retiring_compute_slots,
@@ -231,11 +231,11 @@ retire_generating_slot :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record:
 
 
 voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
-	offset := int(frame_index) * MAXIMUM_VISIBLE_CHUNKS
+	offset := int(frame_index) * int(config.visible_capacity)
 	count: u32 = 0
 	for coord, record in ve.active_chunks {
 		if record.state != .RENDERABLE do continue
-		if count >= MAXIMUM_VISIBLE_CHUNKS do break
+		if count >= config.visible_capacity do break
 
 		entry := VisibleChunk {
 			chunk_world_origin = {coord.x * CHUNK_SIZE, coord.y * CHUNK_SIZE, coord.z * CHUNK_SIZE},
@@ -272,7 +272,7 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 
 		to_unload := make([dynamic]ChunkCoordinate, context.temp_allocator)
 		for coord in ve.active_chunks {
-			if calculate_squared_distance(camera_chunk, coord) > i64(RADIUS_UNLOAD) * RADIUS_UNLOAD {
+			if calculate_squared_distance(camera_chunk, coord) > i64(config.radius_unload) * i64(config.radius_unload) {
 				append(&to_unload, coord)
 			}
 		}
@@ -289,11 +289,13 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 
 		new_tasks := make([dynamic]GenerationTask, context.temp_allocator)
 		slots_exhausted := false
-		for x in -RADIUS_GENERATION ..= RADIUS_GENERATION {
-			for y in -RADIUS_GENERATION ..= RADIUS_GENERATION {
-				for z in -RADIUS_GENERATION ..= RADIUS_GENERATION {
-					coord := camera_chunk + ChunkCoordinate{i32(x), i32(y), i32(z)}
-					if calculate_squared_distance(camera_chunk, coord) > i64(RADIUS_GENERATION) * RADIUS_GENERATION do continue
+		generation_radius := i32(config.radius_generation)
+		generation_radius2 := i64(config.radius_generation) * i64(config.radius_generation)
+		for x in -generation_radius ..= generation_radius {
+			for y in -generation_radius ..= generation_radius {
+				for z in -generation_radius ..= generation_radius {
+					coord := camera_chunk + ChunkCoordinate{x, y, z}
+					if calculate_squared_distance(camera_chunk, coord) > generation_radius2 do continue
 					if coord in ve.active_chunks do continue
 
 					if len(ve.free_storage_slots) == 0 {
@@ -326,7 +328,7 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 
 
 	for coord, record in ve.active_chunks {
-		is_visible := calculate_squared_distance(camera_chunk, coord) <= i64(RADIUS_VISION) * RADIUS_VISION
+		is_visible := calculate_squared_distance(camera_chunk, coord) <= i64(config.radius_vision) * i64(config.radius_vision)
 		if record.state == .CACHED && is_visible {
 			rec := &ve.active_chunks[coord]
 			rec.state = .RENDERABLE

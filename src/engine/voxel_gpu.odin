@@ -6,9 +6,6 @@ import "core:mem"
 import vma "shared:vma"
 import vk "vendor:vulkan"
 
-SCRATCH_CHUNK_COUNT :: MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT * MAXIMUM_CHUNKS_PER_BATCH
-GENERATION_JOB_COUNT :: SCRATCH_CHUNK_COUNT
-
 BLOCK_REGISTRY_CAPACITY :: 256
 MESH_TEMPLATE_CAPACITY  :: 256
 
@@ -59,7 +56,7 @@ VoxelGpu :: struct {
 	mesh_pipeline:          vk.Pipeline,
 
 	compute_command_pool:    vk.CommandPool,
-	compute_command_buffers: [MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT]vk.CommandBuffer,
+	compute_command_buffers: []vk.CommandBuffer, // [batches_in_flight] (VS-08)
 }
 
 voxel_gpu: VoxelGpu
@@ -318,6 +315,9 @@ upload_palette_textures :: proc() {
 voxel_gpu_init :: proc() {
 	log.info("Inicializando recursos GPU do voxel engine")
 
+	// VS-08 (REQ-CFG-05): command buffers dimensionados pelo Config.
+	voxel_gpu.compute_command_buffers = make([]vk.CommandBuffer, config.batches_in_flight)
+
 	vk_check(
 		vk.CreateCommandPool(
 			app.vkDevice,
@@ -337,38 +337,38 @@ voxel_gpu_init :: proc() {
 				sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 				commandPool        = voxel_gpu.compute_command_pool,
 				level              = .PRIMARY,
-				commandBufferCount = len(voxel_gpu.compute_command_buffers),
+				commandBufferCount = u32(len(voxel_gpu.compute_command_buffers)),
 			},
 			&voxel_gpu.compute_command_buffers[0],
 		),
 	)
 
-	// --- buffers ---
+	// --- buffers (VS-08/REQ-CFG-05: tamanhos derivados do Config) ---
 	voxel_gpu.scratch = gpu_buffer_create(
-		vk.DeviceSize(SCRATCH_CHUNK_COUNT * CHUNK_VOXEL_COUNT * size_of(u32)),
+		vk.DeviceSize(config.scratch_chunks * CHUNK_VOXEL_COUNT * size_of(u32)),
 		{.STORAGE_BUFFER},
 	)
 	mapped_jobs: rawptr
 	voxel_gpu.generation_jobs, mapped_jobs = gpu_buffer_create_host(
-		vk.DeviceSize(GENERATION_JOB_COUNT * size_of(ChunkGenerationJob)),
+		vk.DeviceSize(config.scratch_chunks * size_of(ChunkGenerationJob)),
 		{.STORAGE_BUFFER},
 	)
 	voxel_gpu.generation_jobs_mapped = cast([^]ChunkGenerationJob)mapped_jobs
 
 	voxel_gpu.occupancy_pool = gpu_buffer_create(
-		vk.DeviceSize(MAXIMUM_RESIDENT_CHUNKS * OCCUPANCY_WORDS_PER_CHUNK * size_of(u32)),
+		vk.DeviceSize(config.resident_slots * OCCUPANCY_WORDS_PER_CHUNK * size_of(u32)),
 		{.STORAGE_BUFFER, .TRANSFER_SRC, .TRANSFER_DST},
 	)
 	voxel_gpu.material_plane_pool = gpu_buffer_create(
-		vk.DeviceSize(MAXIMUM_RESIDENT_CHUNKS * MATERIAL_WORDS_PER_CHUNK * size_of(u32)),
+		vk.DeviceSize(config.resident_slots * MATERIAL_WORDS_PER_CHUNK * size_of(u32)),
 		{.STORAGE_BUFFER, .TRANSFER_SRC},
 	)
 	voxel_gpu.chunk_headers = gpu_buffer_create(
-		vk.DeviceSize(MAXIMUM_RESIDENT_CHUNKS * size_of(ChunkHeader)),
+		vk.DeviceSize(config.resident_slots * size_of(ChunkHeader)),
 		{.STORAGE_BUFFER, .TRANSFER_SRC},
 	)
 	voxel_gpu.special_voxel_records = gpu_buffer_create(
-		vk.DeviceSize(MAXIMUM_RESIDENT_CHUNKS * SPECIAL_RECORDS_PER_CHUNK * size_of(SpecialVoxelRecord)),
+		vk.DeviceSize(config.resident_slots * SPECIAL_RECORDS_PER_CHUNK * size_of(SpecialVoxelRecord)),
 		{.STORAGE_BUFFER},
 	)
 	voxel_gpu.block_registry = gpu_buffer_create(
@@ -378,7 +378,7 @@ voxel_gpu_init :: proc() {
 
 	visible_mapped: rawptr
 	voxel_gpu.visible_chunks, visible_mapped = gpu_buffer_create_host(
-		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * MAXIMUM_VISIBLE_CHUNKS * size_of(VisibleChunk)),
+		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * config.visible_capacity * size_of(VisibleChunk)),
 		{.STORAGE_BUFFER},
 	)
 	voxel_gpu.visible_chunks_mapped = cast([^]VisibleChunk)visible_mapped
@@ -396,7 +396,7 @@ voxel_gpu_init :: proc() {
 	)
 
 	voxel_gpu.work_queue = gpu_buffer_create(
-		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * WORK_QUEUE_SLOT_WORDS * size_of(u32)),
+		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * config.work_queue_slot_words * size_of(u32)),
 		{.STORAGE_BUFFER, .INDIRECT_BUFFER, .TRANSFER_DST, .TRANSFER_SRC},
 	)
 
@@ -422,7 +422,7 @@ voxel_gpu_init :: proc() {
 
 	mapped_mirror_ring: rawptr
 	voxel_gpu.mirror_export_ring, mapped_mirror_ring = gpu_buffer_create_host_flags(
-		vk.DeviceSize(MIRROR_RING_SLOTS * CHUNK_VOXEL_COUNT * size_of(u16)),
+		vk.DeviceSize(config.mirror_ring_slots * CHUNK_VOXEL_COUNT * size_of(u16)),
 		{.STORAGE_BUFFER},
 		{.HOST_ACCESS_RANDOM, .MAPPED},
 	)
@@ -663,7 +663,7 @@ voxel_gpu_destroy :: proc() {
 	vk.FreeCommandBuffers(
 		app.vkDevice,
 		voxel_gpu.compute_command_pool,
-		len(voxel_gpu.compute_command_buffers),
+		u32(len(voxel_gpu.compute_command_buffers)),
 		&voxel_gpu.compute_command_buffers[0],
 	)
 	vk.DestroyCommandPool(app.vkDevice, voxel_gpu.compute_command_pool, nil)

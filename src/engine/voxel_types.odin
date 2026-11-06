@@ -29,30 +29,20 @@ MAX_TEMPLATE_TRIANGLES :: 24
 TEMPLATE_FLAG_HAS_FLUSH_FACES :: 1
 CULL_FACE_NEVER        :: 7
 
-// --- Renderização 
+// --- Renderização
+// VS-08: as capacidades da fila/visíveis deixam de ser constantes de
+// compilação — vêm do Config (config.odin), derivadas dos raios do INI.
 NEIGHBOR_SLOT_INVALID       :: max(u32)
-MAXIMUM_VISIBLE_CHUNKS      :: 4096
-WORK_ITEM_CAPACITY           :: MAXIMUM_VISIBLE_CHUNKS * BRICKS_PER_CHUNK
 WORK_QUEUE_STATE_WORDS       :: 8
 WORK_QUEUE_APPEND_COUNT_WORD :: 0
 WORK_QUEUE_OVERFLOW_WORD     :: 1
 WORK_QUEUE_INDIRECT_X_WORD   :: 2
-WORK_QUEUE_SLOT_WORDS        :: WORK_QUEUE_STATE_WORDS + WORK_ITEM_CAPACITY
 
 // Ordem igual a FACE_NORMALS no common.slang (+X,-X,+Y,-Y,+Z,-Z).
 NEIGHBOR_OFFSETS :: [6]ChunkCoordinate{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}
 
 ALBEDO_PALETTE_LAYERS     :: 256
 ALBEDO_PALETTE_LAYER_SIZE :: 4
-
-// --- Streaming 
-RADIUS_VISION     :: 8
-RADIUS_GENERATION :: 9
-RADIUS_UNLOAD     :: 10
-
-MAXIMUM_RESIDENT_CHUNKS       :: 4096
-MAXIMUM_CHUNKS_PER_BATCH      :: 16
-MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT :: 3
 
 ChunkCoordinate :: [3]i32
 
@@ -140,10 +130,8 @@ pack_voxel_edit :: proc "contextless" (voxel_index: u32, block_id: u32) -> u32 {
 	return (voxel_index & 0x7FFF) | (block_id << 16)
 }
 
-// Bolha de simulação independente da bolha de render.
-RADIUS_SIMULATION     :: 5
-MIRROR_RING_SLOTS     :: 64  // exports em voo: 64 × 64 KiB = 4 MiB host-visible
-MIRROR_PAGE_POOL_SIZE :: 768 // páginas fixas (~50 MiB; bolha ~523 chunks + folga)
+// Bolha de simulação independente da bolha de render. VS-08: raio e
+// tamanhos dos pools/rings do mirror vêm do Config (config.odin).
 
 MirrorPageState :: enum u8 {
 	PENDING_READBACK, // export em voo (ou aguardando slot de ring): leitura = desconhecido
@@ -175,13 +163,15 @@ MirrorRingEntry :: struct {
 	generation: u32, // anti-ABA: casa com a geração do slot de GPU no pedido
 }
 
-// 88 B — casar com o pipeline layout da VS-00.
+// 92 B — casar com o pipeline layout da VS-00 (88 B + visible_chunk_capacity,
+// REQ-CFG-06).
 VoxelPushConstants :: struct {
 	view_projection_matrix: matrix[4, 4]f32,
 	camera_position:        [3]f32,
 	visible_chunk_offset:   u32,
 	batch_job_offset:       u32,
 	edit_job_offset:        u32,
+	visible_chunk_capacity: u32,
 }
 
 // Triângulo packed em u32: bits [0..8) v0 | [8..16) v1 | [16..24) v2 | [24..27) face de culling.
@@ -223,4 +213,4 @@ validate_template :: proc(vertices: [][3]f32, packed_triangles: []u32) -> bool {
 #assert(size_of(MeshTemplate) == 32)
 #assert(size_of(VisibleChunk) == 48)
 #assert(size_of(EditChunkJob) == 16)
-#assert(size_of(VoxelPushConstants) == 88)
+#assert(size_of(VoxelPushConstants) == 92)

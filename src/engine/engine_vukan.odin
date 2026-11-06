@@ -487,7 +487,7 @@ destroy_sync_objects :: proc() {
 }
 
 DESCRIPTOR_SET_BINDING_COUNT :: 18
-PUSH_CONSTANTS_SIZE :: 88
+PUSH_CONSTANTS_SIZE :: 92 // VS-08 (REQ-CFG-06): + visible_chunk_capacity
 
 @(private)
 create_descriptor_layouts :: proc() {

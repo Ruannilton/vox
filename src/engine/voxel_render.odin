@@ -92,8 +92,9 @@ voxel_render_prepare :: proc(
 	push_constants := VoxelPushConstants {
 		view_projection_matrix = vp,
 		camera_position        = camera_position,
-		visible_chunk_offset   = frame_index * MAXIMUM_VISIBLE_CHUNKS,
+		visible_chunk_offset   = frame_index * config.visible_capacity,
 		edit_job_offset        = frame_index * MAX_EDIT_JOBS_PER_FLUSH,
+		visible_chunk_capacity = config.visible_capacity,
 	}
 	vk.CmdBindDescriptorSets(cmd, .COMPUTE, app.computePipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 0, nil)
 	vk.CmdPushConstants(cmd, app.computePipelineLayout, {.COMPUTE}, 0, PUSH_CONSTANTS_SIZE, &push_constants)
@@ -126,7 +127,7 @@ voxel_render_prepare :: proc(
 
 	if visible_count == 0 do return
 
-	state_offset := vk.DeviceSize(frame_index * WORK_QUEUE_SLOT_WORDS * size_of(u32))
+	state_offset := vk.DeviceSize(frame_index * config.work_queue_slot_words * size_of(u32))
 	vk.CmdFillBuffer(cmd, voxel_gpu.work_queue.handle, state_offset, WORK_QUEUE_STATE_WORDS * 4, 0)
 
 	fill_barrier := vk.BufferMemoryBarrier2 {
@@ -163,7 +164,7 @@ voxel_render_prepare :: proc(
 		dstAccessMask = {.SHADER_READ},
 		buffer        = voxel_gpu.work_queue.handle,
 		offset        = state_offset,
-		size          = vk.DeviceSize(WORK_QUEUE_SLOT_WORDS * size_of(u32)),
+		size          = vk.DeviceSize(config.work_queue_slot_words * size_of(u32)),
 	}
 	vk.CmdPipelineBarrier2(
 		cmd,
@@ -189,7 +190,7 @@ voxel_render_prepare :: proc(
 		dstAccessMask = {.INDIRECT_COMMAND_READ, .SHADER_READ},
 		buffer        = voxel_gpu.work_queue.handle,
 		offset        = state_offset,
-		size          = vk.DeviceSize(WORK_QUEUE_SLOT_WORDS * size_of(u32)),
+		size          = vk.DeviceSize(config.work_queue_slot_words * size_of(u32)),
 	}
 	vk.CmdPipelineBarrier2(
 		cmd,
@@ -225,7 +226,8 @@ voxel_render_record :: proc(
 	push_constants := VoxelPushConstants {
 		view_projection_matrix = vp,
 		camera_position        = camera_position,
-		visible_chunk_offset   = frame_index * MAXIMUM_VISIBLE_CHUNKS,
+		visible_chunk_offset   = frame_index * config.visible_capacity,
+		visible_chunk_capacity = config.visible_capacity,
 	}
 	vk.CmdPushConstants(
 		cmd,
@@ -235,7 +237,7 @@ voxel_render_record :: proc(
 		PUSH_CONSTANTS_SIZE,
 		&push_constants,
 	)
-	state_offset := vk.DeviceSize(frame_index * WORK_QUEUE_SLOT_WORDS * size_of(u32))
+	state_offset := vk.DeviceSize(frame_index * config.work_queue_slot_words * size_of(u32))
 	telemetry_timestamp_begin(cmd, telemetry.gfx_pools[frame_index], 8)
 	telemetry_begin_label(cmd, "draw_mesh")
 	vk.CmdDrawMeshTasksIndirectEXT(

@@ -46,12 +46,11 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 	
 		export_only := false
 		if len(ve.pending_export_tasks) > 0 {
-			claimed_batch.tasks[0] = pop(&ve.pending_export_tasks)
-			claimed_batch.task_count = 1
+			append(&claimed_batch.tasks, pop(&ve.pending_export_tasks))
 			export_only = true
 		} else {
 
-		for claimed_batch.task_count < MAXIMUM_CHUNKS_PER_BATCH && len(ve.pending_tasks) > 0 {
+		for len(claimed_batch.tasks) < int(config.chunks_per_batch) && len(ve.pending_tasks) > 0 {
 			best_idx := 0
 			best_dist := max(i64)
 			for task, i in ve.pending_tasks {
@@ -61,8 +60,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 					best_idx = i
 				}
 			}
-			claimed_batch.tasks[claimed_batch.task_count] = ve.pending_tasks[best_idx]
-			claimed_batch.task_count += 1
+			append(&claimed_batch.tasks, ve.pending_tasks[best_idx])
 			unordered_remove(&ve.pending_tasks, best_idx)
 		}
 		}
@@ -71,20 +69,20 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		append(&ve.submitted_batches, claimed_batch)
 		sync.mutex_unlock(&ve.queue_mutex)
 
-		// Backpressure: no máximo 3 lotes em voo antes de regravar o ring.
-		if submitted_batch_count >= MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT {
-			wait_for_compute_timeline(submitted_batch_count - MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT + 1)
+		// Backpressure: no máximo config.batches_in_flight lotes em voo antes
+		// de regravar o ring.
+		if submitted_batch_count >= u64(config.batches_in_flight) {
+			wait_for_compute_timeline(submitted_batch_count - u64(config.batches_in_flight) + 1)
 		}
 
-		ring_index := int(submitted_batch_count % MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT)
+		ring_index := int(submitted_batch_count % u64(config.batches_in_flight))
 
-		if submitted_batch_count >= MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT {
+		if submitted_batch_count >= u64(config.batches_in_flight) {
 			telemetry_collect_compute(ring_index)
 		}
-		job_offset := ring_index * MAXIMUM_CHUNKS_PER_BATCH
+		job_offset := ring_index * int(config.chunks_per_batch)
 
-		for i in 0 ..< claimed_batch.task_count {
-			task := claimed_batch.tasks[i]
+		for task, i in claimed_batch.tasks {
 			voxel_gpu.generation_jobs_mapped[job_offset + i] = ChunkGenerationJob {
 				chunk_world_origin = task.coordinate * CHUNK_SIZE,
 				storage_slot_index = task.storage_slot_index,
@@ -116,7 +114,8 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		)
 
 		push_constants := VoxelPushConstants {
-			batch_job_offset = u32(job_offset),
+			batch_job_offset       = u32(job_offset),
+			visible_chunk_capacity = config.visible_capacity,
 		}
 		vk.CmdPushConstants(
 			cmd,
@@ -132,7 +131,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		telemetry_timestamp_begin(cmd, compute_pool, 0)
 		telemetry_begin_label(cmd, "generate")
 		vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.generation_pipeline)
-		vk.CmdDispatch(cmd, 4, 4, 4 * u32(claimed_batch.task_count))
+		vk.CmdDispatch(cmd, 4, 4, 4 * u32(len(claimed_batch.tasks)))
 		telemetry_end_label(cmd)
 		telemetry_timestamp_end(cmd, compute_pool, 1)
 		
@@ -155,7 +154,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.packing_pipeline)
 		telemetry_timestamp_begin(cmd, compute_pool, 2)
 		telemetry_begin_label(cmd, "pack")
-		vk.CmdDispatch(cmd, u32(claimed_batch.task_count), 1, 1)
+		vk.CmdDispatch(cmd, u32(len(claimed_batch.tasks)), 1, 1)
 		telemetry_end_label(cmd)
 		telemetry_timestamp_end(cmd, compute_pool, 3)
 		}

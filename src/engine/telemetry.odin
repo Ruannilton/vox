@@ -41,7 +41,7 @@ Telemetry :: struct {
 	times_available:     bool,
 	timestamp_period_ns: f64,
 	gfx_pools:           [NUM_FRAMES_IN_FLIGHT]vk.QueryPool,
-	compute_pools:       [MAXIMUM_COMPUTE_BATCHES_IN_FLIGHT]vk.QueryPool,
+	compute_pools:       [dynamic]vk.QueryPool, // [config.batches_in_flight] (VS-08)
 	results_mutex:       sync.Mutex,
 	last_times_us:       [TELEMETRY_OPERATION_COUNT]f64,
 	heap_count:          u32,
@@ -105,8 +105,11 @@ telemetry_init :: proc() {
 		queryType  = .TIMESTAMP,
 		queryCount = TELEMETRY_COMPUTE_QUERY_COUNT,
 	}
-	for &pool in telemetry.compute_pools {
+	telemetry.compute_pools = make([dynamic]vk.QueryPool, 0, config.batches_in_flight)
+	for i in 0 ..< config.batches_in_flight {
+		pool: vk.QueryPool
 		vk_check(vk.CreateQueryPool(app.vkDevice, &compute_pool_info, nil, &pool))
+		append(&telemetry.compute_pools, pool)
 	}
 }
 
@@ -117,6 +120,7 @@ telemetry_destroy :: proc() {
 	for pool in telemetry.compute_pools {
 		if pool != 0 do vk.DestroyQueryPool(app.vkDevice, pool, nil)
 	}
+	delete(telemetry.compute_pools)
 	if telemetry.csv_file != nil {
 		os.close(telemetry.csv_file)
 	}

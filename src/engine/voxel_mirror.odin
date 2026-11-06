@@ -11,7 +11,7 @@ MirrorManager :: struct {
 	pool:       []MirrorChunkPage,
 	free_pages: [dynamic]u32,
 	pages:      map[ChunkCoordinate]^MirrorChunkPage,
-	ring:       [MIRROR_RING_SLOTS]MirrorRingEntry,
+	ring:       []MirrorRingEntry, // [config.mirror_ring_slots] (VS-08)
 	// Diagnóstico.
 	stats_pages_live:  int,
 	stats_pool_misses: u64,
@@ -194,8 +194,7 @@ mirror_forget_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: Ch
 
 	in_flight := false
 	for batch in ve.submitted_batches {
-		for i in 0 ..< batch.task_count {
-			task := batch.tasks[i]
+		for task in batch.tasks {
 			if task_matches(task, coord, record) && task.mirror_ring_slot >= 0 {
 				in_flight = true
 			}
@@ -373,7 +372,7 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 }
 
 mirror_update_bubble :: proc(ve: ^VoxelEngine, camera_chunk: ChunkCoordinate) {
-	sim_radius2 := i64(RADIUS_SIMULATION) * RADIUS_SIMULATION
+	sim_radius2 := i64(config.radius_simulation) * i64(config.radius_simulation)
 	to_forget := make([dynamic]ChunkCoordinate, context.temp_allocator)
 	for coord in ve.mirror.pages {
 		if calculate_squared_distance(camera_chunk, coord) > sim_radius2 {
@@ -400,7 +399,7 @@ mirror_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
 		"{} páginas vivas={} (pool {}), ring misses={}, pool misses={}",
 		prefix,
 		ve.mirror.stats_pages_live,
-		MIRROR_PAGE_POOL_SIZE,
+		config.mirror_pages,
 		ve.mirror.stats_ring_misses,
 		ve.mirror.stats_pool_misses,
 	)
@@ -408,10 +407,14 @@ mirror_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
 
 @(private)
 mirror_init :: proc(ve: ^VoxelEngine) {
-	ve.mirror.pool = make([]MirrorChunkPage, MIRROR_PAGE_POOL_SIZE)
-	ve.mirror.free_pages = make([dynamic]u32, 0, MIRROR_PAGE_POOL_SIZE)
+	ve.mirror.pool = make([]MirrorChunkPage, config.mirror_pages)
+	ve.mirror.free_pages = make([dynamic]u32, 0, config.mirror_pages)
+	ve.mirror.ring = make([]MirrorRingEntry, config.mirror_ring_slots)
 	ve.mirror.pages = make(map[ChunkCoordinate]^MirrorChunkPage)
-	for i in 0 ..< MIRROR_PAGE_POOL_SIZE {
+	for &entry in ve.mirror.ring {
+		entry.used = false
+	}
+	for i in 0 ..< config.mirror_pages {
 		append(&ve.mirror.free_pages, u32(i))
 	}
 }
@@ -425,5 +428,6 @@ mirror_destroy :: proc(ve: ^VoxelEngine) {
 	}
 	delete(ve.mirror.pages)
 	delete(ve.mirror.free_pages)
+	delete(ve.mirror.ring)
 	delete(ve.mirror.pool)
 }

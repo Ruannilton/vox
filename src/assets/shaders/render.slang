@@ -63,7 +63,7 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
         uint chunk_base;
         InterlockedAdd(work_queue[queue_base + WORK_QUEUE_APPEND_COUNT_WORD], shared_chunk_item_total, chunk_base);
         shared_chunk_item_base = chunk_base;
-        if (chunk_base + shared_chunk_item_total > WORK_ITEM_CAPACITY) {
+        if (chunk_base + shared_chunk_item_total > push_constants.visible_chunk_capacity * BRICKS_PER_CHUNK) {
             InterlockedOr(work_queue[queue_base + WORK_QUEUE_OVERFLOW_WORD], 1u);
         }
     }
@@ -86,7 +86,7 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
 
         for (uint part = 0; part < parts; part++) {
             uint position = shared_chunk_item_base + shared_item_offsets[brick_index] + part;
-            if (position < WORK_ITEM_CAPACITY) {
+            if (position < push_constants.visible_chunk_capacity * BRICKS_PER_CHUNK) {
                 work_queue[queue_base + WORK_QUEUE_STATE_WORDS + position] =
                     pack_work_item(visible_index, brick_index, part, subdivision);
             }
@@ -99,7 +99,7 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
 void finalize_work_queue() {
     uint queue_base = work_queue_base_words();
     uint append_count = work_queue[queue_base + WORK_QUEUE_APPEND_COUNT_WORD];
-    work_queue[queue_base + WORK_QUEUE_INDIRECT_X_WORD]     = min(append_count, WORK_ITEM_CAPACITY);
+    work_queue[queue_base + WORK_QUEUE_INDIRECT_X_WORD]     = min(append_count, push_constants.visible_chunk_capacity * BRICKS_PER_CHUNK);
     work_queue[queue_base + WORK_QUEUE_INDIRECT_X_WORD + 1] = 1u;
     work_queue[queue_base + WORK_QUEUE_INDIRECT_X_WORD + 2] = 1u;
 }

@@ -78,6 +78,7 @@ CreateEngine :: proc(widht: u32 = 800, height: u32 = 600) {
 	create_vulkan_surface()
 	create_vulkan_device()
 	create_vma_allocator()
+	config_validate_machine()
 	create_swap_chain()
 	create_depth_buffer()
 	create_sync_objects()

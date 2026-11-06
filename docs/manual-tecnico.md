@@ -6,7 +6,7 @@
 
 ## 1. Estruturas de memória na GPU (bitmasking)
 
-Para contornar o limite de VRAM e maximizar o cache L1, abandonamos ponteiros (SVDAG) em favor de matrizes densas de bits. Um chunk de 32³ possui 32.768 voxels e vive num slot fixo pré-alocado do pool (4.096 slots). A região de ocupação de cada slot tem **1.090 words** (antes 1.026 — a v2.0 adicionou 64 words de subdivisão):
+Para contornar o limite de VRAM e maximizar o cache L1, abandonamos ponteiros (SVDAG) em favor de matrizes densas de bits. Um chunk de 32³ possui 32.768 voxels e vive num slot fixo pré-alocado do pool — desde a VS-08 o pool é dimensionado em runtime (`resident_slots = |esfera(generation)|`, 3.071 com os defaults; antes: 4.096 fixos). A região de ocupação de cada slot tem **1.090 words** (antes 1.026 — a v2.0 adicionou 64 words de subdivisão):
 
 ```
 ┌ Ocupação dos bricks — 1024 words (1 word = 32 voxels, brick 4×2×4)     words [0..1024)
@@ -44,7 +44,7 @@ uint read_block_identifier(uint slot, ChunkHeader header, int3 coord) {
 
 ## 2. Máquina de estados e Chunk Manager (CPU, Odin)
 
-O Odin gerencia o estado lógico de milhares de chunks sobre slots fixos pré-alocados, evitando realocação. A histerese opera como antes: sair do raio de visão (8) mas permanecer no raio de geração (12) apenas rebaixa RENDERABLE → CACHED, economizando trabalho.
+O Odin gerencia o estado lógico de milhares de chunks sobre slots fixos pré-alocados, evitando realocação. A histerese opera como antes: sair do raio de visão (8) mas permanecer no raio de geração (9) apenas rebaixa RENDERABLE → CACHED, economizando trabalho. Desde a VS-08 os raios (visão 8, geração 9, descarga 10, simulação 5) e os lotes do worker (16 chunks/lote, 3 lotes em voo) vêm de `vox.ini` — ver §10.
 
 ### 2.1 Correção B1 — geração por slot, claim atômico e aposentadoria dual
 
@@ -196,7 +196,7 @@ EditChunkJob :: struct { slot, first_edit, count, pad: u32 }
 // binding 13: jobs    8 KiB  (512 EditChunkJob)
 // binding 14: edits   32 KiB (8192 edicoes u32)
 // binding 15: results 32 KiB (feedback: applied / noop / rejected)
-// PushConstants = 88 B (novo campo: edit_job_offset)
+// PushConstants = 92 B (VS-08: + visible_chunk_capacity)
 ```
 
 Só chunks CACHED/RENDERABLE entram no lote — o flush nunca disputa slot com a geração (preserva o B1). Pedidos sobre chunks GENERATING/ausentes ficam num mapa de pendentes por chunk e reintegram quando o chunk conclui. **Tetos:** 4.096 edições/flush, 256 chunks/flush, 1.024 edições/chunk/flush; o excedente espera o próximo flush.
@@ -297,7 +297,7 @@ O export (Seção 3.3) é condicionado à bolha de simulação — chunks fora d
 
 | Item | Valor |
 |---|---|
-| Slots de chunk | 4.096 fixos |
+| Slots de chunk | derivados: `resident_slots = |esfera(generation)|` (3.071 nos defaults) |
 | Voxels por chunk | 32³ = 32.768 |
 | Brick | 4×2×4 = 32 voxels = 1 word |
 | Coarse cell | 8³ voxels = 1 bit (descarte de 512 voxels) |
@@ -306,15 +306,19 @@ O export (Seção 3.3) é condicionado à bolha de simulação — chunks fora d
 | Paleta | 8 planos × 256 entradas; **slot 0 = AR**; overflow → flag + SpecialVoxelRecord |
 | Task payload | 2.048 entradas ≈ 8,2 KB (< 16 KB) |
 | Orçamento mesh shader | 256 vértices / 192 triângulos por grupo — garantido por subdivisão |
-| Lote do worker | até 16 chunks por vkQueueSubmit2 (1 claim = 1 lote = 1 timeline) |
+| Lote do worker | até `chunks_per_batch` chunks (16) por vkQueueSubmit2 (1 claim = 1 lote = 1 timeline) |
 | Flush de edição | 100 ms; tetos 4.096 edições / 256 chunks / 1.024 por chunk |
-| ChunkPage (mirror) | ~68,1 KiB, y-major, pool de 768 páginas (~50 MiB) |
-| Ring de mirror | 64 slots × 64 KiB = 4 MiB host-visible (binding 16) |
-| PushConstants | 88 B (com edit_job_offset) |
+| ChunkPage (mirror) | ~68,1 KiB, y-major, pool derivado: `mirror_pages = ⌈|esfera(simulation)| × 1,5⌉` (773 nos defaults, ~50 MiB) |
+| Ring de mirror | `mirror_ring_slots = max(64, 2^⌈lg scratch⌉)` slots × 64 KiB host-visible (binding 16) |
+| PushConstants | 92 B (com edit_job_offset e visible_chunk_capacity — VS-08) |
 | BlockDefinition | 48 B std430 |
 | VisibleChunk | 48 B (com neighbor_slots[6]) |
 
-**Pendentes (backlog):** B5 (raio de geração > slots), B6 (CULL_MODE_NONE + alpha test), B7 (amostragem PBR real), B8 (distância em i64); fila de prioridade em heap, culling de frustum por brick, Hi-Z/oclusão, LOD, transparência, fusão generate+pack (scratch de 131 KB ida e volta), planos alocados adaptativamente por plane_count, camera-relative rendering, fallback clássico para GPUs sem VK_EXT_mesh_shader, caminho de leitura para SpecialVoxelRecord, persistência do journal em disco (mundo sobreviver ao unload) e camadas derivadas do mirror (navegação, física) quando houver necessidade.
+**Pendentes (backlog):** B6 (CULL_MODE_NONE + alpha test), B7 (amostragem PBR real), B8 (distância em i64); fila de prioridade em heap, Hi-Z/oclusão, LOD, transparência, fusão generate+pack (scratch de 131 KB ida e volta), planos alocados adaptativamente por plane_count, camera-relative rendering, fallback clássico para GPUs sem VK_EXT_mesh_shader, caminho de leitura para SpecialVoxelRecord, persistência do journal em disco (mundo sobreviver ao unload) e camadas derivadas do mirror (navegação, física) quando houver necessidade.
+
+## 10. Configuração e provisionamento runtime (VS-08)
+
+Os parâmetros de streaming/compute deixaram de ser constantes de compilação. `src/engine/config.odin` carrega `vox.ini` (seções `[streaming]`/`[compute]`; `--config <caminho>` sobrescreve o caminho; arquivo ausente → defaults 8/9/10/5, 16, 3 + warning) **antes** de `CreateEngine` — erros de coerência/formato/parse encerram a inicialização com mensagem explicativa, sem criar a janela. As capacidades são sempre **derivadas**: `visible_capacity = |esfera(vision)|` (visíveis publicados por frame e capacidade da fila de trabalho), `resident_slots = |esfera(generation)|`, `scratch_chunks = batches_in_flight × chunks_per_batch`, `mirror_pages = ⌈|esfera(simulation)| × 1,5⌉`, `mirror_ring_slots = max(64, próxima potência de 2 ≥ scratch_chunks)`. Após o VMA, a soma dos bytes device é confrontada com o budget da heap device-local (VS-05) × 0,9 antes de qualquer buffer do motor ser criado (REQ-CFG-04). O shader conhece a capacidade de visíveis pelo push constant `visible_chunk_capacity` (92 B). O backlog B5 (raio de geração > slots) está absorvido: os slots são a esfera de geração por construção.
 
 ## 10. Bus de eventos de input, gravação e replay (VS-07, novo na v3.0)
 

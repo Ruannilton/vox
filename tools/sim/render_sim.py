@@ -181,16 +181,33 @@ CULL_FACE_NEVER = 7
 NEIGHBOR_SLOT_INVALID = 0xFFFFFFFF
 # Fila de trabalho global (substitui o payload): item de 32 bits com
 # visible_index (12b) | brick (10b) | parte (2b) | subdivisao (2b).
-# Capacidade global = 4096 visiveis x 1024 bricks (templates atuais nunca
-# subdividem; overflow sinalizado na word de estado, nunca silencioso).
-MAXIMUM_VISIBLE_CHUNKS = 4096
+# Capacidade = visiveis x 1024 bricks; overflow sinalizado na word de estado,
+# nunca silencioso. VS-08: a capacidade passa a ser derivada do raio de
+# visão (|esfera(r)|); o default é vision=8 -> 2109 (antes: constante 4096).
+def sphere_count(radius):
+    """Pontos inteiros com x^2+y^2+z^2 <= r^2 (REQ-CFG-02)."""
+    count = 0
+    r = int(radius)
+    for x in range(-r, r + 1):
+        for y in range(-r, r + 1):
+            for z in range(-r, r + 1):
+                if x * x + y * y + z * z <= r * r:
+                    count += 1
+    return count
+
+
 WORK_QUEUE_STATE_WORDS = 8
 WORK_QUEUE_APPEND_COUNT_WORD = 0
 WORK_QUEUE_OVERFLOW_WORD = 1
 WORK_QUEUE_INDIRECT_X_WORD = 2
+NUM_FRAMES_IN_FLIGHT = 2
+# Capacidades de referência (REQ-SIM-05): mín r=2, default r=8, máx r=9.
+VISIBLE_CAPACITY_MIN = sphere_count(2)            # 33
+VISIBLE_CAPACITY_DEFAULT = sphere_count(8)        # 2109
+VISIBLE_CAPACITY_MAX = sphere_count(9)            # 3053
+MAXIMUM_VISIBLE_CHUNKS = VISIBLE_CAPACITY_DEFAULT # nome legado dos checks
 WORK_ITEM_CAPACITY = MAXIMUM_VISIBLE_CHUNKS * BRICKS_PER_CHUNK
 WORK_QUEUE_SLOT_WORDS = WORK_QUEUE_STATE_WORDS + WORK_ITEM_CAPACITY
-NUM_FRAMES_IN_FLIGHT = 2
 BRICKS_PER_CHUNK_AXIS = (8, 16, 8)
 CHUNK_FLAG_EMPTY = 1
 
@@ -461,9 +478,11 @@ def unpack_work_item(item):
     return (item & 0xFFF, (item >> 12) & 1023, (item >> 22) & 3, (item >> 24) & 3)
 
 
-def work_queue_base_words(visible_chunk_offset):
-    """Derivacao do slot do ring (2 frames) — espelha common.slang."""
-    return (visible_chunk_offset // MAXIMUM_VISIBLE_CHUNKS) * WORK_QUEUE_SLOT_WORDS
+def work_queue_base_words(visible_chunk_offset, visible_capacity=MAXIMUM_VISIBLE_CHUNKS):
+    """Derivacao do slot do ring (2 frames) — espelha common.slang (VS-08:
+    a capacidade vem do push constant visible_chunk_capacity)."""
+    slot_words = WORK_QUEUE_STATE_WORDS + visible_capacity * BRICKS_PER_CHUNK
+    return (visible_chunk_offset // visible_capacity) * slot_words
 
 
 def chunk_aabb(origin):
@@ -476,12 +495,14 @@ def brick_aabb(origin, brick_idx):
     return lo, tuple(lo[i] + float(BRICK_SIZE[i]) for i in range(3))
 
 
-def build_work_queue(chunks, visible_slots, frustum_planes=None):
+def build_work_queue(chunks, visible_slots, frustum_planes=None,
+                     visible_capacity=MAXIMUM_VISIBLE_CHUNKS):
     """Espelha o builder: 1 workgroup por chunk visivel; append atomico global
     (a ordem entre chunks e corrida — aqui serializamos na ordem da lista).
     Com frustum_planes (VS-06): early-out de chunk e culling por brick na
     mesma ordem do shader (vazio -> frustum -> oclusao).
     Retorna (items, total, overflow)."""
+    work_item_capacity = visible_capacity * BRICKS_PER_CHUNK
     items = []
     total = 0
     overflow = False
@@ -509,16 +530,16 @@ def build_work_queue(chunks, visible_slots, frustum_planes=None):
             subdivision = chunk["subdivisions"][brick_idx]
             for part in range(1 << subdivision):
                 total += 1
-                if len(items) < WORK_ITEM_CAPACITY:
+                if len(items) < work_item_capacity:
                     items.append(pack_work_item(visible_index, brick_idx, part, subdivision))
                 else:
                     overflow = True
     return items, total, overflow
 
 
-def finalize_work_queue(append_count):
+def finalize_work_queue(append_count, visible_capacity=MAXIMUM_VISIBLE_CHUNKS):
     """Espelha finalize_work_queue: x do draw indireto = min(count, capacidade)."""
-    return min(append_count, WORK_ITEM_CAPACITY), 1, 1
+    return min(append_count, visible_capacity * BRICKS_PER_CHUNK), 1, 1
 
 
 # --- mesh shader (build_brick_mesh, somente contagens) ---
@@ -621,9 +642,9 @@ def scenario_selection():
           all(pack_work_item(*unpack_work_item(e)) == e for e in items))
     check("subdivisao 0 para cubos esparsos", all(unpack_work_item(e)[3] == 0 for e in items))
 
-    # capacidade global cobre o pior caso dos templates atuais: 4096 chunks
-    # visiveis x 1024 bricks (cubos/plantas nunca subdividem)
-    check("capacidade global = visiveis x bricks", WORK_ITEM_CAPACITY == 4096 * 1024)
+    # capacidade derivada cobre o pior caso dos templates atuais: visiveis x
+    # 1024 bricks (cubos/plantas nunca subdividem)
+    check("capacidade global = visiveis x bricks", WORK_ITEM_CAPACITY == VISIBLE_CAPACITY_DEFAULT * 1024)
     # um chunk pesado isolado (1024 bricks x 4 partes) cabe com folga na fila
     check("chunk pesado isolado cabe na fila", 1024 * 4 <= WORK_ITEM_CAPACITY)
 
@@ -1057,6 +1078,123 @@ def scenario_frustum_horizon():
               selection_invariant)
 
 
+# --- VS-08 (REQ-SIM-05): capacidade parametrizada + regras de validação ---
+
+def sphere_count_reference():
+    """Contagens de referência (REQ-CFG-02): pontos inteiros com
+    x^2+y^2+z^2 <= r^2 — mesma definição de frontier_test.py. Nota: a tabela
+    original da spec (523/3053/4189/7238 para r=5/9/10/12) divergia da
+    fórmula; os valores abaixo são os corretos (VS-08, 2026-11-06)."""
+    return {2: 33, 3: 123, 5: 515, 8: 2109, 9: 3071, 10: 4169, 12: 7153}
+
+
+def validate_config_rules(vision, generation, unload, simulation,
+                          chunks_per_batch, batches_in_flight):
+    """Espelha as regras de coerência de REQ-CFG-03; retorna (ok, regra)."""
+    if not (1 <= vision <= 9):
+        return False, "vision 1..9"
+    if simulation < 1:
+        return False, "simulation >= 1"
+    if generation < vision:
+        return False, "generation >= vision"
+    if generation >= unload:
+        return False, "generation < unload"
+    if not (1 <= chunks_per_batch <= 64):
+        return False, "chunks_per_batch 1..64"
+    if not (1 <= batches_in_flight <= 8):
+        return False, "batches_in_flight 1..8"
+    if chunks_per_batch * batches_in_flight > 256:
+        return False, "scratch <= 256"
+    if sphere_count(generation) > 16384:
+        return False, "resident_slots <= 16384"
+    return True, ""
+
+
+def derive_config(vision, generation, unload, simulation,
+                  chunks_per_batch, batches_in_flight):
+    """Espelha config_derive_and_validate (REQ-CFG-02)."""
+    visible = sphere_count(vision)
+    scratch = chunks_per_batch * batches_in_flight
+    ring = 1
+    while ring < scratch:
+        ring *= 2
+    ring = max(64, ring)
+    pages = (sphere_count(simulation) * 3 + 1) // 2
+    return visible, scratch, ring, pages
+
+
+def scenario_config():
+    print("[cenario] VS-08: capacidade parametrizada da fila (REQ-SIM-05)")
+    # contagens de esfera de referência
+    for r, expected in sphere_count_reference().items():
+        check(f"esfera({r}) == {expected}", sphere_count(r) == expected)
+
+    # ring da fila e offsets de slot para mín/default/máx capacidade
+    for cap in (VISIBLE_CAPACITY_MIN, VISIBLE_CAPACITY_DEFAULT, VISIBLE_CAPACITY_MAX):
+        slot_words = WORK_QUEUE_STATE_WORDS + cap * BRICKS_PER_CHUNK
+        check(f"cap {cap}: base do frame 0 = 0", work_queue_base_words(0, cap) == 0)
+        check(f"cap {cap}: base do frame 1 = slot inteiro",
+              work_queue_base_words(cap, cap) == slot_words)
+        check(f"cap {cap}: base do frame 2 = 2 slots",
+              work_queue_base_words(2 * cap, cap) == 2 * slot_words)
+        check(f"cap {cap}: slot = estado + capacidade",
+              slot_words == WORK_QUEUE_STATE_WORDS + cap * BRICKS_PER_CHUNK)
+        check(f"cap {cap}: finalize sem overflow",
+              finalize_work_queue(123, cap) == (123, 1, 1))
+        check(f"cap {cap}: finalize clampa na capacidade",
+              finalize_work_queue(cap * 1024 + 999, cap) == (cap * 1024, 1, 1))
+
+    # overflow espelhando o builder para a capacidade mínima (33 visíveis)
+    registry = {3: BlockDef(3)}  # template pesado: 1024 bricks x 4 partes
+    chunks = {}
+    visible = []
+    for i in range(VISIBLE_CAPACITY_MIN):
+        chunks[i] = make_chunk((i * 32, 0, 0), lambda c: 3)
+        pack_subdivisions(chunks[i], registry)
+        visible.append(i)
+    # cena: 33 chunks de template pesado; oclusao remove os bricks interiores
+    # (2080 de 4096 por chunk) => 68640 grupos > capacidade minima (33792)
+    items, total, overflow = build_work_queue(chunks, visible,
+                                              visible_capacity=VISIBLE_CAPACITY_MIN)
+    check("cap mínima: overflow sinalizado (68640 grupos > 33x1024 itens)",
+          total == 33 * 2080 and len(items) == 33 * 1024 and overflow)
+    items_def, total_def, overflow_def = build_work_queue(
+        chunks, visible, visible_capacity=VISIBLE_CAPACITY_MAX)
+    check("cap máxima com mesma cena: sem overflow",
+          total_def == 33 * 2080 and len(items_def) == total_def and not overflow_def)
+
+    # derivações espelhando a spec (defaults e INI custom do cenário de sucesso)
+    check("defaults: visíveis 2109, scratch 48, ring 64, páginas 773",
+          derive_config(8, 9, 10, 5, 16, 3) == (2109, 48, 64, 773))
+    check("custom vision=5/sim=3: visíveis 515, scratch 16, ring 64, páginas 185",
+          derive_config(5, 6, 7, 3, 8, 2) == (515, 16, 64, 185))
+
+    # regras de validação (uma violação por regra)
+    base = dict(vision=8, generation=9, unload=10, simulation=5,
+                chunks_per_batch=16, batches_in_flight=3)
+    violations = [
+        ("vision 1..9", {"vision": 10}),
+        ("vision 1..9", {"vision": 0}),
+        ("simulation >= 1", {"simulation": 0}),
+        ("generation >= vision", {"vision": 6, "generation": 5}),
+        ("generation < unload", {"unload": 9}),
+        ("chunks_per_batch 1..64", {"chunks_per_batch": 65}),
+        ("batches_in_flight 1..8", {"batches_in_flight": 9}),
+        ("scratch <= 256", {"chunks_per_batch": 64, "batches_in_flight": 8}),
+        ("resident_slots <= 16384", {"generation": 26, "unload": 27}),  # esfera(26) = 73525
+    ]
+    for rule, patch in violations:
+        case = dict(base)
+        case.update(patch)
+        ok, failed_rule = validate_config_rules(**case)
+        check(f"regra '{rule}': rejeita", not ok and failed_rule == rule)
+    check("config base (defaults): aceita", validate_config_rules(**base)[0])
+    ok_custom, _ = validate_config_rules(vision=5, generation=6, unload=7,
+                                         simulation=3, chunks_per_batch=8,
+                                         batches_in_flight=2)
+    check("INI custom do cenário de sucesso: aceita", ok_custom)
+
+
 def main():
     scenario_budget()
     scenario_selection()
@@ -1068,6 +1206,7 @@ def main():
     scenario_frustum_edge_cases()
     scenario_frustum_granularity()
     scenario_frustum_horizon()
+    scenario_config()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
 

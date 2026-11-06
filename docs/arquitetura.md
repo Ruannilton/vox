@@ -37,13 +37,13 @@ ring host-visible → ChunkPages             flush do journal a 100 ms, no comma
 
 ## 2. Etapa 1: Chunk streaming (histerese)
 
-O jogador movimenta a câmera e o mundo precisa carregar. Para evitar que blocos apareçam e desapareçam na borda da visão (efeito sanfona), aplicamos histerese com três zonas de raio: **Visão (8)** — o que é desenhado; **Geração (12)** — o que existe em memória; **Descarga (16)** — o que é devolvido ao pool.
+O jogador movimenta a câmera e o mundo precisa carregar. Para evitar que blocos apareçam e desapareçam na borda da visão (efeito sanfona), aplicamos histerese com três zonas de raio: **Visão (8)** — o que é desenhado; **Geração (9)** — o que existe em memória; **Descarga (10)** — o que é devolvido ao pool. Desde a VS-08 esses raios (e os lotes do worker) vêm de `vox.ini` com provisionamento runtime — ver o Manual Técnico §10.
 
 **O pulo do gato (fila de prioridade):** todos os chunks na zona de geração entram numa fila. A worker thread sempre puxa os lotes mais próximos da câmera — o chão sob os pés do jogador é gerado imediatamente; o horizonte, aos poucos. Cada lote carrega até 16 chunks ordenados por distância.
 
 **Novo na v3.0 — duas bolhas independentes:** à bolha de render acima soma-se a bolha de simulação do mirror CPU (Etapa 7), centrada nos agentes ativos e com raio próprio. Um chunk pode existir na VRAM sem existir na RAM (horizonte distante) e vice-versa (uma sala atrás da câmera onde um NPC está).
 
-**Limitação conhecida (B5):** o raio de geração 12 descreve ~7.238 chunks, acima dos 4.096 slots físicos. A correção recomendada é reduzir o raio para ~9 ou ampliar o pool para ~8 mil slots.
+**Bolhas e slots (B5 absorvida pela VS-08):** os slots de chunk deixaram de ser um teto fixo de 4.096 e passam a ser derivados do raio de geração (`resident_slots = |esfera(generation)|`, 3.071 com os defaults de `vox.ini`) — a bolha de geração cabe no pool por construção.
 
 ## 3. Etapa 2: A ponte (Vulkan 1.4 Sync)
 
@@ -147,10 +147,10 @@ Toda interação usuário↔aplicação é intermediada por um **bus de eventos*
                 ▼                                    ▼
    View de RENDER — VRAM (GPU)          View de GAMEPLAY — RAM (CPU)
    slot packed: ocupação+planos+        ChunkPage: grid denso u16 + bitmask solid
-   paleta+coarse · 4096 slots fixos ·   ~500 chunks ≈ 34 MiB · bolha de simulação ·
-   bolha de render · formato otimizado  formato otimizado p/ consulta voxel(x,y,z)
-   p/ culling e mesh                             ▲
-                ▲                                │ readback: export u16 → ring host-visible
+   paleta+coarse · slots derivados de   ~500 chunks ≈ 34 MiB · bolha de simulação ·
+   |esfera(generation)| (3.071 nos     formato otimizado p/ consulta voxel(x,y,z)
+   defaults) · bolha de render ·        ▲
+   formato otimizado p/ culling e mesh          │ readback: export u16 → ring host-visible
                 └──────── Compute generate (GPU) ┘ → memcpy + replay do journal pendente
                     produz o grid denso + o formato packed
    mesma sequência de edições nos dois lados → convergência por construção (edit_seq paritário)
@@ -176,7 +176,7 @@ Estados: PENDING_READBACK → (fence + memcpy + replay pending) → MATERIALIZED
 
 > **Nota de implementação (2026-11-03):** a versão final no código simplificou esse fluxo — o generate escreve **direto num ring host-visible de 64 slots × 64 KiB (4 MiB), binding 16** (a escrita do shader É o readback), sem `export_pool` device-local nem `vkCmdCopyBuffer`. Requer `storageBuffer16BitAccess`.
 
-**Bolhas independentes:** a bolha de render (4.096 slots de VRAM, raio ~12) e a bolha de simulação (~500 chunks, ~34 MiB de RAM) têm centros e raios próprios e nunca disputam recursos. A consulta é **tri-state**: `voxel_get` retorna o dado, ou «desconhecido» (página ausente ou em readback) — a política sobre o desconhecido (esperar, replanar, assumir ar ou sólido) é de cada consumidor, não do mirror, que apenas expõe o gancho `mirror_request` para puxar páginas sob demanda.
+**Bolhas independentes:** a bolha de render (slots de VRAM derivados de `|esfera(generation)|`, raio de visão configurável) e a bolha de simulação (~500 chunks nos defaults, ~34 MiB de RAM) têm centros e raios próprios e nunca disputam recursos. A consulta é **tri-state**: `voxel_get` retorna o dado, ou «desconhecido» (página ausente ou em readback) — a política sobre o desconhecido (esperar, replanar, assumir ar ou sólido) é de cada consumidor, não do mirror, que apenas expõe o gancho `mirror_request` para puxar páginas sob demanda.
 
 **Reconciliação:** a única divergência possível é a rejeição de edição pela GPU (chunk em overflow de paleta, somente-leitura). O mirror aplica otimisticamente; quando o ring de feedback do E1 reporta a rejeição (2 frames depois), a página é revertida por replay do journal sem aquela edição. Caminho raro, código simples.
 
@@ -197,7 +197,7 @@ Estados: PENDING_READBACK → (fence + memcpy + replay pending) → MATERIALIZED
 | C2 | recurso | Mirror CPU-side: ChunkPage denso u16 y-major + ring host-visible | Implementado |
 | Eventos | recurso | Bus de eventos de input/comando com gravação JSONL e replay 1× (VS-07) | Implementado |
 | E1 | correção | Flush do journal não era mais chamado (removido com os testes em 6897431) e `last_flush`/`force_next_flush` eram consumidos pelo ring write todo frame, matando o gating de 100 ms; restaurado via `edit_update` no loop | Corrigido |
-| B5 | backlog | Raio de geração 12 > 4096 slots | Pendente |
+| B5 | backlog | Raio de geração > slots — **absorvida pela VS-08** (slots derivados de `|esfera(generation)|`) | Absorvida |
 | B6 | backlog | Plantas sem alpha-test; CULL_MODE_NONE | Pendente |
 | B7 | backlog | PBR não amostrado (só Lambert + emissão) | Pendente |
 | B8 | backlog | Overflow int32 em calculate_squared_distance | Pendente |

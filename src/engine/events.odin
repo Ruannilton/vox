@@ -137,6 +137,14 @@ events_init :: proc() {
 			}
 		case "--exit-after-replay":
 			events.exit_after_replay = true
+		case "--config":
+			if i + 1 < len(args) {
+				config_path = args[i + 1]
+				i += 1
+			} else {
+				log.error("Flag --config exige um caminho")
+				os.exit(1)
+			}
 		}
 	}
 	if record_explicit {

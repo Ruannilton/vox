@@ -45,15 +45,14 @@ static const uint CULL_FACE_NEVER = 7; // triângulo nunca culpado (interior/dia
 
 
 static const uint NEIGHBOR_SLOT_INVALID       = 0xFFFFFFFFu;
-static const uint MAXIMUM_VISIBLE_CHUNKS      = 4096;
 
-static const uint WORK_ITEM_CAPACITY          = MAXIMUM_VISIBLE_CHUNKS * BRICKS_PER_CHUNK;
-
+// VS-08 (REQ-CFG-06): as capacidades da fila de trabalho deixam de ser
+// constantes de compilação — vêm do push constant visible_chunk_capacity
+// (derivado de |esfera(vision)| no host).
 static const uint WORK_QUEUE_STATE_WORDS       = 8;
 static const uint WORK_QUEUE_APPEND_COUNT_WORD = 0;
 static const uint WORK_QUEUE_OVERFLOW_WORD     = 1;
 static const uint WORK_QUEUE_INDIRECT_X_WORD   = 2;
-static const uint WORK_QUEUE_SLOT_WORDS        = WORK_QUEUE_STATE_WORDS + WORK_ITEM_CAPACITY;
 
 
 static const uint MAX_EDITS_PER_FLUSH            = 4096; // edições por flush (16 KiB no ring)
@@ -130,6 +129,7 @@ struct PushConstants {
     uint   visible_chunk_offset;
     uint   batch_job_offset;
     uint   edit_job_offset;
+    uint   visible_chunk_capacity; // VS-08 (REQ-CFG-06): 88 -> 92 B
 };
 
 
@@ -231,7 +231,9 @@ struct MeshVertex {
 
 
 uint work_queue_base_words() {
-    return (push_constants.visible_chunk_offset / MAXIMUM_VISIBLE_CHUNKS) * WORK_QUEUE_SLOT_WORDS;
+    // VS-08: slot do ring = estado + capacidade de visíveis do push constant.
+    return (push_constants.visible_chunk_offset / push_constants.visible_chunk_capacity) *
+           (WORK_QUEUE_STATE_WORDS + push_constants.visible_chunk_capacity * BRICKS_PER_CHUNK);
 }
 
 // ----------------------------------------------------------------------------

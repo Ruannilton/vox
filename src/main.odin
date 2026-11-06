@@ -22,9 +22,10 @@ main :: proc() {
 	file_log := log.create_file_logger(file_logger)
 	context.logger = log.create_multi_logger(log.create_console_logger(), file_log)
 
-	// parsing de flags + validação fatal do replay antes de criar a janela
+	// parsing de flags + validação fatal do replay/config antes de criar a janela
 	engine.events_init()
 	defer engine.events_destroy()
+	engine.config_load()
 
 	engine.CreateEngine()
 	defer engine.DestroyEngine()

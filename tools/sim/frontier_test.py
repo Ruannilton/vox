@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Testes de fronteira do streaming (VS-01, AC-04 / REQ-STREAM-01/02/05/06)."""
+"""Testes de fronteira do streaming (VS-01, AC-04 / REQ-STREAM-01/02/05/06;
+raios atualizados pela VS-08 — ADR-B5 absorvida: slots derivados de
+|esfera(generation)|, sem teto fixo de 4096)."""
 
 import sys
 
+# VS-08 defaults (vox.ini ausente): visão 8, geração 9, descarga 10.
 RADIUS_VISION = 8
-RADIUS_GENERATION = 8
-RADIUS_UNLOAD = 16
-MAXIMUM_RESIDENT_CHUNKS = 4096
-CHUNK_SIZE = 32
+RADIUS_GENERATION = 9
+RADIUS_UNLOAD = 10
 
 failures = []
 
@@ -16,6 +17,22 @@ def check(name, cond):
     if not cond:
         failures.append(name)
         print(f"  FAIL: {name}")
+
+
+def sphere_count(radius):
+    """Pontos inteiros com x^2+y^2+z^2 <= r^2 (mesma definição do config.odin)."""
+    count = 0
+    for x in range(-radius, radius + 1):
+        for y in range(-radius, radius + 1):
+            for z in range(-radius, radius + 1):
+                if x * x + y * y + z * z <= radius * radius:
+                    count += 1
+    return count
+
+
+# VS-08 (REQ-CFG-02): slots residentes são derivados — nunca um teto fixo.
+RESIDENT_SLOTS = sphere_count(RADIUS_GENERATION)
+CHUNK_SIZE = 32
 
 
 def sq_dist_i64(a, b):
@@ -33,15 +50,14 @@ def floor_div(v, d):
 
 
 def main():
-    # 1. Esfera discreta r=8 cabe no pool (ADR-B5)
-    count = 0
-    for x in range(-RADIUS_GENERATION, RADIUS_GENERATION + 1):
-        for y in range(-RADIUS_GENERATION, RADIUS_GENERATION + 1):
-            for z in range(-RADIUS_GENERATION, RADIUS_GENERATION + 1):
-                if x * x + y * y + z * z <= RADIUS_GENERATION * RADIUS_GENERATION:
-                    count += 1
-    print(f"[fronteira] esfera r=8 contem {count} chunks")
-    check(f"esfera r=8 ({count}) <= {MAXIMUM_RESIDENT_CHUNKS} slots", count <= MAXIMUM_RESIDENT_CHUNKS)
+    # 1. Esfera de geração cabe nos slots derivados (ADR-B5 absorvida pela
+    #    VS-08: resident_slots = |esfera(generation)| por construção)
+    count = sphere_count(RADIUS_GENERATION)
+    print(f"[fronteira] esfera r={RADIUS_GENERATION} contem {count} chunks")
+    check(f"esfera r={RADIUS_GENERATION} ({count}) == slots derivados ({RESIDENT_SLOTS})",
+          count == RESIDENT_SLOTS)
+    check(f"esfera r={RADIUS_GENERATION} ({count}) <= 16384 (limite REQ-CFG-03)",
+          count <= 16384)
 
     # 2. Distancias extremas sem overflow (ADR-B8)
     far = (2 ** 20, -(2 ** 20), 2 ** 19)
@@ -58,11 +74,13 @@ def main():
     check("floor_div(32, 32) == 1", floor_div(32, CHUNK_SIZE) == 1)
     print("[fronteira] floor_div com negativos ok")
 
-    # 4. Raios efetivos (guarda contra regressao da ADR-B5)
+    # 4. Raios efetivos (defaults da VS-08; guarda contra regressão)
     check("visao == 8", RADIUS_VISION == 8)
-    check("geracao == 8", RADIUS_GENERATION == 8)
-    check("descarga == 16", RADIUS_UNLOAD == 16)
-    print("[fronteira] raios 8/8/16 confirmados")
+    check("geracao == 9", RADIUS_GENERATION == 9)
+    check("descarga == 10", RADIUS_UNLOAD == 10)
+    check("histerese estrita: visao <= geracao < descarga",
+          RADIUS_VISION <= RADIUS_GENERATION < RADIUS_UNLOAD)
+    print("[fronteira] raios 8/9/10 confirmados (histerese estrita)")
 
     print(f"\n{'FALHOU' if failures else 'PASSOU'}: {len(failures)} falhas")
     sys.exit(1 if failures else 0)
