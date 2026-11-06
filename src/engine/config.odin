@@ -226,9 +226,9 @@ config_derive_and_validate :: proc(cfg: ^Config) {
 	   scratch == 0 || scratch > u64(max(u32)) {
 		config_fatal("capacidade derivada excede u32 (overflow); reduza os parâmetros de streaming/compute")
 	}
-	if generation > 16384 {
+	if generation > 65535 {
 		config_fatal(
-			"streaming.generation = {} produz {} slots residentes, acima do limite de 16384",
+			"streaming.generation = {} produz {} slots residentes, acima do limite de 65535",
 			cfg.radius_generation,
 			generation,
 		)
@@ -310,7 +310,7 @@ config_validate_machine :: proc() {
 		suggestion := config.radius_generation
 		for suggestion > config.radius_vision {
 			slots := sphere_count(suggestion - 1)
-			if slots > 16384 do break
+			if slots > 65535 do break
 			saved := (sphere_count(config.radius_generation) - slots) * (
 				u64(OCCUPANCY_WORDS_PER_CHUNK) * size_of(u32) +
 				u64(MATERIAL_WORDS_PER_CHUNK) * size_of(u32) +
