@@ -22,10 +22,11 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 | ADR-T1 | [[ADR-T1-telemetria-vulkan-vma|Telemetria GPU via API Vulkan + VMA]] | `aceita` | VS-05 |
 | ADR-T2 | [[ADR-T2-modelos-por-tipo-de-tarefa|Modelo e thinking por tipo de tarefa]] | `aceita` | — |
 | ADR-B11 | [[ADR-B11-culling-frustum|Culling de frustum por brick no builder]] | `aceita` | VS-06 |
+| ADR-I1 | [[ADR-I1-bus-eventos-input-replay|Bus de eventos de input com gravação e replay]] | `aceita` | VS-07 |
 
 ## Resumo
 
-- 16 decisões registradas e aceitas.
+- 17 decisões registradas e aceitas.
 - Nenhuma decisão pendente.
 - Nenhuma decisão representa, por si só, implementação concluída ou validação verificada.
 

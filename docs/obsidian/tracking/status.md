@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 7 |
-| Specs aprovadas | 7 |
+| Specs registradas | 8 |
+| Specs aprovadas | 8 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 7 |
+| Implementações concluídas | 8 |
 | Validações verificadas | 6 |
 
-Sete especificações registradas; VS-00 a VS-04 e VS-06 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-06 (culling de frustum) verificada após correção pós-validação da extração de planos (vp[i] é linha i no Slang — ver histórico da spec).
+Oito especificações registradas; VS-00 a VS-04 e VS-06 estão integralmente concluídas; VS-05 tem implementação concluída e validação em andamento (AC-01 aguarda captura Nsight/RenderDoc do mantenedor); VS-07 (eventos de input e replay) implementada e validada nos ACs 01/03/04, com AC-02 em validação aguardando smoke interativo manual do mantenedor.
 
 ## Tracking das especificações
 
@@ -28,6 +28,7 @@ Sete especificações registradas; VS-00 a VS-04 e VS-06 estão integralmente co
 | VS-04 | [[VS-04-mirror-c2|Mirror C2]] | `aprovada` | `concluida` | `verificada` | VS-03 | — |
 | VS-05 | [[VS-05-telemetria-profiling|Telemetria e profiling GPU]] | `aprovada` | `concluida` | `em-validacao` | VS-04 | — |
 | VS-06 | [[VS-06-culling-frustum|Culling de frustum]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
+| VS-07 | [[VS-07-eventos-input-replay|Eventos de input, comandos e replay]] | `aprovada` | `concluida` | `em-validacao` | VS-03 | Smoke interativo manual do AC-02 (paridade record→replay e revisão de código já verificados) |
 
 ## Decisões
 
@@ -50,6 +51,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-B10 | [[ADR-B10-fila-trabalho-global|Fila de trabalho global no lugar do payload]] | `aceita` | VS-02 |
 | ADR-T1 | [[ADR-T1-telemetria-vulkan-vma|Telemetria GPU via API Vulkan + VMA]] | `aceita` | VS-05 |
 | ADR-B11 | [[ADR-B11-culling-frustum|Culling de frustum por brick no builder]] | `aceita` | VS-06 |
+| ADR-I1 | [[ADR-I1-bus-eventos-input-replay|Bus de eventos de input com gravação e replay]] | `aceita` | VS-07 |
 
 ## Vocabulário de status
 

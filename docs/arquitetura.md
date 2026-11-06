@@ -125,7 +125,16 @@ Quebrar um bloco, construir uma parede, abrir um túnel: toda alteração do mun
 - **Tetos de segurança:** 4.096 edições por flush, 256 chunks por flush, 1.024 edições por chunk por flush — o excedente espera o próximo ciclo. Chunks em geração não participam do lote (preserva o B1); suas edições ficam pendentes e reintegram quando o chunk conclui.
 - **Feedback:** um ring de resultados (lido 2 frames depois) reporta edições aplicadas, no-ops e rejeições — chunks em overflow de paleta são somente-leitura e rejeitam com código próprio. É esse canal que o mirror (Etapa 7) usa para reconciliar.
 
-## 8. Etapa 7: Mirror CPU-side (C2) — novo na v3.0
+## 8. Etapa 8: Input intermediado por eventos, gravação e replay (VS-07) — novo na v3.0
+
+Toda interação usuário↔aplicação é intermediada por um **bus de eventos** (`src/engine/events.odin`): os callbacks GLFW (teclado, mouse, botões, fechamento da janela) são produtores puros — sem contexto de runtime, sem alocação, sem efeitos — que apenas empurram eventos tipados numa fila anel de 4.096 entradas. Uma vez por frame, após `glfw.PollEvents()`, o loop principal **drena** a fila: grava cada evento em **JSONL** (`bin/events/events_<timestamp>.jsonl`, flush por linha — crash não corrompe o arquivo) e despacha aos handlers registrados por tipo.
+
+- **Tempo de emissão relativo:** todo evento carrega `t = glfw.GetTime() − t0` (t0 fixado no fim da inicialização); eventos de um mesmo dreno compartilham o `t` do dreno.
+- **Polling eliminado:** o conjunto de teclas pressionadas é estado derivado de `KeyPress`/`KeyRelease`; o movimento WASD (SHIFT ×8, diagonal normalizada, `speed × deltaTime`) consome esse estado. Rotação de câmera sai do handler de `MouseMove` (delta, sensibilidade 0.07).
+- **Comandos no mesmo pipeline:** `TeleportTo`, `LookAt`, `AddBlock`, `RemoveBlock` (journal E1), `ToggleTelemetry`, `TelemetrySnapshot` e `Wait` são eventos como quaisquer outros — gravam e replayam igual.
+- **Replay best-effort 1×:** `--replay <arquivo.jsonl>` carrega e valida o arquivo antes de criar a janela (ausente/ilegível ou JSON inválido na linha 1 = fatal, exit ≠ 0); um cursor ordenado por `t` despacha os devidos a cada frame. `KeyPress{duration}` agenda o `KeyRelease` em `t + duration`; `Wait{seconds}` segura o cursor. Linha inválida ou tipo desconhecido é pulada com warning e contagem no sumário — nunca fatal. `--exit-after-replay` fecha a aplicação ao fim do stream; `--record`/`--no-record` controlam a gravação (default ligada, inclusive durante replay, sempre com o tempo da sessão corrente). O validador `tools/sim/events_check.py` verifica qualquer arquivo (schema por tipo, `t` monotônico).
+
+## 9. Etapa 7: Mirror CPU-side (C2) — novo na v3.0
 
 **Motivação:** pathfinding de NPCs, física, colisão de câmera, ferramentas de debug e serialização de save precisam responder «que bloco há em (x,y,z)?» na CPU — sem stall de readback e sem entender o formato packed da GPU (bitmask + paleta + planos, ótimo para culling, péssimo para consulta pontual). O C2 mantém uma segunda materialização do mundo em RAM, otimizada para leitura, atualizada pelo mesmo journal que alimenta a GPU.
 
@@ -173,7 +182,7 @@ Estados: PENDING_READBACK → (fence + memcpy + replay pending) → MATERIALIZED
 
 **Decisões descartadas:** ler o device-local direto via Resizable BAR (latência de PCIe em queries de gameplay — inviável) e regenerar o mundo na CPU a partir da semente (exigiria determinismo bit-exato de ponto flutuante entre CPU e GPU — não existe).
 
-## 9. Registro de correções e recursos desta versão
+## 10. Registro de correções e recursos desta versão
 
 | ID | Tipo | Descrição | Status |
 |---|---|---|---|
@@ -186,6 +195,8 @@ Estados: PENDING_READBACK → (fence + memcpy + replay pending) → MATERIALIZED
 | Culling de frustum | recurso | Planos Gribb-Hartmann na GPU no builder: early-out de chunk + por brick (VS-06/ADR-B11) | Implementado |
 | E1 | recurso | Edição de voxels bufferizada com flush no command buffer do frame | Implementado |
 | C2 | recurso | Mirror CPU-side: ChunkPage denso u16 y-major + ring host-visible | Implementado |
+| Eventos | recurso | Bus de eventos de input/comando com gravação JSONL e replay 1× (VS-07) | Implementado |
+| E1 | correção | Flush do journal não era mais chamado (removido com os testes em 6897431) e `last_flush`/`force_next_flush` eram consumidos pelo ring write todo frame, matando o gating de 100 ms; restaurado via `edit_update` no loop | Corrigido |
 | B5 | backlog | Raio de geração 12 > 4096 slots | Pendente |
 | B6 | backlog | Plantas sem alpha-test; CULL_MODE_NONE | Pendente |
 | B7 | backlog | PBR não amostrado (só Lambert + emissão) | Pendente |

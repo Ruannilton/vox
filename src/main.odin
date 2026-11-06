@@ -11,6 +11,7 @@ import vk "vendor:vulkan"
 last_x, last_y: f64
 first_cursor_event: bool
 camera: Camera
+voxel_engine: ^engine.VoxelEngine
 main :: proc() {
 	file_logger, err := os.create("log.txt")
 	defer os.close(file_logger)
@@ -21,12 +22,16 @@ main :: proc() {
 	file_log := log.create_file_logger(file_logger)
 	context.logger = log.create_multi_logger(log.create_console_logger(), file_log)
 
+	// parsing de flags + validação fatal do replay antes de criar a janela
+	engine.events_init()
+	defer engine.events_destroy()
+
 	engine.CreateEngine()
 	defer engine.DestroyEngine()
 
-	voxel_engine := engine.voxel_engine_init()
+	voxel_engine = engine.voxel_engine_init()
 	defer engine.voxel_engine_destroy(voxel_engine)
-	
+
 	camera = camera_create(glm.vec3{32, 75, 60}, glm.vec3{-50, -90, 0}, 45.0)
 	projection := glm.mat4Perspective(
 		glm.radians(camera.fov),
@@ -50,22 +55,16 @@ main :: proc() {
 	// delta (senão a pose padrão muda sozinha na inicialização)
 	first_cursor_event = true
 
+	// callbacks são produtores puros: sem runtime context, sem alocação,
+	// sem efeitos — o dreno de eventos (events_drain) grava e despacha
 	glfw.SetKeyCallback(
 		engine.app.glfwWindow,
 		proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
-			context = engine.app.runtimeContext
-
-			if key == glfw.KEY_ESCAPE {
-				glfw.SetWindowShouldClose(engine.app.glfwWindow, true)
-				return
-			}
-			if key == glfw.KEY_F8 && action == glfw.PRESS {
-				engine.telemetry_toggle()
-				return
-			}
-			if key == glfw.KEY_F9 && action == glfw.PRESS {
-				engine.telemetry_snapshot()
-				return
+			switch action {
+			case glfw.PRESS:
+				engine.events_push_now(.KeyPress, engine.KeyPayload{key = key, scancode = scancode, duration = -1})
+			case glfw.RELEASE:
+				engine.events_push_now(.KeyRelease, engine.KeyPayload{key = key, scancode = scancode, duration = -1})
 			}
 		},
 	)
@@ -73,8 +72,6 @@ main :: proc() {
 	glfw.SetCursorPosCallback(
 		engine.app.glfwWindow,
 		proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
-			context = engine.app.runtimeContext
-
 			if first_cursor_event {
 				first_cursor_event = false
 				last_x, last_y = xpos, ypos
@@ -83,29 +80,79 @@ main :: proc() {
 
 			xoffset := f32(xpos - last_x)
 			yoffset := f32(last_y - ypos) // Invertido, pois o eixo Y cresce para baixo
-
 			last_x = xpos
 			last_y = ypos
-
-			sensitivity: f32 = 0.07
-			// A struct Camera define rotation como x: pitch, y: yaw, z: roll
-			delta_rotation := glm.vec3{yoffset * sensitivity, xoffset * sensitivity, 0}
-
-			camera_rotate(&camera, delta_rotation)
+			engine.events_push_now(.MouseMove, engine.MouseMovePayload{dx = xoffset, dy = yoffset})
 		},
 	)
 
+	glfw.SetMouseButtonCallback(
+		engine.app.glfwWindow,
+		proc "c" (window: glfw.WindowHandle, button, action, mods: i32) {
+			switch action {
+			case glfw.PRESS:
+				engine.events_push_now(.MouseButton, engine.MouseButtonPayload{button = button, press = true})
+			case glfw.RELEASE:
+				engine.events_push_now(.MouseButton, engine.MouseButtonPayload{button = button, press = false})
+			}
+		},
+	)
+
+	glfw.SetWindowCloseCallback(
+		engine.app.glfwWindow,
+		proc "c" (window: glfw.WindowHandle) {
+			engine.events_push_now(.CloseRequested, struct {}{})
+		},
+	)
+
+	engine.events_register({.KeyPress, .KeyRelease}, key_handler)
+	engine.events_register({.MouseMove}, mouse_handler)
+	engine.events_register({.CloseRequested}, close_handler)
+	engine.events_register(
+		{.TeleportTo, .LookAt, .AddBlock, .RemoveBlock, .ToggleTelemetry, .TelemetrySnapshot},
+		proc(e: engine.Event) {
+			#partial switch p in e.payload {
+			case engine.Vec3fPayload:
+				if e.type == .TeleportTo {
+					camera.position = p.v
+					camera.target = camera.position + camera.direction
+				} else {
+					camera_look_at(&camera, p.v)
+				}
+			case engine.Vec3iPayload:
+				block_id := e.type == .AddBlock ? p.block_id : u32(0)
+				engine.ve_request_voxel_edit(voxel_engine, p.v, block_id)
+			case struct {}:
+				if e.type == .ToggleTelemetry {
+					engine.telemetry_toggle()
+				} else {
+					engine.telemetry_snapshot()
+				}
+			}
+		},
+	)
+
+	// t0 é fixado no fim da inicialização, antes do primeiro PollEvents
+	engine.events_set_t0()
 
 	log.info("Starting main loop")
 	for !glfw.WindowShouldClose(engine.app.glfwWindow) {
 		free_all(context.temp_allocator)
 		glfw.PollEvents()
 
+		engine.events_replay_feed(engine.events_time_now())
+		engine.events_drain()
+		if engine.events_should_exit_after_replay() {
+			glfw.SetWindowShouldClose(engine.app.glfwWindow, true)
+		}
+
 		engine.Update()
 		engine.telemetry_service()
 		update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
 
 		engine.voxel_engine_update(voxel_engine, camera.position)
+		// VS-03 (E1): staging do journal de edição quando o intervalo vence
+		engine.edit_update(voxel_engine)
 
 
 		signal_value := engine.WaitTimelineSemaphore()
@@ -283,20 +330,25 @@ main :: proc() {
 	}
 
 	vk_check(vk.DeviceWaitIdle(engine.app.vkDevice))
+	// estado final observável para validação de replay (pose e efeitos E1)
+	log.infof(
+		"FINAL pose: position=[{}, {}, {}] target=[{}, {}, {}]",
+		camera.position.x, camera.position.y, camera.position.z,
+		camera.target.x, camera.target.y, camera.target.z,
+	)
+	engine.edit_log_stats(voxel_engine, "FINAL edits:")
 	log.info("Exiting application")
 }
 
 update_camera_movement :: proc(dt: f32) {
-	window := engine.app.glfwWindow
-
 	speed: f32 = 10.0 // unidades por segundo
-	if glfw.GetKey(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS do speed *= 8
+	if engine.events_is_pressed(glfw.KEY_LEFT_SHIFT) do speed *= 8
 
 	forward, right: f32
-	if glfw.GetKey(window, glfw.KEY_W) == glfw.PRESS do forward += 1
-	if glfw.GetKey(window, glfw.KEY_S) == glfw.PRESS do forward -= 1
-	if glfw.GetKey(window, glfw.KEY_D) == glfw.PRESS do right += 1
-	if glfw.GetKey(window, glfw.KEY_A) == glfw.PRESS do right -= 1
+	if engine.events_is_pressed(glfw.KEY_W) do forward += 1
+	if engine.events_is_pressed(glfw.KEY_S) do forward -= 1
+	if engine.events_is_pressed(glfw.KEY_D) do right += 1
+	if engine.events_is_pressed(glfw.KEY_A) do right -= 1
 
 	if forward == 0 && right == 0 do return
 
@@ -307,4 +359,34 @@ update_camera_movement :: proc(dt: f32) {
 	}
 
 	camera_move(&camera, forward * speed * dt, right * speed * dt)
+}
+
+key_handler :: proc(e: engine.Event) {
+	p, _ := e.payload.(engine.KeyPayload)
+	#partial switch e.type {
+	case .KeyPress:
+		// teclas de ação são instantâneas; ESC vira CloseRequested para
+		// registrar o fechamento no stream de eventos
+		switch p.key {
+		case glfw.KEY_ESCAPE:
+			engine.events_emit(.CloseRequested, struct {}{})
+		case glfw.KEY_F8:
+			engine.telemetry_toggle()
+		case glfw.KEY_F9:
+			engine.telemetry_snapshot()
+		}
+	case .KeyRelease:
+	}
+}
+
+mouse_handler :: proc(e: engine.Event) {
+	p, _ := e.payload.(engine.MouseMovePayload)
+	sensitivity: f32 = 0.07
+	// A struct Camera define rotation como x: pitch, y: yaw, z: roll
+	delta_rotation := glm.vec3{p.dy * sensitivity, p.dx * sensitivity, 0}
+	camera_rotate(&camera, delta_rotation)
+}
+
+close_handler :: proc(e: engine.Event) {
+	glfw.SetWindowShouldClose(engine.app.glfwWindow, true)
 }

@@ -315,3 +315,15 @@ O export (Seção 3.3) é condicionado à bolha de simulação — chunks fora d
 | VisibleChunk | 48 B (com neighbor_slots[6]) |
 
 **Pendentes (backlog):** B5 (raio de geração > slots), B6 (CULL_MODE_NONE + alpha test), B7 (amostragem PBR real), B8 (distância em i64); fila de prioridade em heap, culling de frustum por brick, Hi-Z/oclusão, LOD, transparência, fusão generate+pack (scratch de 131 KB ida e volta), planos alocados adaptativamente por plane_count, camera-relative rendering, fallback clássico para GPUs sem VK_EXT_mesh_shader, caminho de leitura para SpecialVoxelRecord, persistência do journal em disco (mundo sobreviver ao unload) e camadas derivadas do mirror (navegação, física) quando houver necessidade.
+
+## 10. Bus de eventos de input, gravação e replay (VS-07, novo na v3.0)
+
+Todo input (teclado/mouse/fechamento) e todo comando (`TeleportTo`, `LookAt`, `AddBlock`, `RemoveBlock`, `Wait`, `ToggleTelemetry`, `TelemetrySnapshot`) é um evento tipado no módulo `src/engine/events.odin`. Callbacks GLFW são produtores puros (`proc "c"`, sem contexto/alocação) que empurram numa fila anel de 4.096; o loop drena uma vez por frame (após `PollEvents`, antes de `Update`): grava em JSONL (`bin/events/`, flush por linha) e despacha aos handlers por tipo. O conjunto de teclas pressionadas é derivado de `KeyPress`/`KeyRelease` (sem `glfw.GetKey`); `KeyPress{duration}` agenda o release em `t + duration`.
+
+| Item | Valor |
+|---|---|
+| Fila | 4.096 eventos (anel); overflow descarta com contador + warning único |
+| Timestamp | `t = glfw.GetTime() − t0` (t0 no fim da init); dreno compartilha o `t` |
+| Replay | `--replay <jsonl>` (fatal pré-janela se inválido), cursor ordenado por `t`, `Wait` hold-until, skips contados, `--exit-after-replay` |
+| Flags | `--record <caminho>` / `--no-record` (default grava em `bin/events/`) |
+| Validação | `tools/sim/events_check.py` — schema por tipo, `t` monotônico, exit 0/1 |

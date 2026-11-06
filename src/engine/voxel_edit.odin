@@ -174,6 +174,11 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 			len(ve.edit.staged_edits),
 		)
 	}
+
+	// O flush do journal (staging) é quem consome o intervalo/force;
+	// edit_ring_write só copia o staging para o ring e não deve tocar aqui.
+	ve.edit.last_flush = time.tick_now()
+	ve.edit.force_next_flush = false
 }
 
 
@@ -287,8 +292,6 @@ edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	}
 
 	ve.edit.ring_counts[frame_idx] = EditRingCounts{job_count, edit_count}
-	ve.edit.last_flush = time.tick_now()
-	ve.edit.force_next_flush = false
 	// O staging vale por UMA cópia: sem limpar, frames seguintes re-copiam e
 	// re-despacham o mesmo flush (vistos como no-ops redundantes no feedback).
 	clear(&ve.edit.staged_jobs)
@@ -296,6 +299,10 @@ edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	return job_count
 }
 
+
+edit_update :: proc(ve: ^VoxelEngine) {
+	if edit_flush_due(ve) do flush_voxel_edits(ve)
+}
 
 edit_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
 	log.infof(
