@@ -1,20 +1,6 @@
-// ============================================================================
-// render.slang — VS-02: builder da fila de trabalho + finalize (compute na
-// fila gráfica) + mesh (mesh-only, sem payload) + fragment.
-// Constantes, layouts e bindings: common.slang (fonte única de verdade).
-// Simulação da renderização: tools/sim/render_sim.py (210 checks).
-// ============================================================================
 import common;
 
-// ----------------------------------------------------------------------------
-// VS-02 ESTÁGIO 3: BUILDER DA FILA DE TRABALHO — seleção de grupos por chunk
-// visível. Compute na fila gráfica: 1 workgroup (128 threads) por chunk
-// visível anexa itens de 32 bits (visible_index | brick | parte | subdivisão)
-// num buffer global; o draw é mesh-only indireto e cada workgroup lê o seu
-// item por SV_GroupID. CORREÇÃO pós-validação: substitui o task shader + o
-// payload (que chegava sempre zerado neste ambiente — ver render_sim.py e
-// docs/obsidian/decisoes).
-// ----------------------------------------------------------------------------
+
 groupshared uint shared_item_offsets[BRICKS_PER_CHUNK]; // scan: offset do brick no lote do chunk
 groupshared uint shared_chunk_item_total;
 groupshared uint shared_chunk_item_base;
@@ -28,14 +14,14 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
 
     ChunkHeader header = chunk_headers[chunk.storage_slot_index];
     if ((header.flags & CHUNK_FLAG_EMPTY) != 0) {
-        return; // chunk vazio não anexa nada (branch uniforme no workgroup)
+        return; 
     }
 
     uint occupancy_base = chunk.storage_slot_index * OCCUPANCY_WORDS_PER_CHUNK;
     uint queue_base = work_queue_base_words();
     uint step_count = BRICKS_PER_CHUNK / 128;
 
-    // Fase 1: conta os itens (partes) de cada brick selecionado.
+
     for (uint step = 0; step < step_count; step++) {
         uint brick_index = thread + step * 128;
         uint occupancy_word = occupancy_pool[occupancy_base + brick_index];
@@ -44,7 +30,6 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
         // TODO: culling de frustum por brick (bounds do brick vs frustum).
         if (occupancy_word != 0 && !is_brick_occluded(chunk.storage_slot_index, occupancy_word,
                 brick_coordinate_from_index(brick_index), chunk.neighbor_slots)) {
-            // CAMINHO B: lê o nível de subdivisão decidido pelo pack.
             uint subd_word = occupancy_pool[occupancy_base + SUBDIVISION_WORD_BASE + (brick_index >> 4u)];
             item_count = 1u << ((subd_word >> ((brick_index & 15u) * 2u)) & 3u);
         }
@@ -52,8 +37,6 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Scan exclusivo sequencial (1024 entradas, thread 0): offset de cada
-    // brick dentro do lote do chunk + total do chunk.
     if (thread == 0) {
         uint running_total = 0;
         for (uint i = 0; i < BRICKS_PER_CHUNK; i++) {
@@ -65,8 +48,6 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Reserva global: um InterlockedAdd por chunk. Overflow é sinalizado na
-    // word de estado (nunca silencioso) e o finalize faz o clamp do draw.
     if (thread == 0) {
         uint chunk_base;
         InterlockedAdd(work_queue[queue_base + WORK_QUEUE_APPEND_COUNT_WORD], shared_chunk_item_total, chunk_base);
@@ -77,7 +58,6 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Fase 2: rederiva a seleção (determinística) e escreve os itens.
     for (uint step = 0; step < step_count; step++) {
         uint brick_index = thread + step * 128;
         uint occupancy_word = occupancy_pool[occupancy_base + brick_index];
@@ -100,10 +80,6 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
     }
 }
 
-// ----------------------------------------------------------------------------
-// VS-02 ESTÁGIO 3b: FINALIZE — 1 thread fecha o x do draw indireto com o
-// clamp do append_count na capacidade (y = z = 1).
-// ----------------------------------------------------------------------------
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void finalize_work_queue() {
@@ -114,12 +90,7 @@ void finalize_work_queue() {
     work_queue[queue_base + WORK_QUEUE_INDIRECT_X_WORD + 2] = 1u;
 }
 
-// ----------------------------------------------------------------------------
-// VS-02 ESTÁGIO 4: MESH SHADER (mesh-only, sem task) — montagem da geometria
-// a partir de templates. Cada workgroup lê o seu item da fila global por
-// SV_GroupID e resolve o chunk via visible_chunks. 32 threads; orçamento
-// 256v/192t garantido pela subdivisão do pack (regra 5).
-// ----------------------------------------------------------------------------
+
 groupshared uint shared_v_count[VOXELS_PER_BRICK];
 groupshared uint shared_t_count[VOXELS_PER_BRICK];
 groupshared uint shared_face_mask[VOXELS_PER_BRICK];
@@ -135,8 +106,7 @@ void build_brick_mesh(
     out indices uint3 tris[MESH_TRIANGLE_MAXIMUM],
     out vertices MeshVertex verts[MESH_VERTEX_MAXIMUM]
 ) {
-    // Item da fila global (escrito pelo build_work_queue):
-    // visible_index (12b) | brick (10b) | parte (2b) | subdivisão (2b).
+
     uint item             = work_queue[work_queue_base_words() + WORK_QUEUE_STATE_WORDS + group_id.x];
     uint visible_index    = item & 0xFFFu;
     uint brick_idx        = (item >> 12u) & 1023u;
@@ -146,7 +116,6 @@ void build_brick_mesh(
     VisibleChunk chunk = visible_chunks[push_constants.visible_chunk_offset + visible_index];
     uint slot = chunk.storage_slot_index;
 
-    // CAMINHO B: decodifica o grupo (brick + parte, conforme subdivisão do pack).
     uint voxels_in_group  = VOXELS_PER_BRICK >> subdivision_log2;
     bool active           = local_id.x < voxels_in_group;
     uint voxel_slot       = part * voxels_in_group + min(local_id.x, voxels_in_group - 1u);
@@ -166,8 +135,6 @@ void build_brick_mesh(
         tmpl = mesh_templates[def.mesh_template_index];
 
         if (tmpl.triangle_count > 0u) {
-            // Culling de faces só é necessário para templates com triângulos
-            // colados em faces do voxel (bit HAS_FLUSH_FACES).
             if ((tmpl.flags & TEMPLATE_FLAG_HAS_FLUSH_FACES) != 0u) {
                 face_mask = compute_visible_face_mask(slot, voxel_coord,
                     chunk.chunk_world_origin, push_constants.camera_position,
@@ -180,7 +147,7 @@ void build_brick_mesh(
                     t_cnt++;
                 }
             }
-            // Sem triângulos sobreviventes: nenhum vértice é emitido.
+
             if (t_cnt > 0u) v_cnt = tmpl.vertex_count;
         }
     }
@@ -190,8 +157,7 @@ void build_brick_mesh(
     shared_face_mask[local_id.x] = face_mask;
     GroupMemoryBarrierWithGroupSync();
 
-    // Prefixo exclusivo sequencial (32 elementos; threads inativas contribuem 0).
-    // Totais vão para escalares dedicados para não destruir o prefixo do voxel 0.
+
     if (local_id.x == 0) {
         uint v_acc = 0u, t_acc = 0u;
         for (uint i = 0; i < VOXELS_PER_BRICK; i++) {
@@ -236,11 +202,7 @@ void build_brick_mesh(
     }
 }
 
-// ----------------------------------------------------------------------------
-// VS-02 ESTÁGIO 5: FRAGMENT — Lambert + emissão, triplanar, normais por
-// derivadas (ADR-B7: sem PBR). Albedo = paleta procedural de cores sólidas
-// (binding 8); binding 9 existe mas não é amostrado nesta fatia.
-// ----------------------------------------------------------------------------
+
 float3 sample_triplanar_albedo(float3 world_pos, float3 world_normal, uint texture_index) {
     float3 blend_weights = abs(world_normal);
     blend_weights = blend_weights / (blend_weights.x + blend_weights.y + blend_weights.z);
@@ -262,7 +224,6 @@ float4 shade_voxel(MeshVertex input) : SV_Target {
 
     float3 albedo = sample_triplanar_albedo(input.world_position, normal, def.albedo_texture_index);
 
-    // ADR-B7: Lambert + emissão; Cook-Torrance e SSAO ficam no backlog.
     float3 light_dir = normalize(float3(0.5, 0.8, 0.3));
     float diffuse = max(dot(normal, light_dir), 0.0);
     float3 ambient = float3(0.2);

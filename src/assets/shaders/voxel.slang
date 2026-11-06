@@ -1,15 +1,8 @@
-// ============================================================================
-// voxel.slang — VS-01: generate_voxels + pack_chunk
-// Constantes, layouts e bindings: common.slang (fonte única de verdade).
-// Simulação bit-a-bit do pack: tools/sim/pack_sim.py (959 checks).
-// ============================================================================
+
 import common;
 #include "./lib/FastNoiseLite.slang"
 
-// ----------------------------------------------------------------------------
-// ESTÁGIO 1: GENERATE — scratch denso (1 u32 por voxel)
-// B9: [numthreads(8,8,8)], dispatch (4, 4, 4·N), job = thread_id.z / 32.
-// ----------------------------------------------------------------------------
+
 [shader("compute")]
 [numthreads(8, 8, 8)]
 void generate_voxels(uint3 thread_id : SV_DispatchThreadID) {
@@ -37,7 +30,6 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID) {
     uint height2 = uint(fnlGetNoise2D(fnl2,voxel_world_position.z, voxel_world_position.x) * 5);
     uint height = 32 + height1 + height2;
 
-    // Worldgen da referência (determinístico).
     uint block_id = 0;
     if(voxel_world_position.y > height) {
         block_id = 0; // ar
@@ -51,18 +43,12 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID) {
 
     temporary_dense_chunks[(push_constants.batch_job_offset + chunk_in_batch) * CHUNK_VOXEL_COUNT + dense_index_from_coordinate(coord)] = block_id;
 
-    // VS-04 (C2): saída secundária — export denso u16 y-contíguo p/ o mirror
-    // CPU-side, DIRETO no ring host-visible (a escrita É o readback). Só
-    // acontece quando o job traz um slot reservado (-1 = sem export).
     if (job.mirror_ring_slot >= 0) {
         mirror_export_ring[uint(job.mirror_ring_slot) * CHUNK_VOXEL_COUNT + mirror_index_from_coordinate(coord)] = uint16_t(block_id);
     }
 }
 
-// ----------------------------------------------------------------------------
-// ESTÁGIO 2: PACK — 128 threads/chunk, 4 fases (B3 completo)
-// INVARIANTE: slot 0 da paleta = AR; índice no plano = rank + 1.
-// ----------------------------------------------------------------------------
+
 groupshared uint shared_block_presence[BLOCK_PRESENCE_WORDS];
 groupshared uint shared_presence_prefix[BLOCK_PRESENCE_WORDS];
 groupshared uint shared_block_partials[PACK_THREADS];
@@ -83,15 +69,10 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
     uint thread = local_id.x;
     uint slot = generation_jobs[push_constants.batch_job_offset + group_id.x].storage_slot_index;
 
-    // O scratch é um ring de 3×16 chunks indexado pela posição no lote
-    // (batch_job_offset), não pelo slot — o slot identifica só o destino packed.
     uint dense_base = (push_constants.batch_job_offset + group_id.x) * CHUNK_VOXEL_COUNT;
     uint occupancy_base = slot * OCCUPANCY_WORDS_PER_CHUNK;
     uint plane_base = slot * MATERIAL_WORDS_PER_CHUNK;
 
-    // ----------------------------------------------------------
-    // Fase 0: zera contadores compartilhados e região [coarse|subdivisão]
-    // ----------------------------------------------------------
     if (thread < 32u) {
         shared_block_partials[thread] = 0u;
     }
@@ -109,9 +90,6 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // ----------------------------------------------------------
-    // Fase A: ocupação + presença + custo geométrico por brick
-    // ----------------------------------------------------------
     uint step_count = BRICKS_PER_CHUNK / PACK_THREADS;
     for (uint step = 0; step < step_count; step++) {
         uint brick_idx = thread + step * PACK_THREADS;
@@ -142,7 +120,6 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
 
         occupancy_pool[occupancy_base + brick_idx] = occupancy;
 
-        // CAMINHO B: menor subdivisão cuja pior parte cabe no orçamento (256v/192t).
         uint half_verts  = max(part_verts[0] + part_verts[1], part_verts[2] + part_verts[3]);
         uint half_tris   = max(part_tris[0] + part_tris[1], part_tris[2] + part_tris[3]);
         uint total_verts = part_verts[0] + part_verts[1] + part_verts[2] + part_verts[3];
@@ -162,9 +139,7 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // ----------------------------------------------------------
-    // Fase B1: coarse cells
-    // ----------------------------------------------------------
+
     for (uint step = 0; step < step_count; step++) {
         uint brick_idx = thread + step * PACK_THREADS;
         uint occupancy = occupancy_pool[occupancy_base + brick_idx];
@@ -176,9 +151,7 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // ----------------------------------------------------------
-    // Fase B2: scan de prefixo popcount (ranking da paleta)
-    // ----------------------------------------------------------
+
     uint thread_partial = 0;
     for (uint i = 0; i < PRESENCE_WORDS_PER_THREAD; i++) {
         uint word_index = thread + i * PACK_THREADS;
@@ -209,9 +182,6 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
     uint distinct_count = shared_palette_size;
     bool palette_overflow = distinct_count > (PALETTE_SIZE_MAXIMUM - 1u);
 
-    // ----------------------------------------------------------
-    // Fase B3: paleta + ChunkHeader (slot 0 = AR)
-    // ----------------------------------------------------------
     if (thread == 0u) {
         uint palette_count = min(distinct_count, PALETTE_SIZE_MAXIMUM - 1u) + 1u;
         uint plane_count = 1u;
@@ -232,7 +202,6 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Upload cooperativo da paleta (ids presentes em ordem crescente)
     for (uint i = thread; i < BLOCK_PRESENCE_WORDS; i += PACK_THREADS) {
         uint word = shared_block_presence[i];
         while (word != 0u) {
@@ -253,9 +222,6 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // ----------------------------------------------------------
-    // Fase C: planos de material (rank + 1) + special records + refcounts
-    // ----------------------------------------------------------
     uint plane_count = chunk_headers[slot].plane_count;
     uint total_plane_words = plane_count * BRICKS_PER_CHUNK;
     for (uint i = thread; i < total_plane_words; i += PACK_THREADS) {
@@ -283,7 +249,7 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
                 record.block_identifier = block_id;
                 special_voxel_records[slot * SPECIAL_RECORDS_PER_CHUNK + write_idx] = record;
             }
-            continue; // degrada para ar na renderização (seguro por construção)
+            continue; 
         }
 
         InterlockedAdd(shared_refcount[palette_index], 1u);
@@ -300,8 +266,6 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Fecha os refcounts: slot 0 (AR) conta os não-sólidos; as 256 entradas
-    // sobem (slots além da paleta = 0 = livres para a edição, VS-03).
     if (thread == 0u) {
         uint solid_total = 0;
         for (uint i = 1u; i < palette_count; i++) { solid_total += shared_refcount[i]; }

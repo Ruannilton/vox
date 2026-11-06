@@ -1,8 +1,3 @@
-// ============================================================================
-// common.slang — FONTE ÚNICA DE VERDADE (constantes e layouts Odin↔Slang)
-// VS-01 — Streaming, generate e pack.
-// Qualquer mudança aqui exige revisão das specs afetadas (AGENTS.md).
-// ============================================================================
 
 // ----------------------------------------------------------------------------
 // Constantes globais
@@ -48,32 +43,23 @@ static const uint MAX_TEMPLATE_TRIANGLES = 24; // pior-caso por voxel; x4 => 8*2
 static const uint TEMPLATE_FLAG_HAS_FLUSH_FACES = 1;
 static const uint CULL_FACE_NEVER = 7; // triângulo nunca culpado (interior/diagonal)
 
-// VS-02: publicação de visíveis e fila de trabalho global. CORREÇÃO pós-
-// validação: o payload task→mesh chega sempre zerado neste ambiente (driver
-// NVIDIA 1.4.351 / RTX 3050 — ver docs/obsidian/decisoes), então o transporte
-// builder→mesh é um buffer de itens, não o payload.
+
 static const uint NEIGHBOR_SLOT_INVALID       = 0xFFFFFFFFu;
 static const uint MAXIMUM_VISIBLE_CHUNKS      = 4096;
-// Item de 32 bits: visible_index (12b) | brick (10b)<<12 | parte (2b)<<22 |
-// subdivisão (2b)<<24. Capacidade global = 4096 visíveis × 1024 bricks (os
-// templates atuais nunca subdividem; overflow sinalizado na word de estado,
-// nunca silencioso).
+
 static const uint WORK_ITEM_CAPACITY          = MAXIMUM_VISIBLE_CHUNKS * BRICKS_PER_CHUNK;
-// Por slot do ring (2 frames): [8 words de estado][WORK_ITEM_CAPACITY itens].
-// Estado: word 0 = append_count (zerada por vkCmdFillBuffer a cada frame),
-// word 1 = flag de overflow, words 2..4 = x,y,z do draw indireto.
+
 static const uint WORK_QUEUE_STATE_WORDS       = 8;
 static const uint WORK_QUEUE_APPEND_COUNT_WORD = 0;
 static const uint WORK_QUEUE_OVERFLOW_WORD     = 1;
 static const uint WORK_QUEUE_INDIRECT_X_WORD   = 2;
 static const uint WORK_QUEUE_SLOT_WORDS        = WORK_QUEUE_STATE_WORDS + WORK_ITEM_CAPACITY;
 
-// VS-03 (E1): journal de edição — limites do flush e constantes do shader.
+
 static const uint MAX_EDITS_PER_FLUSH            = 4096; // edições por flush (16 KiB no ring)
 static const uint MAX_EDIT_JOBS_PER_FLUSH        = 256;  // chunks tocados por flush
 static const uint MAX_EDITS_PER_CHUNK_PER_FLUSH  = 1024; // teto por workgroup
-// Hash block_id -> slot de paleta (probing linear; reconstruído a cada
-// dispatch, tombstones puladas e nunca reutilizadas).
+
 static const uint EDIT_HASH_CAPACITY = 512;              // 2x a paleta: load factor <= 0,5
 static const uint EDIT_HASH_EMPTY     = 0xFFFFFFFFu;
 static const uint EDIT_HASH_TOMBSTONE = 0xFFFFFFFEu;
@@ -94,8 +80,6 @@ static const uint EDIT_RESULT_REJECTED_OVERFLOW     = 3;
 struct ChunkGenerationJob {
     int3 chunk_world_origin;
     uint storage_slot_index;
-    // C2 (VS-04): >= 0 = exporta o denso u16 p/ este slot do ring do mirror;
-    // -1 = sem export. Sempre -1 nesta fatia.
     int  mirror_ring_slot;
     uint _padding[3]; // 32 B totais (múltiplo de 16) — casar com o Odin
 };
@@ -106,33 +90,29 @@ struct ChunkHeader {
     uint special_voxel_count;
     uint flags;
     uint palette[PALETTE_SIZE_MAXIMUM];
-    // E1 (VS-03): refcount por entrada da paleta. Mantido pelo pack na
-    // geração; slot 0 conta os não-sólidos e nunca é reciclado.
     uint refcount[PALETTE_SIZE_MAXIMUM];
 };
 
 struct SpecialVoxelRecord {
-    uint voxel_index; // dense_index_from_coordinate (15 bits)
+    uint voxel_index; 
     uint shape_and_orientation;
     uint block_identifier;
 };
 
 struct BlockDefinition {
-    uint   mesh_template_index; // CAMINHO B: índice na tabela de templates (0 = ar)
+    uint   mesh_template_index;
     uint   albedo_texture_index;
     uint   pbr_texture_index;
-    uint   flags;               // bit 0 = transparente
+    uint   flags;              
     float3 emission_color;
     float  base_roughness;
     float  base_metallic;
-    uint   rotation;            // yaw em passos de 90° (0..3)
+    uint   rotation;       
     uint   padding_2;
     uint   padding_3;
 };
 
-// CAMINHO B: template de micro-mesh. Vértices em [0,1]^3 (regra da engine:
-// voxel de tamanho único). Triângulos packed em uint:
-// bits [0..8) v0, [8..16) v1, [16..24) v2, [24..27) face de culling.
+
 struct MeshTemplate {
     uint vertex_offset;   // no pool template_vertices
     uint vertex_count;    // <= MAX_TEMPLATE_VERTICES
@@ -149,10 +129,10 @@ struct PushConstants {
     float3 camera_position;
     uint   visible_chunk_offset;
     uint   batch_job_offset;
-    uint   edit_job_offset; // E1 (VS-03). 88 B totais — casar com a VS-00.
+    uint   edit_job_offset;
 };
 
-// VS-02 (B2): entrada do ring de visíveis (binding 6), 48 B.
+
 struct VisibleChunk {
     int3 chunk_world_origin;
     uint storage_slot_index;
@@ -160,9 +140,7 @@ struct VisibleChunk {
     uint _padding[2];
 };
 
-// VS-03 (E1): um job de edição = 1 workgroup no flush (binding 13), 16 B.
-// As edições (binding 14) vêm agrupadas por chunk:
-// [first_edit, first_edit + edit_count) — índice GLOBAL no ring.
+
 struct EditChunkJob {
     uint storage_slot_index;
     uint first_edit;
@@ -170,8 +148,7 @@ struct EditChunkJob {
     uint _padding;
 };
 
-// VS-02: empacota o item de trabalho de 32 bits da fila global (decodificado
-// pelo mesh shader; espelhado em tools/sim/render_sim.py).
+
 uint pack_work_item(uint visible_index, uint brick_index, uint part, uint subdivision) {
     return (visible_index & 0xFFFu) | ((brick_index & 1023u) << 12u) | ((part & 3u) << 22u) | ((subdivision & 3u) << 24u);
 }
@@ -198,30 +175,16 @@ struct MeshVertex {
 [[vk::binding(7, 0)]] StructuredBuffer<BlockDefinition>      global_block_registry;
 [[vk::binding(8, 0)]] Sampler2DArray                         block_albedo_textures;
 [[vk::binding(9, 0)]] Sampler2DArray                         block_pbr_textures; // dummy nesta fatia (ADR-B7)
-// CAMINHO B: tabela de templates + pools de geometria (escritos no load pela CPU)
-// ATENÇÃO: template_vertices é float4 (stride 16 B no std430) — a CPU grava
-// cada vértice com 4 floats (w ignorado). Nunca usar float3 aqui.
 [[vk::binding(10, 0)]] StructuredBuffer<MeshTemplate>        mesh_templates;
 [[vk::binding(11, 0)]] StructuredBuffer<float4>              template_vertices;
 [[vk::binding(12, 0)]] StructuredBuffer<uint>                template_triangles;
-// VS-03 (E1): rings de edição (2 slots de frame; edit_job_offset nos push
-// constants seleciona o slot deste frame). Edição packed em u32:
-// voxel_index (15 bits) | block_id<<16. Resultados lidos pela CPU 2 frames
-// depois (ring host-coerente).
 [[vk::binding(13, 0)]] StructuredBuffer<EditChunkJob>        edit_jobs;
 [[vk::binding(14, 0)]] StructuredBuffer<uint>                voxel_edits;
 [[vk::binding(15, 0)]] RWStructuredBuffer<uint>              edit_results;
-// VS-04 (C2): ring de export do mirror CPU-side — 64 slots ×
-// CHUNK_VOXEL_COUNT u16 (4 MiB), host-coerente: a escrita do generate É o
-// readback; a CPU lê no handler de conclusão após o acquire da timeline.
-// Requer storageBuffer16BitAccess (habilitado na VS-00).
 [[vk::binding(16, 0)]] RWStructuredBuffer<uint16_t>          mirror_export_ring;
-// VS-02 (correção): fila de trabalho global — builder compute anexa itens e
-// o draw mesh-only indireto consome. Ring de 2 slots derivado do
-// visible_chunk_offset (sem novos push constants).
 [[vk::binding(17, 0)]] RWStructuredBuffer<uint>                work_queue;
 
-// Base (em words) do slot do ring da fila de trabalho neste frame.
+
 uint work_queue_base_words() {
     return (push_constants.visible_chunk_offset / MAXIMUM_VISIBLE_CHUNKS) * WORK_QUEUE_SLOT_WORDS;
 }
@@ -235,18 +198,13 @@ uint bit_index_from_local_coordinate(int3 coord) { return uint(coord.x) + 4u * (
 int3 local_coordinate_from_bit_index(uint index) { return int3(int(index & 3u), int(index >> 4u), int((index >> 2u) & 3u)); }
 uint dense_index_from_coordinate(int3 coord) { return uint(coord.x) | (uint(coord.z) << 5u) | (uint(coord.y) << 10u); }
 int3 coordinate_from_dense_index(uint index) { return int3(int(index & 31u), int(index >> 10u), int((index >> 5u) & 31u)); }
-// VS-04 (C2): índice do MIRROR — y-contíguo (coluna vertical = 64 B = 1
-// linha de cache). REGRA 7: NUNCA misturar com dense_index_from_coordinate
-// (x-contíguo, usado pelo scratch GPU e pelas edições packed).
 uint mirror_index_from_coordinate(int3 coord) { return uint(coord.y) | (uint(coord.z) << 5u) | (uint(coord.x) << 10u); }
 uint coarse_cell_index_from_brick_coordinate(int3 coord) { int3 cell = coord / BRICKS_PER_COARSE_CELL; return uint(cell.x) + 4u * (uint(cell.z) + 4u * uint(cell.y)); }
 
-// ----------------------------------------------------------------------------
-// VS-02: helpers de renderização (B2, culling de faces, rotação yaw)
-// ----------------------------------------------------------------------------
+
 static const int3 FACE_NORMALS[6] = { int3(1,0,0), int3(-1,0,0), int3(0,1,0), int3(0,-1,0), int3(0,0,1), int3(0,0,-1) };
 
-// CAMINHO B: para onde aponta cada face após a rotação yaw (ordem de FACE_NORMALS).
+
 static const uint ROTATED_FACE[24] = {
     0, 1, 2, 3, 4, 5,  // r=0: identidade
     5, 4, 2, 3, 0, 1,  // r=1: +X->-Z, -X->+Z, +Z->+X, -Z->-X
@@ -264,9 +222,6 @@ bool is_voxel_solid_local(uint slot, int3 coord) {
     return ((occupancy >> bit_index_from_local_coordinate(coord % BRICK_SIZE)) & 1u) != 0;
 }
 
-// VS-02: word de ocupação de um brick VIZINHO com redirecionamento B2 entre
-// chunks (mesma ordem de FACE_NORMALS). Vizinho inválido => 0 (conservador:
-// tratado como não-cheio, nunca contribui para culling de oclusão).
 uint read_brick_occupancy_b2(uint slot, int3 brick_coord, uint neighbor_slots[6]) {
     if (all(brick_coord >= 0) && all(brick_coord < BRICKS_PER_CHUNK_AXIS)) {
         return read_brick_occupancy(slot, brick_coord);
@@ -283,9 +238,6 @@ uint read_brick_occupancy_b2(uint slot, int3 brick_coord, uint neighbor_slots[6]
     return read_brick_occupancy(neighbor_slot, local);
 }
 
-// Brick ocluso = cheio (32/32 voxels sólidos) com os 6 bricks vizinhos cheios:
-// nenhum voxel tem face exposta (independente da câmera), então o grupo não
-// emitiria geometria. Simulação: tools/sim/render_sim.py (cenário de oclusão).
 bool is_brick_occluded(uint slot, uint occupancy_word, int3 brick_coord, uint neighbor_slots[6]) {
     if (occupancy_word != 0xFFFFFFFFu) return false;
     [unroll]
@@ -298,8 +250,7 @@ bool is_brick_occluded(uint slot, uint occupancy_word, int3 brick_coord, uint ne
     return true;
 }
 
-// CORREÇÃO B2: leitura fora do chunk é redirecionada à ocupação do vizinho
-// (NEIGHBOR_SLOT_INVALID = ar; a geometria se corrige no frame da conclusão).
+
 bool is_voxel_solid(uint slot, int3 coord, uint neighbor_slots[6]) {
     if (all(coord >= 0) && all(coord < CHUNK_SIZE)) {
         return is_voxel_solid_local(slot, coord);
@@ -317,9 +268,6 @@ bool is_voxel_solid(uint slot, int3 coord, uint neighbor_slots[6]) {
     return is_voxel_solid_local(neighbor_slot, local);
 }
 
-// Máscara de faces: bit F setado se a face F do voxel pode ser visível
-// (vizinho não-sólido E câmera do lado de fora do plano). Uso: culling de
-// triângulos colados em faces do voxel (tags 0..5) nos templates.
 uint compute_visible_face_mask(uint slot, int3 coord, int3 chunk_world_origin, float3 camera_position, uint neighbor_slots[6]) {
     float3 voxel_min_world = float3(chunk_world_origin + coord);
     uint face_mask = 0;
@@ -341,7 +289,6 @@ uint compute_visible_face_mask(uint slot, int3 coord, int3 chunk_world_origin, f
     return face_mask;
 }
 
-// CAMINHO B: rotação yaw do template (passos de 90°, centrada no voxel).
 // Convenção r=1: (x,z) -> (z, 1-x).
 float3 rotate_vertex_yaw(float3 p, uint r) {
     switch (r & 3u) {
@@ -352,7 +299,6 @@ float3 rotate_vertex_yaw(float3 p, uint r) {
     }
 }
 
-// CAMINHO B: um triângulo de template sobrevive ao culling?
 bool triangle_survives_culling(uint packed_tri, uint rotation, uint face_mask) {
     uint cull_face = (packed_tri >> 24u) & 7u;
     if (cull_face == CULL_FACE_NEVER) return true;
@@ -360,8 +306,7 @@ bool triangle_survives_culling(uint packed_tri, uint rotation, uint face_mask) {
     return (face_mask & (1u << rotated_face)) != 0u;
 }
 
-// VS-02: block id de um voxel via paleta/planos (o decode já foi validado
-// bit-a-bit contra o denso em tools/sim/pack_sim.py).
+
 uint read_block_identifier(uint slot, ChunkHeader header, int3 coord) {
     uint brick_idx = brick_index_from_coordinate(coord / BRICK_SIZE);
     uint bit_idx = bit_index_from_local_coordinate(coord % BRICK_SIZE);
@@ -374,10 +319,7 @@ uint read_block_identifier(uint slot, ChunkHeader header, int3 coord) {
     return header.palette[min(palette_index, max(header.palette_size, 1u) - 1u)];
 }
 
-// VS-03 (E1): índice de paleta de um voxel lendo apenas os planos (sem o
-// header). plane_count é parâmetro explícito porque a edição cresce os
-// planos no meio do flush — chamadores usam sempre a contagem JÁ atualizada
-// (planos novos chegam zerados, então bits altos não mudam índices antigos).
+
 uint read_palette_index_at(uint slot, uint plane_count, int3 coord) {
     uint brick_idx = brick_index_from_coordinate(coord / BRICK_SIZE);
     uint bit_idx = bit_index_from_local_coordinate(coord % BRICK_SIZE);

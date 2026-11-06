@@ -1,19 +1,7 @@
-// ============================================================================
-// edit.slang — VS-03 (E1): apply_voxel_edits (compute na fila gráfica, antes do
-// builder da fila de trabalho, com barreira COMPUTE->COMPUTE; ver ADR-B10).
-// Constantes, layouts e bindings: common.slang (fonte única de verdade).
-// Simulação bit-a-bit das fases: tools/sim/edit_sim.py (118 checks).
-// ============================================================================
+
 import common;
 
-// ----------------------------------------------------------------------------
-// VS-03 ESTÁGIO E1: APPLY VOXEL EDITS — 1 workgroup (128 threads) por chunk do
-// flush. Roda no command buffer do frame, ANTES do build_work_queue, com
-// barreira COMPUTE->COMPUTE: a malha do mesmo frame já nasce refletindo a
-// edição (sem dirty flag nem re-mesh — o culling B2 lê a ocupação ao vivo,
-// inclusive através da fronteira do chunk editado).
-// Simulação bit-a-bit das fases: tools/sim/edit_sim.py.
-// ----------------------------------------------------------------------------
+
 groupshared uint shared_edit_palette[PALETTE_SIZE_MAXIMUM];
 groupshared uint shared_edit_refcount[PALETTE_SIZE_MAXIMUM];
 groupshared uint shared_edit_hash_key[EDIT_HASH_CAPACITY];  // block_id | EMPTY | TOMBSTONE
@@ -30,11 +18,6 @@ uint edit_hash_bucket(uint block_id) {
     return ((block_id * 0x9E3779B1u) >> 23u) & (EDIT_HASH_CAPACITY - 1u);
 }
 
-// Reserva o bucket de block_id (probing linear; tombstones são puladas, nunca
-// reutilizadas — o hash é reconstruído a cada dispatch, então no pior caso
-// 255 ids vivos + <= 255 alocações do flush < 512 buckets).
-// owned=true: esta thread reservou e DEVE publicar o slot. bucket=EMPTY na
-// volta: tabela cheia (defensivo; não ocorre na prática).
 void edit_hash_reserve(uint block_id, out uint bucket, out bool owned) {
     uint h = edit_hash_bucket(block_id);
     owned = false;
@@ -53,7 +36,7 @@ void edit_hash_reserve(uint block_id, out uint bucket, out bool owned) {
     }
 }
 
-// Remove a entrada de um id (evicção de slot reciclado). Idempotente.
+
 void edit_hash_tombstone(uint block_id) {
     uint h = edit_hash_bucket(block_id);
     for (uint probe = 0u; probe < EDIT_HASH_CAPACITY; probe++) {
@@ -69,7 +52,7 @@ void edit_hash_tombstone(uint block_id) {
     }
 }
 
-// Espera o dono do bucket publicar o slot (ou REJECTED se a paleta lotou).
+
 uint edit_hash_wait_slot(uint bucket) {
     for (uint spin = 0u; spin < 4096u; spin++) {
         uint value;
@@ -79,8 +62,7 @@ uint edit_hash_wait_slot(uint bucket) {
     return EDIT_SLOT_REJECTED; // defensivo: timeout
 }
 
-// Aloca um slot livre (refcount == 0, exceto o slot 0 = AR) para block_id e
-// publica no bucket reservado. O refcount sai = 1 (primeiro uso já contado).
+
 uint edit_alloc_slot(uint slot, uint block_id, uint bucket) {
     for (uint s = 1u; s < PALETTE_SIZE_MAXIMUM; s++) {
         uint rc;
@@ -89,8 +71,6 @@ uint edit_alloc_slot(uint slot, uint block_id, uint bucket) {
         uint original;
         InterlockedCompareExchange(shared_edit_refcount[s], 0u, EDIT_REFCLAIMED, original);
         if (original != 0u) { continue; }
-        // Reivindicado. Um slot reciclado pode ainda constar no hash com o id
-        // antigo (esvaziamento preguiçoso): expulsa antes de republicar.
         uint old_id = shared_edit_palette[s];
         if (old_id != 0u && old_id != block_id) { edit_hash_tombstone(old_id); }
         shared_edit_palette[s] = block_id;
@@ -105,11 +85,6 @@ uint edit_alloc_slot(uint slot, uint block_id, uint bucket) {
     return EDIT_SLOT_REJECTED;
 }
 
-// Reivindica uma referência ao slot encontrado no hash. Slot com refcount 0
-// (bloco removido por completo num flush anterior, entrada preguiçosa) é
-// ressuscitado com CAS 0->1; se o slot trocou de dono no meio do caminho,
-// sinaliza para re-resolver. Na Fase 1 nenhum decremento acontece, então um
-// refcount > 0 lido aqui não pode zerar até a Fase 2 — sem risco de evicção.
 uint edit_claim_slot(uint slot_idx, uint block_id, out bool counted) {
     counted = false;
     for (uint attempt = 0u; attempt < 64u; attempt++) {
@@ -130,9 +105,7 @@ uint edit_claim_slot(uint slot_idx, uint block_id, out bool counted) {
     return EDIT_HASH_EMPTY; // defensivo: contenção patológica
 }
 
-// Resolve o slot de paleta de block_id para este flush. counted=true indica
-// que o refcount já saiu contado daqui (alocação ou ressurreição) — a Fase 2
-// não deve incrementar de novo.
+
 uint edit_resolve_slot(uint slot, uint block_id, out bool counted) {
     counted = false;
     for (uint attempt = 0u; attempt < 32u; attempt++) {
@@ -193,8 +166,7 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
         return;
     }
 
-    // Hash block_id -> slot. O AR (slot 0) entra SEMPRE — mesmo com refcount 0
-    // (chunk 100% sólido) — porque toda remoção de bloco vira uma ida para o AR.
+
     for (uint i = thread; i < h_palette_size; i += 128u) {
         if (i == 0u || shared_edit_refcount[i] > 0u) {
             uint bucket; bool owned;
@@ -228,8 +200,7 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // ------------------- Fase 1.5: crescimento de planos -------------------
-    // Leitura uniforme (pós-barreira) dos escalares antes de qualquer escrita.
+
     uint old_planes = shared_edit_plane_count;
     uint required_planes = old_planes;
     while ((1u << required_planes) < max(shared_edit_palette_size, 1u)) { required_planes++; }
@@ -261,8 +232,7 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
         uint bit_idx = bit_index_from_local_coordinate(coord % BRICK_SIZE);
         uint mask = 1u << bit_idx;
 
-        // Planos: toca só nos bits que mudam (RMW atômico preserva os vizinhos
-        // do mesmo word — edições de voxels distintos no mesmo brick compõem).
+
         for (uint plane = 0u; plane < shared_edit_plane_count; plane++) {
             bool old_bit = ((old_index >> plane) & 1u) != 0u;
             bool new_bit = ((new_index >> plane) & 1u) != 0u;
@@ -272,15 +242,11 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
             else { InterlockedAnd(material_plane_pool[addr], ~mask); }
         }
 
-        // Ocupação (mesma regra do pack: sólido = bloco != 0).
         uint occupancy_addr = occupancy_base + brick_idx;
         if (new_block != 0u) { InterlockedOr(occupancy_pool[occupancy_addr], mask); }
         else { InterlockedAnd(occupancy_pool[occupancy_addr], ~mask); }
         InterlockedOr(shared_edit_dirty_bricks[brick_idx >> 5u], 1u << (brick_idx & 31u));
 
-        // Refcounts. O novo slot só incrementa se a Fase 1 ainda não contou;
-        // o antigo decrementa sempre — a CPU garante 1 edição por voxel por
-        // flush, então cada voxel decrementa exatamente o tipo que tinha.
         if (!counted) { InterlockedAdd(shared_edit_refcount[new_index], 1u); }
         InterlockedAdd(shared_edit_refcount[old_index], 0xFFFFFFFFu); // -1
 
@@ -288,14 +254,13 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // --------------- Fase 2.5: coarse cells, flag EMPTY, refcounts ---------------
+
     uint local_or = 0u;
     for (uint i = thread; i < BRICKS_PER_CHUNK; i += 128u) {
         local_or |= occupancy_pool[occupancy_base + i];
     }
     if (local_or != 0u) { InterlockedOr(shared_edit_nonempty, 1u); }
 
-    // Coarse: 1 thread por célula (64), cada uma cobre 2x4x2 = 16 bricks.
     if (thread < COARSE_CELLS_PER_CHUNK) {
         int3 cell = int3(int(thread & 3u), int(thread >> 4u), int((thread >> 2u) & 3u));
         int3 base_brick = cell * BRICKS_PER_COARSE_CELL;
@@ -310,8 +275,7 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
         else { InterlockedAnd(occupancy_pool[cell_addr], ~cell_mask); }
     }
 
-    // Writeback dos refcounts (as entradas da paleta já foram escritas na
-    // alocação, na Fase 1).
+
     for (uint i = thread; i < PALETTE_SIZE_MAXIMUM; i += 128u) {
         uint rc = shared_edit_refcount[i];
         if (rc == EDIT_REFCLAIMED) { rc = 0u; } // defensivo: claim interrompido
@@ -327,9 +291,6 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
         chunk_headers[slot].plane_count = shared_edit_plane_count;
     }
 
-    // --------- Fase 3: subdivisão dos bricks sujos (Caminho B) ---------
-    // Mesma regra do pack, mas lendo dos planos atualizados (o scratch denso
-    // não existe mais depois da geração). Um thread por brick sujo.
     for (uint brick_idx = thread; brick_idx < BRICKS_PER_CHUNK; brick_idx += 128u) {
         if (((shared_edit_dirty_bricks[brick_idx >> 5u] >> (brick_idx & 31u)) & 1u) == 0u) { continue; }
         int3 brick_coord = brick_coordinate_from_index(brick_idx);
@@ -358,7 +319,7 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
             subdivision = 1u;
             if (half_verts > MESH_VERTEX_MAXIMUM || half_tris > MESH_TRIANGLE_MAXIMUM) { subdivision = 2u; }
         }
-        // Dois RMWs atômicos com campos de 2 bits disjuntos por brick: seguro.
+
         uint addr = occupancy_base + SUBDIVISION_WORD_BASE + (brick_idx >> 4u);
         uint shift = (brick_idx & 15u) * 2u;
         InterlockedAnd(occupancy_pool[addr], ~(3u << shift));
