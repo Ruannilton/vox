@@ -41,6 +41,7 @@ Telemetry :: struct {
 	times_available:     bool,
 	timestamp_period_ns: f64,
 	gfx_pools:           [NUM_FRAMES_IN_FLIGHT]vk.QueryPool,
+	gfx_slot_submitted:  [NUM_FRAMES_IN_FLIGHT]bool, // slot já submetido ao menos uma vez (VUID 09401)
 	compute_pools:       [dynamic]vk.QueryPool, // [config.batches_in_flight] (VS-08)
 	results_mutex:       sync.Mutex,
 	last_times_us:       [TELEMETRY_OPERATION_COUNT]f64,
@@ -194,6 +195,9 @@ telemetry_collect_graphics :: proc(frame_index: u32) {
 	if !telemetry.enabled || !telemetry.times_available do return
 	pool := telemetry.gfx_pools[frame_index]
 	if pool == 0 do return
+	// Slot nunca submetido: as queries ainda não passaram por reset no
+	// command buffer; lê-las viola VUID-vkGetQueryPoolResults-None-09401.
+	if !telemetry.gfx_slot_submitted[frame_index] do return
 
 	OpQuery :: struct {
 		op:    TelemetryOperation,
