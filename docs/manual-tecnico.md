@@ -236,13 +236,16 @@ ChunkPage :: struct {
     pending:  [dynamic]Edit,              // edicoes retidas ate a materializacao
     // -- header alinhado a 64B; planos de dados abaixo --
     solid: [CHUNK*CHUNK*CHUNK/32]u32,     // 4 KiB — derivado de BlockDefinition.is_solid
+    heights: [CHUNK*CHUNK]u16,             // 2 KiB — VS-13: y do topo sólido da coluna (z-contíguo x|z<<5); 0xFFFF = vazia
     ids:   [CHUNK*CHUNK*CHUNK]u16,        // 64 KiB — grid denso, block ID direto, SEM paleta
 }
-// total ~68,1 KiB; pool de paginas de tamanho fixo (O(1), sem fragmentacao,
+// total ~70,1 KiB (VS-13; era ~68,1 KiB); pool de paginas de tamanho fixo (O(1), sem fragmentacao,
 // ponteiros estaveis p/ leitores concorrentes)
 ```
 
-Duas decisões de formato: **denso u16, sem paleta** — a CPU jamais mantém uma paleta paralela (a divergência paleta-GPU × paleta-CPU deixa de existir; inclusive chunks em overflow de paleta, somente-leitura na GPU, são editáveis no mirror, com reconciliação pelo feedback do E1); e **indexação y-major** — `idx = (x·32 + z)·32 + y` — de modo que a coluna vertical é contígua (64 B = 1 linha de cache) e o scan de chão, a operação mais comum do gameplay, é uma leitura sequencial.
+Duas decisões de formato: **denso u16, sem paleta** — a CPU jamais mantém uma paleta paralela (a divergência paleta-GPU × paleta-CPU deixa de existir; inclusive chunks em overflow de paleta, somente-leitura na GPU, são editáveis no mirror, com reconciliação pelo feedback do E1); e **indexação y-major** — `idx = y | z<<5 | x<<10` — de modo que a coluna vertical é contígua (64 B = 1 linha de cache). Desde a **VS-13 (2026-11-07)** a página ganhou o **heightmap da coluna**: 1.024 u16 (2 KiB, índice **z-contíguo `x | z<<5`** — deliberadamente diferente do índice y-major do grid, pois é uma matriz 2D de colunas), guardando o y do sólido mais alto de cada coluna (`0xFFFF` = coluna vazia). O journal do E1 o mantém (colocar sólido acima do topo sobe; remover o bloco do topo rescanza a coluna — 32 leituras do bitmask; demais casos inalterados) e a consulta `mirror_height_get(chunk, x, z)` responde em O(1) — a operação «altura do chão» deixa de ser um scan vertical.
+
+**Geração (VS-13):** o `generate_voxels` calcula a altura de cada coluna uma única vez por workgroup — as threads com y-local 0 (64/workgroup) avaliam os dois ruídos (`fnlCreateState` por thread de coluna, OpenSimplex2 @0.02 / Perlin @0.07, mesma expressão `32 + h1 + h2` e mesmas posições mundo) e gravam num `groupshared uint16[8][8]`; após barrier os 512 threads leem a altura da sua coluna e derivam o `block_id` como antes — saída **bit a bit idêntica** (equivalência pura). Avaliações de ruído por chunk caem de 65.536 para 8.192 (8×; as 4 fatias-y de um mesmo (x,z) recalculam a mesma coluna, pois o groupshared é por workgroup e o dispatch/thread mapping ficaram inalterados). As mesmas threads de coluna exportam o topo sólido de cada coluna no ring paralelo do heightmap (binding 20).
 
 ### 8.2 Caminho de leitura
 
@@ -284,11 +287,12 @@ Como dedup e ordenação acontecem uma única vez, antes dos dois consumidores, 
 ### 8.4 Readback: do compute à página
 
 ```
-generate_voxels (GPU)                saída secundária: grid denso u16 y-major (só se o job tem a flag MIRROR)
+generate_voxels (GPU)                saída secundária: grid denso u16 y-major + heightmap da coluna (só se o job tem mirror_ring_slot)
         ▼
 ring host-visible — 64 slots × 64 KiB = 4 MiB (binding 16)   ← a escrita do shader É o readback
+ring de heightmap — 64 slots × 2 KiB (binding 20, VS-13)     ← paralelo, mesmo índice de slot
         ▼ (handler de conclusão: WaitSemaphores(0) como acquire host)
-ChunkPage (RAM)                      memcpy → MATERIALIZED → replay do pending → aberta p/ consultas (voxel_get)
+ChunkPage (RAM)                      memcpy (+ heights) → MATERIALIZED → replay do pending → aberta p/ consultas (voxel_get / mirror_height_get)
 ```
 
 *Figura 3 — Fluxo de readback do C2 (versão implementada em 2026-11-03). Latência típica: 1–3 frames; banda: 64 KiB/chunk (irrisório em PCIe); export condicionado à bolha de simulação.*
@@ -314,8 +318,8 @@ O export (Seção 3.3) é condicionado à bolha de simulação — chunks fora d
 | Orçamento mesh shader | 256 vértices / 192 triângulos por grupo — garantido por subdivisão |
 | Lote do worker | até `chunks_per_batch` chunks (16) por vkQueueSubmit2 (1 claim = 1 lote = 1 timeline) |
 | Flush de edição | 100 ms; tetos 4.096 edições / 256 chunks / 1.024 por chunk |
-| ChunkPage (mirror) | ~68,1 KiB, y-major, pool derivado: `mirror_pages = ⌈|esfera(simulation)| × 1,5⌉` (773 nos defaults, ~50 MiB) |
-| Ring de mirror | `mirror_ring_slots = max(64, 2^⌈lg scratch⌉)` slots × 64 KiB host-visible (binding 16) |
+| ChunkPage (mirror) | ~70,1 KiB (VS-13; era ~68,1), y-major + heightmap 2 KiB z-contíguo, pool derivado: `mirror_pages = ⌈|esfera(simulation)| × 1,5⌉` (773 nos defaults, ~53 MiB) |
+| Ring de mirror | `mirror_ring_slots = max(64, 2^⌈lg scratch⌉)` slots × 64 KiB host-visible (binding 16); ring de heightmap paralelo × 2 KiB (binding 20, VS-13) |
 | PushConstants | 92 B (com edit_job_offset e visible_chunk_capacity — VS-08) |
 | BlockDefinition | 48 B std430 |
 | VisibleChunk | 48 B (com neighbor_slots[6]) |

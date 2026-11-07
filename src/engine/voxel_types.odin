@@ -179,7 +179,13 @@ MirrorChunkPage :: struct {
 	rejected_log: [dynamic]VoxelEditRequest,
 	solid:       [CHUNK_VOXEL_COUNT / 32]u32, // 4 KiB: derivado de id != 0
 	ids:         [CHUNK_VOXEL_COUNT]u16,      // 64 KiB densos
+	// VS-13 (REQ-MIR-02): heightmap da coluna — índice z-contíguo x|z<<5
+	// (NÃO é o índice y-contíguo do ids); y do sólido mais alto, 0xFFFF =
+	// coluna vazia. Página: ~68,1 -> ~70,1 KiB (+1,5 MiB no pool de 768).
+	heights:     [CHUNK_SIZE * CHUNK_SIZE]u16,
 }
+
+#assert(size_of(MirrorChunkPage) == 71824) // 70,14 KiB (VS-13; era 69776 = 68,14 KiB)
 
 MirrorRingEntry :: struct {
 	used:       bool,

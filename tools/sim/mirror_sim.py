@@ -77,6 +77,9 @@ class MirrorPage:
         self.applied_log = []  # journal aplicado desde a materializacao
         self.solid = [0] * (CHUNK_VOXEL_COUNT // 32)
         self.ids = [0] * CHUNK_VOXEL_COUNT
+        # VS-13: y do sólido mais alto da coluna (índice z-contíguo x|z<<5);
+        # 0xFFFF = coluna vazia.
+        self.heights = [0xFFFF] * (CHUNK_SIZE * CHUNK_SIZE)
 
     def apply(self, world_voxel, block_id):
         _chunk, local = chunk_and_local(world_voxel)
@@ -86,6 +89,26 @@ class MirrorPage:
             self.solid[idx >> 5] |= 1 << (idx & 31)
         else:
             self.solid[idx >> 5] &= ~(1 << (idx & 31)) & 0xFFFFFFFF
+        self.apply_height(local, block_id)
+
+    def apply_height(self, local, block_id):
+        """VS-13 (REQ-MIR-03): journal mantém o heightmap da coluna."""
+        column = local[0] | (local[2] << 5)
+        height = self.heights[column]
+        if block_id != 0:
+            # colocar sólido acima do topo (ou em coluna vazia) sobe a altura
+            if local[1] > height or height == 0xFFFF:
+                self.heights[column] = local[1]
+        else:
+            # remover o bloco do topo: rescan da coluna (32 leituras)
+            if height != 0xFFFF and local[1] == height:
+                new_top = 0xFFFF
+                for ly in range(local[1] - 1, -1, -1):
+                    if (self.solid[(ly | (local[2] << 5) | (local[0] << 10)) >> 5]
+                            >> ((ly | (local[2] << 5) | (local[0] << 10)) & 31)) & 1:
+                        new_top = ly
+                        break
+                self.heights[column] = new_top
 
 
 class MirrorManager:
@@ -143,7 +166,7 @@ def mirror_journal_apply(mirror, chunk, world_voxel, block_id):
 
 # --- materialização (handler de conclusão, REQ-MIRROR-05) ---
 
-def mirror_materialize(mirror, page, worldgen_ids):
+def mirror_materialize(mirror, page, worldgen_ids, worldgen_heights=None):
     """Copia o export (worldgen) e faz o replay das pendências retidas."""
     for i, block_id in enumerate(worldgen_ids):
         page.ids[i] = block_id
@@ -151,6 +174,17 @@ def mirror_materialize(mirror, page, worldgen_ids):
             page.solid[i >> 5] |= 1 << (i & 31)
         else:
             page.solid[i >> 5] &= ~(1 << (i & 31)) & 0xFFFFFFFF
+    # VS-13: heightmap worldgen vem do ring paralelo (binding 20); sem ring
+    # (cenários antigos) deriva dos ids recém-copiados.
+    if worldgen_heights is None:
+        worldgen_heights = [0xFFFF] * (CHUNK_SIZE * CHUNK_SIZE)
+        for z in range(CHUNK_SIZE):
+            for x in range(CHUNK_SIZE):
+                for y in range(CHUNK_SIZE - 1, -1, -1):
+                    if page.ids[y | (z << 5) | (x << 10)] != 0:
+                        worldgen_heights[x | (z << 5)] = y
+                        break
+    page.heights = list(worldgen_heights)
     for world_voxel, block_id in page.pending:
         page.apply(world_voxel, block_id)
         page.applied_log.append((world_voxel, block_id))
@@ -162,7 +196,7 @@ def mirror_materialize(mirror, page, worldgen_ids):
 
 # --- reconciliação (REQ-MIRROR-09) ---
 
-def mirror_reconcile_rejections(mirror, page, worldgen_ids, rejected):
+def mirror_reconcile_rejections(mirror, page, worldgen_ids, rejected, worldgen_heights=None):
     """Rejeição da GPU: re-export (worldgen) + replay do applied_log SEM as
     edições rejeitadas (remove a ocorrência mais recente de cada par)."""
     log = list(page.applied_log)
@@ -179,6 +213,16 @@ def mirror_reconcile_rejections(mirror, page, worldgen_ids, rejected):
             page.solid[i >> 5] |= 1 << (i & 31)
         else:
             page.solid[i >> 5] &= ~(1 << (i & 31)) & 0xFFFFFFFF
+    # VS-13: reexport traz o heightmap worldgen; o replay o mantém.
+    if worldgen_heights is None:
+        worldgen_heights = [0xFFFF] * (CHUNK_SIZE * CHUNK_SIZE)
+        for z in range(CHUNK_SIZE):
+            for x in range(CHUNK_SIZE):
+                for y in range(CHUNK_SIZE - 1, -1, -1):
+                    if page.ids[y | (z << 5) | (x << 10)] != 0:
+                        worldgen_heights[x | (z << 5)] = y
+                        break
+    page.heights = list(worldgen_heights)
     for world_voxel, block_id in log:
         page.apply(world_voxel, block_id)
         page.applied_log.append((world_voxel, block_id))
@@ -199,6 +243,17 @@ def voxel_get(mirror, world_voxel):
 def voxel_is_solid(mirror, world_voxel):
     (_id, solid), ok = voxel_get(mirror, world_voxel)
     return solid, ok
+
+
+def mirror_height_get(mirror, chunk_coord, x, z):
+    """VS-13 (REQ-MIR-04): altura do topo sólido da coluna em O(1).
+
+    ok=False se a página está ausente/em readback; senão height
+    (0xFFFF = coluna vazia)."""
+    page = mirror.pages.get(chunk_coord)
+    if page is None or page.state != MATERIALIZED:
+        return False, 0
+    return True, page.heights[x | (z << 5)]
 
 
 def mirror_column_ground(mirror, world_x, world_z, y_from):
@@ -360,6 +415,86 @@ def scenario_export_only_no_pack():
     check("packed intacto após export_only", packed_after == snapshot)
 
 
+def scenario_journal_heightmap():
+    print("[cenario] VS-13: journal mantém o heightmap da coluna")
+    mirror = MirrorManager()
+    page = mirror.page_acquire((0, 0, 0))
+    # terreno: coluna (4,z) com topo em y=10, coluna (8,z) toda de ar
+    worldgen = [0] * CHUNK_VOXEL_COUNT
+    for z in range(CHUNK_SIZE):
+        for y in range(0, 11):
+            worldgen[mirror_index((4, y, z))] = 2
+    ring_heights = [0xFFFF] * (CHUNK_SIZE * CHUNK_SIZE)
+    for z in range(CHUNK_SIZE):
+        ring_heights[4 | (z << 5)] = 10
+    mirror_materialize(mirror, page, worldgen, ring_heights)
+
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("materialize: altura do topo sólido", ok and h == 10)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 8, 0)
+    check("materialize: coluna de ar é 0xFFFF", ok and h == 0xFFFF)
+    ok, _h = mirror_height_get(mirror, (1, 0, 0), 4, 0)
+    check("página ausente: ok=False (tri-state)", not ok)
+
+    # colocar acima do topo: sobe
+    mirror_journal_apply(mirror, (0, 0, 0), (4, 13, 0), 1)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("colocar acima do topo: altura vai a h+3", ok and h == 13)
+    # colocar abaixo do topo: inalterado
+    mirror_journal_apply(mirror, (0, 0, 0), (4, 5, 0), 1)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("colocar abaixo do topo: inalterado", ok and h == 13)
+    # remover abaixo do topo: inalterado
+    mirror_journal_apply(mirror, (0, 0, 0), (4, 5, 0), 0)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("remover abaixo do topo: inalterado", ok and h == 13)
+    # remover o bloco do topo (h+3): rescan volta para o novo topo (y=10)
+    mirror_journal_apply(mirror, (0, 0, 0), (4, 13, 0), 0)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("remover o topo: rescan para o novo topo", ok and h == 10)
+    # remover o topo atual: rescan desce um nível (y=9)
+    mirror_journal_apply(mirror, (0, 0, 0), (4, 10, 0), 0)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("remover o topo: rescan desce um nível", ok and h == 9)
+    # esvaziar a coluna inteira: rescan final é 0xFFFF
+    for y in range(9, -1, -1):
+        mirror_journal_apply(mirror, (0, 0, 0), (4, y, 0), 0)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("remover o último sólido: coluna vazia", ok and h == 0xFFFF)
+    # coluna vazia recebendo sólido: altura = y
+    mirror_journal_apply(mirror, (0, 0, 0), (4, 7, 0), 1)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("coluna vazia recebendo sólido: altura = y", ok and h == 7)
+
+    # chunk de ar: fill_empty mantém 0xFFFF e journal atualiza
+    page_air = mirror.page_acquire((0, 1, 0))
+    for i in range(CHUNK_VOXEL_COUNT):
+        page_air.ids[i] = 0
+    for w in range(len(page_air.solid)):
+        page_air.solid[w] = 0
+    for i in range(len(page_air.heights)):
+        page_air.heights[i] = 0xFFFF
+    page_air.state = MATERIALIZED
+    ok, h = mirror_height_get(mirror, (0, 1, 0), 3, 3)
+    check("chunk de ar: coluna vazia", ok and h == 0xFFFF)
+    mirror_journal_apply(mirror, (0, 1, 0), (3, 20, 3), 2)
+    ok, h = mirror_height_get(mirror, (0, 1, 0), 3, 3)
+    check("chunk de ar + journal: altura = y", ok and h == 20)
+
+    # heightmap consistente com ids em toda página
+    consistent = True
+    for z in range(CHUNK_SIZE):
+        for x in range(CHUNK_SIZE):
+            expect = 0xFFFF
+            for y in range(CHUNK_SIZE - 1, -1, -1):
+                if page.ids[mirror_index((x, y, z))] != 0:
+                    expect = y
+                    break
+            if page.heights[x | (z << 5)] != expect:
+                consistent = False
+    check("heights == topo derivado de ids (todas as colunas)", consistent)
+
+
 def scenario_parity_and_reconciliation():
     print("[cenario] paridade GPU<->mirror em 163.840 voxels com reconciliacao")
     # 5 chunks em x: worldgen determinístico (grama/terra/pedra por camadas)
@@ -461,6 +596,7 @@ def main():
     scenario_materialize_replay()
     scenario_tri_state()
     scenario_export_only_no_pack()
+    scenario_journal_heightmap()
     scenario_parity_and_reconciliation()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)

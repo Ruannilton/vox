@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 13 |
-| Specs aprovadas | 13 |
+| Specs registradas | 14 |
+| Specs aprovadas | 14 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 13 |
+| Implementações concluídas | 14 |
 | Validações verificadas | 13 |
 
-Treze especificações registradas e **integralmente concluídas** (aprovadas, implementadas e verificadas) — VS-00 a VS-12. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Quatorze especificações registradas, 13 integralmente concluídas; VS-13 (heightmap na geração e no mirror) implementada e validada (AC-01/AC-02 verificados; AC-03 parcial — heightmap verificado, ganho de tempo do generate não mensurável nesta configuração, ver Histórico da spec). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -34,6 +34,7 @@ Treze especificações registradas e **integralmente concluídas** (aprovadas, i
 | VS-10 | [[VS-10-chunks-vazios-virtuais|Chunks vazios virtuais]] | `aprovada` | `concluida` | `verificada` | VS-04 | — |
 | VS-11 | [[VS-11-uvs-templates|UVs nos templates de malha]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
 | VS-12 | [[VS-12-assets-json|Assets data-driven via JSON]] | `aprovada` | `concluida` | `verificada` | VS-11 | — |
+| VS-13 | [[VS-13-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aprovada` | `concluida` | `parcial` | VS-04 | — |
 
 ## Decisões
 
@@ -62,6 +63,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-V1 | [[ADR-V1-chunks-vazios-virtuais|Chunks vazios virtuais sem slot]] | `aceita` | VS-10 |
 | ADR-U1 | [[ADR-U1-uvs-templates-malha|UVs nos templates de malha]] | `aceita` | VS-11 |
 | ADR-A1 | [[ADR-A1-assets-json|Assets data-driven via JSON]] | `aceita` | VS-12 |
+| ADR-G1 | [[ADR-G1-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aceita` | VS-13 |
 
 ## Vocabulário de status
 

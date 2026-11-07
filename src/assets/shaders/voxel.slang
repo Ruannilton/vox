@@ -3,9 +3,14 @@ import common;
 #include "./lib/FastNoiseLite.slang"
 
 
+// VS-13 (REQ-GEN-01/02): heightmap da fatia 8x8 do workgroup em groupshared.
+// As threads com y-local 0 (64/workgroup) calculam a altura de cada coluna
+// uma única vez; após barrier todos leem. 128 B/workgroup.
+groupshared uint16_t heights_gs[8][8];
+
 [shader("compute")]
 [numthreads(8, 8, 8)]
-void generate_voxels(uint3 thread_id : SV_DispatchThreadID) {
+void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_GroupThreadID) {
     uint chunk_in_batch = thread_id.z / CHUNK_SIZE;
     uint local_z        = thread_id.z % CHUNK_SIZE;
 
@@ -14,21 +19,38 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID) {
     int3 coord = int3(int(thread_id.x), int(thread_id.y), int(local_z));
     int3 voxel_world_position = job.chunk_world_origin + coord;
 
-    fnl_state fnl1;
-    fnl1 = fnlCreateState();
-    fnl1.frequency = 0.02;
-    fnl1.noise_type = FNL_NOISE_OPENSIMPLEX2;
+    uint height = 0;
+    if (local_id.y == 0) {
+        // VS-13 (REQ-GEN-02): estados de ruído criados 1x por coluna de
+        // threads (não por voxel); mesma função, mesmos inputs e mesma ordem
+        // de cálculo do caminho antigo — equivalência bit a bit.
+        fnl_state fnl1;
+        fnl1 = fnlCreateState();
+        fnl1.frequency = 0.02;
+        fnl1.noise_type = FNL_NOISE_OPENSIMPLEX2;
 
-    fnl_state fnl2;
-    fnl2 = fnlCreateState();
-    fnl2.frequency = 0.07;
-    fnl2.noise_type = FNL_NOISE_PERLIN;
+        fnl_state fnl2;
+        fnl2 = fnlCreateState();
+        fnl2.frequency = 0.07;
+        fnl2.noise_type = FNL_NOISE_PERLIN;
 
+        uint height1 = uint(fnlGetNoise2D(fnl1,voxel_world_position.x, voxel_world_position.z) * 10);
+        uint height2 = uint(fnlGetNoise2D(fnl2,voxel_world_position.z, voxel_world_position.x) * 5);
+        height = 32 + height1 + height2;
 
+        heights_gs[local_id.x][local_id.z] = uint16_t(height);
 
-    uint height1 = uint(fnlGetNoise2D(fnl1,voxel_world_position.x, voxel_world_position.z) * 10);
-    uint height2 = uint(fnlGetNoise2D(fnl2,voxel_world_position.z, voxel_world_position.x) * 5);
-    uint height = 32 + height1 + height2;
+        // VS-13 (REQ-MIR-01): export do heightmap no ring paralelo (binding
+        // 20, z-contíguo x|z<<5). Topologia: y do sólido mais alto da coluna
+        // neste chunk; 0xFFFF = coluna de ar.
+        if (job.mirror_ring_slot >= 0) {
+            int top_local = min(int(height) - job.chunk_world_origin.y, CHUNK_SIZE - 1);
+            uint16_t top = top_local < 0 ? uint16_t(0xFFFF) : uint16_t(top_local);
+            mirror_heightmap_ring[uint(job.mirror_ring_slot) * 1024 + uint(thread_id.x) | (uint(local_z) << 5)] = top;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    height = uint(heights_gs[local_id.x][local_id.z]);
 
     uint block_id = 0;
     if(voxel_world_position.y > height) {

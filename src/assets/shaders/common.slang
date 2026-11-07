@@ -220,7 +220,7 @@ struct MeshVertex {
 
 // ----------------------------------------------------------------------------
 // Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–15 = VS-03;
-// 16 = VS-04; 18 = VS-10; 19 = VS-11)
+// 16 = VS-04; 18 = VS-10; 19 = VS-11; 20 = VS-13)
 // ----------------------------------------------------------------------------
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint>               temporary_dense_chunks;
 [[vk::binding(1, 0)]] StructuredBuffer<ChunkGenerationJob>   generation_jobs;
@@ -246,6 +246,10 @@ struct MeshVertex {
 // VS-11 (REQ-UV-02): pool de UVs dos templates — paralelo e indexado como
 // template_vertices (stride 8 B, std430 float2); MeshTemplate.uv_offset.
 [[vk::binding(19, 0)]] StructuredBuffer<float2>                template_uvs;
+// VS-13 (REQ-MIR-01): heightmap de export do mirror — ring paralelo ao denso
+// (binding 16, mesmo índice de slot). 64 slots x 1.024 u16 (2 KiB/slot),
+// z-contíguo x|z<<5; y do sólido mais alto da coluna (0xFFFF = coluna vazia).
+[[vk::binding(20, 0)]] RWStructuredBuffer<uint16_t>          mirror_heightmap_ring;
 
 
 uint work_queue_base_words() {

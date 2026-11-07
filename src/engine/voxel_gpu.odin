@@ -35,6 +35,10 @@ VoxelGpu :: struct {
 	edit_results_mapped:    [^]u32,
 	mirror_export_ring:        GpuBuffer,
 	mirror_export_ring_mapped: [^]u16,
+	// VS-13 (REQ-MIR-01): ring paralelo do heightmap (binding 20) — mesmo
+	// índice de slot do ring denso; 1.024 u16 por slot (2 KiB).
+	mirror_heightmap_ring:        GpuBuffer,
+	mirror_heightmap_ring_mapped: [^]u16,
 	// VS-10 (REQ-VRT-02): flags do pack por slot (binding 18, host-visible).
 	chunk_result_flags:        GpuBuffer,
 	chunk_result_flags_mapped: [^]u32,
@@ -439,6 +443,13 @@ voxel_gpu_init :: proc() {
 		{.HOST_ACCESS_RANDOM, .MAPPED},
 	)
 	voxel_gpu.mirror_export_ring_mapped = cast([^]u16)mapped_mirror_ring
+	mapped_heightmap_ring: rawptr
+	voxel_gpu.mirror_heightmap_ring, mapped_heightmap_ring = gpu_buffer_create_host_flags(
+		vk.DeviceSize(config.mirror_ring_slots * CHUNK_SIZE * CHUNK_SIZE * size_of(u16)),
+		{.STORAGE_BUFFER},
+		{.HOST_ACCESS_RANDOM, .MAPPED},
+	)
+	voxel_gpu.mirror_heightmap_ring_mapped = cast([^]u16)mapped_heightmap_ring
 	mapped_result_flags: rawptr
 	voxel_gpu.chunk_result_flags, mapped_result_flags = gpu_buffer_create_host_flags(
 		vk.DeviceSize(config.resident_slots * size_of(u32)),
@@ -620,6 +631,7 @@ voxel_gpu_init :: proc() {
 		17 = voxel_gpu.work_queue.handle,
 		18 = voxel_gpu.chunk_result_flags.handle,
 		19 = voxel_gpu.template_uvs.handle,
+		20 = voxel_gpu.mirror_heightmap_ring.handle,
 	}
 	buffer_infos: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorBufferInfo
 	writes: [DESCRIPTOR_SET_BINDING_COUNT]vk.WriteDescriptorSet
@@ -667,6 +679,7 @@ voxel_gpu_init :: proc() {
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.voxel_edits.handle, .BUFFER, "voxel_edits")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_results.handle, .BUFFER, "edit_results")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.mirror_export_ring.handle, .BUFFER, "mirror_export_ring")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.mirror_heightmap_ring.handle, .BUFFER, "mirror_heightmap_ring")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.chunk_result_flags.handle, .BUFFER, "chunk_result_flags")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.template_uvs.handle, .BUFFER, "template_uvs")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.generation_pipeline, .PIPELINE, "pipeline_generate")
@@ -707,6 +720,7 @@ voxel_gpu_destroy :: proc() {
 
 	gpu_buffer_destroy(&voxel_gpu.dummy_buffer)
 	gpu_buffer_destroy(&voxel_gpu.chunk_result_flags)
+	gpu_buffer_destroy(&voxel_gpu.mirror_heightmap_ring)
 	gpu_buffer_destroy(&voxel_gpu.mirror_export_ring)
 	gpu_buffer_destroy(&voxel_gpu.edit_results)
 	gpu_buffer_destroy(&voxel_gpu.voxel_edits)

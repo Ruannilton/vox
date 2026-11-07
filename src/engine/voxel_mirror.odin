@@ -64,6 +64,7 @@ mirror_page_acquire :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) -> ^Mirror
 	page.edit_seq = 0
 	page.state = .PENDING_READBACK
 	page.ring_slot = -1
+	for &h in page.heights do h = 0xFFFF // VS-13: colunas começam vazias
 	page.pending = nil     
 	page.applied_log = nil 
 	page.rejected_log = nil 
@@ -166,6 +167,7 @@ mirror_service_retries :: proc(ve: ^VoxelEngine) {
 mirror_page_fill_empty :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, page: ^MirrorChunkPage) {
 	for &id in page.ids do id = 0
 	for &word in page.solid do word = 0
+	for &h in page.heights do h = 0xFFFF // VS-13: chunk de ar = colunas vazias
 	for edit in page.pending {
 		mirror_page_apply(page, edit.world_voxel, edit.block_id)
 		append(&page.applied_log, edit)
@@ -317,6 +319,40 @@ mirror_page_apply :: proc(page: ^MirrorChunkPage, world_voxel: [3]i32, block_id:
 	index := mirror_index_from_local(local)
 	page.ids[index] = u16(block_id)
 	mirror_bit_write(page.solid[:], index, block_id != 0)
+
+	// VS-13 (REQ-MIR-03): o journal mantém o heightmap da coluna (índice
+	// z-contíguo x|z<<5 — NÃO aplicar mirror_index_from_local aqui).
+	column := u32(local.x) | (u32(local.z) << 5)
+	if block_id != 0 {
+		// colocar sólido acima do topo — ou em coluna vazia (0xFFFF) — sobe
+		if page.heights[column] == 0xFFFF || u32(local.y) > u32(page.heights[column]) {
+			page.heights[column] = u16(local.y)
+		}
+	} else if page.heights[column] == u16(local.y) {
+		// remover o bloco do topo: rescan da coluna (32 leituras) para o
+		// novo topo sólido (ou 0xFFFF se a coluna esvaziou)
+		new_top: u16 = 0xFFFF
+		for ly := local.y - 1; ly >= 0; ly -= 1 {
+			if mirror_bit_test(page.solid[:], mirror_index_from_local({local.x, ly, local.z})) {
+				new_top = u16(ly)
+				break
+			}
+		}
+		page.heights[column] = new_top
+	}
+	// demais casos (sólido em/abaixo do topo, remoção abaixo do topo):
+	// heights inalterado
+}
+
+// VS-13 (REQ-MIR-04): altura do sólido mais alto da coluna em O(1).
+// ok = false se a página está ausente/em readback (tri-state preservado);
+// height = 0xFFFF significa coluna sem sólido.
+mirror_height_get :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate, x, z: u32) -> (ok: bool, height: u16) {
+	page, found := ve.mirror.pages[chunk_coord]
+	if !found || page.state != .MATERIALIZED {
+		return false, 0
+	}
+	return true, page.heights[x | (z << 5)]
 }
 
 mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, batch_timeline_value: u64) {
@@ -360,6 +396,18 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 			vk.DeviceSize(CHUNK_VOXEL_COUNT * size_of(u16)),
 		),
 	)
+	// VS-13 (REQ-MIR-01/02): ring paralelo do heightmap — mesmo slot, 1.024
+	// u16 z-contíguos (x|z<<5), copiados direto para a página.
+	vk_check(
+		vma.InvalidateAllocation(
+			app.vmaAllocator,
+			voxel_gpu.mirror_heightmap_ring.allocation,
+			vk.DeviceSize(uint(ring_slot) * CHUNK_SIZE * CHUNK_SIZE * size_of(u16)),
+			vk.DeviceSize(CHUNK_SIZE * CHUNK_SIZE * size_of(u16)),
+		),
+	)
+	hm_base := int(ring_slot) * CHUNK_SIZE * CHUNK_SIZE
+	copy(page.heights[:], voxel_gpu.mirror_heightmap_ring_mapped[hm_base:hm_base + CHUNK_SIZE * CHUNK_SIZE])
 
 	// ring -> página (y-contíguo u16) + reconstrução da bitmask de sólidos.
 	base := int(ring_slot) * CHUNK_VOXEL_COUNT

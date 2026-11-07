@@ -128,6 +128,7 @@ Quebrar um bloco, construir uma parede, abrir um túnel: toda alteração do mun
 - **Paleta dinâmica com refcount:** o header do chunk ganhou um contador de referência por entrada de paleta (256 × u8). Uma edição que introduz um bloco novo aloca um slot livre por CAS; a que remove o último voxel de um tipo libera o slot (reciclagem preguiçosa com tombstones). A invariante do B3 é preservada: o slot 0 (AR) nunca é reciclado.
 - **Tetos de segurança:** 4.096 edições por flush, 256 chunks por flush, 1.024 edições por chunk por flush — o excedente espera o próximo ciclo. Chunks em geração não participam do lote (preserva o B1); suas edições ficam pendentes e reintegram quando o chunk conclui.
 - **Feedback:** um ring de resultados (lido 2 frames depois) reporta edições aplicadas, no-ops e rejeições — chunks em overflow de paleta são somente-leitura e rejeitam com código próprio. É esse canal que o mirror (Etapa 7) usa para reconciliar.
+- **Journal mantém o heightmap (VS-13):** a aplicação dual no mirror (mesma sequência do flush, Etapa 7) atualiza, por edição, o campo `ChunkPage.heights` — colocar sólido acima do topo da coluna sobe a altura; remover o bloco do topo rescanza a coluna (32 leituras do bitmask) para o novo topo; demais casos não tocam o campo. O `apply_voxel_edits` da GPU não mantém heightmap (C2: o ring só alimenta o materialize; o journal é a verdade).
 
 ## 8. Etapa 8: Input intermediado por eventos, gravação e replay (VS-07) — novo na v3.0
 
@@ -162,16 +163,17 @@ Toda interação usuário↔aplicação é intermediada por um **bus de eventos*
 
 *Figura 4 — Dupla materialização: a verdade é worldgen + journal; GPU e RAM derivam views independentes, em formatos e bolhas próprios.*
 
-**Formato da página:** cada chunk espelhado ocupa uma ChunkPage de ~68,1 KiB (Figura 5): grid denso de 32³ u16 (ID de bloco direto — sem paleta na RAM, o que elimina toda divergência de paleta e faz a query de ponto custar um único load), mais um bitmask de sólidos de 4 KiB derivado do dicionário de blocos, que responde a consulta mais frequente de todas («ocupa espaço?») testando 32 voxels por load. A indexação é **y-major**, de modo que uma coluna vertical inteira são 64 bytes contíguos — uma linha de cache — e o scan de chão, operação mais comum do gameplay, é uma leitura sequencial.
+**Formato da página:** cada chunk espelhado ocupa uma ChunkPage de ~70,1 KiB (Figura 5; emenda VS-13 2026-11-07, era 68,1 KiB): grid denso de 32³ u16 (ID de bloco direto — sem paleta na RAM, o que elimina toda divergência de paleta e faz a query de ponto custar um único load), mais um bitmask de sólidos de 4 KiB derivado do dicionário de blocos, que responde a consulta mais frequente de todas («ocupa espaço?») testando 32 voxels por load, mais o **heightmap da coluna** (VS-13): 1.024 u16 de 2 KiB, índice z-contíguo `x | z<<5`, guardando o y do sólido mais alto de cada coluna (`0xFFFF` = coluna vazia) — a altura do chão vira consulta O(1) e o journal do E1 o mantém (colocar acima do topo sobe; remover o topo rescanza 32 leituras; demais casos inalterados). A indexação do grid denso é **y-major**, de modo que uma coluna vertical inteira são 64 bytes contíguos — uma linha de cache.
 
 ```
-ChunkPage — 32³ voxels · total ≈ 68,1 KiB · alinhada a 64 B · alocada em pool de tamanho fixo
+ChunkPage — 32³ voxels · total ≈ 70,1 KiB · alinhada a 64 B · alocada em pool de tamanho fixo
 ┌ Header — 64 B: coord[3], edit_seq, state, pending
 ├ Bitmask solid — 4 KiB ([1024] u32, 1 bit/voxel, derivado do BlockDefinition)
-└ ids — 64 KiB ([32768] u16, grid denso, block ID direto, sem paleta)
-Índice y-major: idx = (x·32 + z)·32 + y → coluna vertical = 64 B contíguos (1 linha de cache)
+├ heights — 2 KiB ([1024] u16, índice z-contíguo x|z<<5, y do topo sólido; 0xFFFF = vazia) [VS-13]
+└ ids — 64 KiB ([32768] u16, grid denso y-major, block ID direto, sem paleta)
+Índice y-major: idx = y | z<<5 | x<<10 → coluna vertical = 64 B contíguos (1 linha de cache)
 
-Estados: PENDING_READBACK → (fence + memcpy + replay pending) → MATERIALIZED → (saiu da bolha) → EVICTED
+Estados: PENDING_READBACK → (timeline + memcpy + replay pending) → MATERIALIZED → (saiu da bolha) → EVICTED
 ```
 
 *Figura 5 — Layout da ChunkPage e sua máquina de estados.*

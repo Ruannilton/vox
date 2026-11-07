@@ -19,6 +19,7 @@ graph TD
     VS10[VS-10 — Chunks vazios virtuais]
     VS11[VS-11 — UVs nos templates]
     VS12[VS-12 — Assets JSON]
+    VS13[VS-13 — Heightmap geração/mirror]
 
     VS00 --> VS01
     VS01 --> VS02
@@ -32,6 +33,7 @@ graph TD
     VS09 --> VS10
     VS10 --> VS11
     VS11 --> VS12
+    VS12 --> VS13
 ```
 
 ## Registro normativo
@@ -51,6 +53,7 @@ graph TD
 | [[VS-10-chunks-vazios-virtuais|VS-10]] | VS-04 | — | — |
 | [[VS-11-uvs-templates|VS-11]] | VS-02 | — | — |
 | [[VS-12-assets-json|VS-12]] | VS-11 | — | — |
+| [[VS-13-heightmap-geracao-mirror|VS-13]] | VS-04 | — | — |
 
 ## Decisões incorporadas
 
@@ -65,6 +68,7 @@ graph TD
 - ADR-V1: VS-10 introduz chunks vazios virtuais — chunk só-ar concluído vira estado EMPTY sem slot (feedback das flags do pack por binding 18, liberação imediata na conclusão B1), nunca publicado/despachado; edição materializa via geração + pending do E1; vizinhos o veem como ar (NEIGHBOR_SLOT_INVALID, B2) sem mudança de shader de render.
 - ADR-U1: VS-11 migra o albedo de triplanar para UVs por vértice dos templates (binding 19 template_uvs, MeshVertex +TEXCOORD0, sentinela (-1,-1) → fallback triplanar); orçamento mesh shader inalterado; REQ-SHADE-03 da VS-02 emendada.
 - ADR-A1: VS-12 carrega blocos/malhas/texturas de um JSON único no startup — malhas reaproveitáveis por nome, PNG única por bloco em camadas de um Texture2DArray (mesma dimensão exigida), saída formatada nos contratos atuais do pipeline (zero mudança de shader); ausente → fallback built-ins + paleta.
+- ADR-G1: VS-13 calcula o heightmap 32×32 uma única vez por chunk (groupshared, threads y-local 0) com estados de ruído 1×/thread-de-coluna (8× menos avaliações — medido; saída bit a bit idêntica) e o exporta ao mirror (binding 20 + campo na ChunkPage, journal do E1 mantém; chão O(1)).
 
 ## Dependências transversais a registrar nas specs
 
