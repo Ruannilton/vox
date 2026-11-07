@@ -13,9 +13,9 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
 | Implementações concluídas | 14 |
-| Validações verificadas | 13 |
+| Validações verificadas | 14 |
 
-Quatorze especificações registradas, 13 integralmente concluídas; VS-13 (heightmap na geração e no mirror) implementada e validada (AC-01/AC-02 verificados; AC-03 parcial — heightmap verificado, ganho de tempo do generate não mensurável nesta configuração, ver Histórico da spec). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Quatorze especificações registradas e **integralmente concluídas** — VS-00 a VS-13. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -34,7 +34,7 @@ Quatorze especificações registradas, 13 integralmente concluídas; VS-13 (heig
 | VS-10 | [[VS-10-chunks-vazios-virtuais|Chunks vazios virtuais]] | `aprovada` | `concluida` | `verificada` | VS-04 | — |
 | VS-11 | [[VS-11-uvs-templates|UVs nos templates de malha]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
 | VS-12 | [[VS-12-assets-json|Assets data-driven via JSON]] | `aprovada` | `concluida` | `verificada` | VS-11 | — |
-| VS-13 | [[VS-13-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aprovada` | `concluida` | `parcial` | VS-04 | — |
+| VS-13 | [[VS-13-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aprovada` | `concluida` | `verificada` | VS-04 | — |
 
 ## Decisões
 
