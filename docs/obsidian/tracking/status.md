@@ -13,9 +13,9 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
 | Implementações concluídas | 16 |
-| Validações verificadas | 16 |
+| Validações verificadas | 15 |
 
-Dezesseis especificações registradas, 16 integralmente concluídas; VS-15 (Tracy profiler — CPU zones) implementada e validada (build default sem dependência de link, smoke Tracy com `IsConnected()=false`, telemetria VS-05 intacta; AC-02 manual da UI pendente do mantenedor). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Dezesseis especificações registradas e aprovadas, 16 implementadas; 15 integralmente verificadas — VS-15 (Tracy profiler — CPU zones) implementada e com AC-01 verificado (build default sem dependência de link, smoke Tracy com `IsConnected()=false`, telemetria VS-05 intacta), aguardando o AC-02 manual da UI Tracy (passo a passo no manual técnico §11). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -36,7 +36,7 @@ Dezesseis especificações registradas, 16 integralmente concluídas; VS-15 (Tra
 | VS-12 | [[VS-12-assets-json|Assets data-driven via JSON]] | `aprovada` | `concluida` | `verificada` | VS-11 | — |
 | VS-13 | [[VS-13-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aprovada` | `concluida` | `verificada` | VS-04 | — |
 | VS-14 | [[VS-14-plantas-alpha-test-spawn|Plantas — alpha-test e spawn determinístico]] | `aprovada` | `concluida` | `verificada` | VS-12 | — |
-| VS-15 | [[VS-15-tracy-profiler|Tracy profiler (CPU zones)]] | `aprovada` | `concluida` | `verificada` | VS-05 | — |
+| VS-15 | [[VS-15-tracy-profiler|Tracy profiler (CPU zones)]] | `aprovada` | `concluida` | `em-validacao` | VS-05 | AC-02 manual da UI Tracy (passo a passo no manual técnico §11) |
 
 ## Decisões
 

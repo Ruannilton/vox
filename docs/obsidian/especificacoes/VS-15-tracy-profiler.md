@@ -4,7 +4,7 @@ titulo: Tracy profiler (CPU zones)
 tipo: especificacao
 status_spec: aprovada
 status_implementacao: concluida
-status_validacao: verificada
+status_validacao: em-validacao
 depende_de:
   - VS-05
 bloqueada_por: []
