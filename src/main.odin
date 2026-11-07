@@ -12,6 +12,7 @@ last_x, last_y: f64
 first_cursor_event: bool
 camera: Camera
 voxel_engine: ^engine.VoxelEngine
+
 main :: proc() {
 	file_logger, err := os.create("log.txt")
 	defer os.close(file_logger)
@@ -54,13 +55,11 @@ main :: proc() {
 
 	glfw.SetInputMode(engine.app.glfwWindow, glfw.CURSOR, glfw.CURSOR_DISABLED)
 	last_x, last_y = glfw.GetCursorPos(engine.app.glfwWindow)
-	// o recentering do CURSOR_DISABLED dispara um evento com posição absoluta
-	// defasada; o primeiro evento só ressincroniza last_x/last_y, sem aplicar
-	// delta (senão a pose padrão muda sozinha na inicialização)
+	// recentering do CURSOR_DISABLED dispara evento com posição defasada; o
+	// primeiro só ressincroniza last_x/last_y, sem aplicar delta
 	first_cursor_event = true
 
-	// callbacks são produtores puros: sem runtime context, sem alocação,
-	// sem efeitos — o dreno de eventos (events_drain) grava e despacha
+	// callbacks são produtores puros (sem context/efeitos); o dreno grava e despacha
 	glfw.SetKeyCallback(
 		engine.app.glfwWindow,
 		proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
@@ -345,7 +344,8 @@ main :: proc() {
 	log.info("Exiting application")
 }
 
-update_camera_movement :: proc(dt: f32) {
+@(private)
+update_camera_movement :: proc(delta_time: f32) {
 	speed: f32 = 10.0 // unidades por segundo
 	if engine.events_is_pressed(glfw.KEY_LEFT_SHIFT) do speed *= 8
 
@@ -363,15 +363,15 @@ update_camera_movement :: proc(dt: f32) {
 		right *= 0.70710678
 	}
 
-	camera_move(&camera, forward * speed * dt, right * speed * dt)
+	camera_move(&camera, forward * speed * delta_time, right * speed * delta_time)
 }
 
+@(private)
 key_handler :: proc(e: engine.Event) {
 	p, _ := e.payload.(engine.KeyPayload)
 	#partial switch e.type {
 	case .KeyPress:
-		// teclas de ação são instantâneas; ESC vira CloseRequested para
-		// registrar o fechamento no stream de eventos
+		// teclas de ação são instantâneas; ESC vira CloseRequested para registrar o fechamento
 		switch p.key {
 		case glfw.KEY_ESCAPE:
 			engine.events_emit(.CloseRequested, struct {}{})
@@ -384,14 +384,16 @@ key_handler :: proc(e: engine.Event) {
 	}
 }
 
+@(private)
 mouse_handler :: proc(e: engine.Event) {
 	p, _ := e.payload.(engine.MouseMovePayload)
 	sensitivity: f32 = 0.07
-	// A struct Camera define rotation como x: pitch, y: yaw, z: roll
+	// Camera.rotation: x: pitch, y: yaw, z: roll
 	delta_rotation := glm.vec3{p.dy * sensitivity, p.dx * sensitivity, 0}
 	camera_rotate(&camera, delta_rotation)
 }
 
+@(private)
 close_handler :: proc(e: engine.Event) {
 	glfw.SetWindowShouldClose(engine.app.glfwWindow, true)
 }

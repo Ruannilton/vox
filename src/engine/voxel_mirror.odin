@@ -1,6 +1,5 @@
 package engine
 
-
 import "core:log"
 import "core:sync"
 import vma "shared:vma"
@@ -18,37 +17,11 @@ MirrorManager :: struct {
 	stats_ring_misses: u64,
 }
 
-mirror_chunk_and_local :: proc "contextless" (world_voxel: [3]i32) -> (chunk: ChunkCoordinate, local: [3]i32) {
-	chunk = ChunkCoordinate{
-		floor_div_i32(world_voxel.x, CHUNK_SIZE),
-		floor_div_i32(world_voxel.y, CHUNK_SIZE),
-		floor_div_i32(world_voxel.z, CHUNK_SIZE),
-	}
-	local = [3]i32{
-		world_voxel.x - chunk.x * CHUNK_SIZE,
-		world_voxel.y - chunk.y * CHUNK_SIZE,
-		world_voxel.z - chunk.z * CHUNK_SIZE,
-	}
-	return
-}
-
 // Índice do MIRROR (y-contíguo) — REGRA 7: nunca usar o índice denso
 // x-contíguo do GPU/E1 aqui.
-mirror_index_from_local :: proc "contextless" (local: [3]i32) -> u32 {
-	return u32(local.y) | (u32(local.z) << 5) | (u32(local.x) << 10)
-}
 
 mirror_bit_test :: proc "contextless" (mask: []u32, index: u32) -> bool {
 	return (mask[index >> 5] >> (index & 31)) & 1 != 0
-}
-
-mirror_bit_write :: proc "contextless" (mask: []u32, index: u32, value: bool) {
-	bit := u32(1) << (index & 31)
-	if value {
-		mask[index >> 5] |= bit
-	} else {
-		mask[index >> 5] &= ~bit
-	}
 }
 
 // --- Pool de páginas ---
@@ -65,84 +38,15 @@ mirror_page_acquire :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) -> ^Mirror
 	page.state = .PENDING_READBACK
 	page.ring_slot = -1
 	for &h in page.heights do h = 0xFFFF // VS-13: colunas começam vazias
-	page.pending = nil     
-	page.applied_log = nil 
-	page.rejected_log = nil 
+	page.pending = nil
+	page.applied_log = nil
+	page.rejected_log = nil
 	ve.mirror.pages[coord] = page
 	ve.mirror.stats_pages_live += 1
 	return page
 }
 
-mirror_page_release :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
-	page, found := ve.mirror.pages[coord]
-	if !found do return
-	delete(page.pending)
-	delete(page.applied_log)
-	delete(page.rejected_log)
-	page.pending = nil
-	page.applied_log = nil
-	page.rejected_log = nil
-	delete_key(&ve.mirror.pages, coord)
-	pool_index := u32((uintptr(page) - uintptr(raw_data(ve.mirror.pool))) / size_of(MirrorChunkPage))
-	append(&ve.mirror.free_pages, pool_index)
-	ve.mirror.stats_pages_live -= 1
-}
-
-mirror_ring_try_reserve :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, generation: u32) -> i32 {
-	for &entry, i in ve.mirror.ring {
-		if !entry.used {
-			entry.used = true
-			entry.coord = coord
-			entry.generation = generation
-			return i32(i)
-		}
-	}
-	ve.mirror.stats_ring_misses += 1
-	return -1 
-}
-
-mirror_ring_release :: proc(ve: ^VoxelEngine, ring_slot: i32, coord: ChunkCoordinate, generation: u32) {
-	entry := &ve.mirror.ring[ring_slot]
-	if entry.used && entry.coord == coord && entry.generation == generation {
-		entry.used = false
-	}
-}
-
 // --- Agendamento de preenchimento ---
-mirror_try_attach_to_generation :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord, page: ^MirrorChunkPage) -> bool {
-	sync.mutex_lock(&ve.queue_mutex)
-	defer sync.mutex_unlock(&ve.queue_mutex)
-	for &task in ve.pending_tasks {
-		if task_matches(task, coord, record) && !task.export_only {
-			ring := mirror_ring_try_reserve(ve, coord, record.generation)
-			if ring < 0 do return false
-			task.mirror_ring_slot = ring
-			page.ring_slot = ring
-			return true
-		}
-	}
-	return false
-}
-
-mirror_schedule_export :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) -> bool {
-	page, found := ve.mirror.pages[coord]
-	if !found || page.state != .PENDING_READBACK || page.ring_slot >= 0 do return false
-	ring := mirror_ring_try_reserve(ve, coord, record.generation)
-	if ring < 0 do return false
-	page.ring_slot = ring
-	task := GenerationTask {
-		coordinate         = coord,
-		storage_slot_index = record.storage_slot_index,
-		generation         = record.generation,
-		mirror_ring_slot   = ring,
-		export_only        = true,
-	}
-	sync.mutex_lock(&ve.queue_mutex)
-	append(&ve.pending_export_tasks, task)
-	sync.cond_signal(&ve.queue_condition)
-	sync.mutex_unlock(&ve.queue_mutex)
-	return true
-}
 
 mirror_service_retries :: proc(ve: ^VoxelEngine) {
 	for coord, page in ve.mirror.pages {
@@ -176,22 +80,6 @@ mirror_page_fill_empty :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, page: ^
 	page.state = .MATERIALIZED
 	page.ring_slot = -1
 	page.edit_seq += 1
-}
-
-
-mirror_request_page :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {
-	page := mirror_page_acquire(ve, coord)
-	if page == nil do return
-	#partial switch record.state {
-	case .GENERATING:
-		mirror_try_attach_to_generation(ve, coord, record, page)
-	case .EMPTY:
-		// VS-10 (REQ-VRT-04): conteúdo worldgen conhecido (ar puro) —
-		// preenche na CPU, sem export GPU (o registro não tem slot).
-		mirror_page_fill_empty(ve, coord, page)
-	case:
-		mirror_schedule_export(ve, coord, record)
-	}
 }
 
 mirror_request :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
@@ -240,7 +128,7 @@ mirror_forget_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: Ch
 
 mirror_journal_apply :: proc(ve: ^VoxelEngine, chunk: ChunkCoordinate, world_voxel: [3]i32, block_id: u32) {
 	page, found := ve.mirror.pages[chunk]
-	if !found do return 
+	if !found do return
 	if page.state == .PENDING_READBACK {
 		for &existing in page.pending {
 			if existing.world_voxel == world_voxel {
@@ -258,7 +146,7 @@ mirror_journal_apply :: proc(ve: ^VoxelEngine, chunk: ChunkCoordinate, world_vox
 
 mirror_reconcile_rejection :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, rejected: VoxelEditRequest) {
 	page, found := ve.mirror.pages[coord]
-	if !found do return 
+	if !found do return
 	if page.state == .PENDING_READBACK && len(page.rejected_log) == 0 {
 		for i := len(page.pending) - 1; i >= 0; i -= 1 {
 			if page.pending[i] == rejected {
@@ -275,7 +163,6 @@ mirror_reconcile_rejection :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, rej
 		mirror_schedule_export(ve, coord, record)
 	}
 }
-
 
 voxel_get :: proc(ve: ^VoxelEngine, world_voxel: [3]i32) -> (sample: VoxelSample, ok: bool) {
 	chunk, local := mirror_chunk_and_local(world_voxel)
@@ -311,37 +198,6 @@ mirror_column_ground :: proc(ve: ^VoxelEngine, world_x, world_z, y_from: i32) ->
 		}
 		y = chunk.y * CHUNK_SIZE - 1 // coluna toda de ar: desce p/ o chunk de baixo
 	}
-}
-
-
-mirror_page_apply :: proc(page: ^MirrorChunkPage, world_voxel: [3]i32, block_id: u32) {
-	_, local := mirror_chunk_and_local(world_voxel)
-	index := mirror_index_from_local(local)
-	page.ids[index] = u16(block_id)
-	mirror_bit_write(page.solid[:], index, block_id != 0)
-
-	// VS-13 (REQ-MIR-03): o journal mantém o heightmap da coluna (índice
-	// z-contíguo x|z<<5 — NÃO aplicar mirror_index_from_local aqui).
-	column := u32(local.x) | (u32(local.z) << 5)
-	if block_id != 0 {
-		// colocar sólido acima do topo — ou em coluna vazia (0xFFFF) — sobe
-		if page.heights[column] == 0xFFFF || u32(local.y) > u32(page.heights[column]) {
-			page.heights[column] = u16(local.y)
-		}
-	} else if page.heights[column] == u16(local.y) {
-		// remover o bloco do topo: rescan da coluna (32 leituras) para o
-		// novo topo sólido (ou 0xFFFF se a coluna esvaziou)
-		new_top: u16 = 0xFFFF
-		for ly := local.y - 1; ly >= 0; ly -= 1 {
-			if mirror_bit_test(page.solid[:], mirror_index_from_local({local.x, ly, local.z})) {
-				new_top = u16(ly)
-				break
-			}
-		}
-		page.heights[column] = new_top
-	}
-	// demais casos (sólido em/abaixo do topo, remoção abaixo do topo):
-	// heights inalterado
 }
 
 // VS-13 (REQ-MIR-04): altura do sólido mais alto da coluna em O(1).
@@ -475,6 +331,160 @@ mirror_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
 		ve.mirror.stats_ring_misses,
 		ve.mirror.stats_pool_misses,
 	)
+}
+
+@(private)
+
+
+mirror_chunk_and_local :: proc "contextless" (world_voxel: [3]i32) -> (chunk: ChunkCoordinate, local: [3]i32) {
+	chunk = ChunkCoordinate{
+		floor_div_i32(world_voxel.x, CHUNK_SIZE),
+		floor_div_i32(world_voxel.y, CHUNK_SIZE),
+		floor_div_i32(world_voxel.z, CHUNK_SIZE),
+	}
+	local = [3]i32{
+		world_voxel.x - chunk.x * CHUNK_SIZE,
+		world_voxel.y - chunk.y * CHUNK_SIZE,
+		world_voxel.z - chunk.z * CHUNK_SIZE,
+	}
+	return
+}
+
+@(private)
+mirror_index_from_local :: proc "contextless" (local: [3]i32) -> u32 {
+	return u32(local.y) | (u32(local.z) << 5) | (u32(local.x) << 10)
+}
+
+@(private)
+mirror_bit_write :: proc "contextless" (mask: []u32, index: u32, value: bool) {
+	bit := u32(1) << (index & 31)
+	if value {
+		mask[index >> 5] |= bit
+	} else {
+		mask[index >> 5] &= ~bit
+	}
+}
+
+@(private)
+mirror_page_release :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
+	page, found := ve.mirror.pages[coord]
+	if !found do return
+	delete(page.pending)
+	delete(page.applied_log)
+	delete(page.rejected_log)
+	page.pending = nil
+	page.applied_log = nil
+	page.rejected_log = nil
+	delete_key(&ve.mirror.pages, coord)
+	pool_index := u32((uintptr(page) - uintptr(raw_data(ve.mirror.pool))) / size_of(MirrorChunkPage))
+	append(&ve.mirror.free_pages, pool_index)
+	ve.mirror.stats_pages_live -= 1
+}
+
+@(private)
+mirror_ring_try_reserve :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, generation: u32) -> i32 {
+	for &entry, i in ve.mirror.ring {
+		if !entry.used {
+			entry.used = true
+			entry.coord = coord
+			entry.generation = generation
+			return i32(i)
+		}
+	}
+	ve.mirror.stats_ring_misses += 1
+	return -1
+}
+
+@(private)
+mirror_ring_release :: proc(ve: ^VoxelEngine, ring_slot: i32, coord: ChunkCoordinate, generation: u32) {
+	entry := &ve.mirror.ring[ring_slot]
+	if entry.used && entry.coord == coord && entry.generation == generation {
+		entry.used = false
+	}
+}
+
+@(private)
+mirror_try_attach_to_generation :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord, page: ^MirrorChunkPage) -> bool {
+	sync.mutex_lock(&ve.queue_mutex)
+	defer sync.mutex_unlock(&ve.queue_mutex)
+	for &task in ve.pending_tasks {
+		if task_matches(task, coord, record) && !task.export_only {
+			ring := mirror_ring_try_reserve(ve, coord, record.generation)
+			if ring < 0 do return false
+			task.mirror_ring_slot = ring
+			page.ring_slot = ring
+			return true
+		}
+	}
+	return false
+}
+
+@(private)
+mirror_schedule_export :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) -> bool {
+	page, found := ve.mirror.pages[coord]
+	if !found || page.state != .PENDING_READBACK || page.ring_slot >= 0 do return false
+	ring := mirror_ring_try_reserve(ve, coord, record.generation)
+	if ring < 0 do return false
+	page.ring_slot = ring
+	task := GenerationTask {
+		coordinate         = coord,
+		storage_slot_index = record.storage_slot_index,
+		generation         = record.generation,
+		mirror_ring_slot   = ring,
+		export_only        = true,
+	}
+	sync.mutex_lock(&ve.queue_mutex)
+	append(&ve.pending_export_tasks, task)
+	sync.cond_signal(&ve.queue_condition)
+	sync.mutex_unlock(&ve.queue_mutex)
+	return true
+}
+
+@(private)
+mirror_request_page :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {
+	page := mirror_page_acquire(ve, coord)
+	if page == nil do return
+	#partial switch record.state {
+	case .GENERATING:
+		mirror_try_attach_to_generation(ve, coord, record, page)
+	case .EMPTY:
+		// VS-10 (REQ-VRT-04): conteúdo worldgen conhecido (ar puro) —
+		// preenche na CPU, sem export GPU (o registro não tem slot).
+		mirror_page_fill_empty(ve, coord, page)
+	case:
+		mirror_schedule_export(ve, coord, record)
+	}
+}
+
+@(private)
+mirror_page_apply :: proc(page: ^MirrorChunkPage, world_voxel: [3]i32, block_id: u32) {
+	_, local := mirror_chunk_and_local(world_voxel)
+	index := mirror_index_from_local(local)
+	page.ids[index] = u16(block_id)
+	mirror_bit_write(page.solid[:], index, block_id != 0)
+
+	// VS-13 (REQ-MIR-03): o journal mantém o heightmap da coluna (índice
+	// z-contíguo x|z<<5 — NÃO aplicar mirror_index_from_local aqui).
+	column := u32(local.x) | (u32(local.z) << 5)
+	if block_id != 0 {
+		// colocar sólido acima do topo — ou em coluna vazia (0xFFFF) — sobe
+		if page.heights[column] == 0xFFFF || u32(local.y) > u32(page.heights[column]) {
+			page.heights[column] = u16(local.y)
+		}
+	} else if page.heights[column] == u16(local.y) {
+		// remover o bloco do topo: rescan da coluna (32 leituras) para o
+		// novo topo sólido (ou 0xFFFF se a coluna esvaziou)
+		new_top: u16 = 0xFFFF
+		for ly := local.y - 1; ly >= 0; ly -= 1 {
+			if mirror_bit_test(page.solid[:], mirror_index_from_local({local.x, ly, local.z})) {
+				new_top = u16(ly)
+				break
+			}
+		}
+		page.heights[column] = new_top
+	}
+	// demais casos (sólido em/abaixo do topo, remoção abaixo do topo):
+	// heights inalterado
 }
 
 @(private)

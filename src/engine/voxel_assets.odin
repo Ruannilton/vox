@@ -1,12 +1,9 @@
 package engine
 
 // VS-12 (REQ-AST-01..06, REQ-VAL-07): assets data-driven via JSON.
-// `assets/blocks.json` (relativo ao cwd) define meshes reaproveizáveis
-// (vértices/triângulos/cull_tags/uvs), texturas (PNG única) e blocos com
-// referências por nome. Parse + validação rodam ANTES de CreateEngine
-// (mesmo padrão do config.ini); o resultado é consumido no init do motor de
-// voxels (upload GPU nos formatos atuais — zero mudança de shader).
-// Arquivo ausente → warning + built-ins + paleta procedural (paridade).
+// `assets/blocks.json` define meshes reaproveitáveis, texturas (PNG única) e
+// blocos por nome. Parse + validação rodam ANTES de CreateEngine; o resultado
+// é consumido no init do motor de voxels. Ausente → warning + built-ins (paridade).
 
 import "core:encoding/json"
 import "core:fmt"
@@ -61,15 +58,16 @@ assets_json_block :: struct {
 	texture: string `json:"texture"`,
 }
 
+asset_tex_dim :: struct {
+	name:   string,
+	width:  int,
+	height: int,
+}
+
 assets_json_doc :: struct {
 	meshes:   []assets_json_mesh `json:"meshes"`,
 	textures: []assets_json_texture `json:"textures"`,
 	blocks:   []assets_json_block `json:"blocks"`,
-}
-
-assets_fatal :: proc(format: string, args: ..any) -> ! {
-	log.errorf(format, ..args)
-	os.exit(1)
 }
 
 // Carga + validação (REQ-AST-06). Ausente → loaded = false (fallback).
@@ -228,12 +226,6 @@ assets_build_meshes :: proc(doc: ^assets_json_doc) {
 	voxel_assets.uvs = uvs[:]
 }
 
-asset_tex_dim :: struct {
-	name:   string,
-	width:  int,
-	height: int,
-}
-
 @(private)
 assets_build_textures :: proc(doc: ^assets_json_doc, json_path: string) {
 	if len(doc.textures) > ALBEDO_PALETTE_LAYERS {
@@ -247,8 +239,8 @@ assets_build_textures :: proc(doc: ^assets_json_doc, json_path: string) {
 	pixels: []u8
 
 	base_dir := "."
-	if idx := strings.last_index(json_path, "/"); idx >= 0 {
-		base_dir = json_path[:idx]
+	if index := strings.last_index(json_path, "/"); index >= 0 {
+		base_dir = json_path[:index]
 	}
 
 	for tex, i in doc.textures {
@@ -355,20 +347,20 @@ assets_build_blocks :: proc(doc: ^assets_json_doc) {
 		if block.mesh == "" {
 			assets_fatal("{}: campo 'mesh' ausente ou vazio", ctx)
 		}
-		mesh_idx, ok := mesh_index[block.mesh]
+		mesh_index_value, ok := mesh_index[block.mesh]
 		if !ok {
 			assets_fatal("{}: malha '{}' não encontrada", ctx, block.mesh)
 		}
 		if block.texture == "" {
 			assets_fatal("{}: campo 'texture' ausente ou vazio", ctx)
 		}
-		tex_idx, ok2 := voxel_assets.layer_of[block.texture]
-		if !ok2 {
+		texture_index, texture_ok := voxel_assets.layer_of[block.texture]
+		if !texture_ok {
 			assets_fatal("{}: textura '{}' não encontrada", ctx, block.texture)
 		}
 		voxel_assets.registry[block.id] = BlockDefinition {
-			mesh_template_index  = mesh_idx,
-			albedo_texture_index = u32(tex_idx),
+			mesh_template_index  = mesh_index_value,
+			albedo_texture_index = u32(texture_index),
 			pbr_texture_index    = 0, // dummy PBR
 		}
 		voxel_assets.block_names[block.id] = strings.clone(block.name, context.allocator)
@@ -391,4 +383,10 @@ fmt_mesh_where :: proc(name: string, i: int) -> string {
 		return fmt.tprintf("malha[{}]", i)
 	}
 	return fmt.tprintf("malha '{}'", name)
+}
+
+@(private)
+assets_fatal :: proc(format: string, args: ..any) -> ! {
+	log.errorf(format, ..args)
+	os.exit(1)
 }

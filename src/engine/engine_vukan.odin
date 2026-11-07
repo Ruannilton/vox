@@ -1,15 +1,33 @@
 package engine
 
-import glm "core:math/linalg/glsl"
-import vma "shared:vma"
-import vk "vendor:vulkan"
-
-
 import "base:runtime"
 import "core:c"
 import "core:log"
+import glm "core:math/linalg/glsl"
 import "core:slice"
+import vma "shared:vma"
 import "vendor:glfw"
+import vk "vendor:vulkan"
+
+DESCRIPTOR_SET_BINDING_COUNT :: 21 // VS-11: + binding 19 (template_uvs); VS-13: + binding 20 (mirror_heightmap_ring)
+PUSH_CONSTANTS_SIZE :: 92 // VS-08 (REQ-CFG-06): + visible_chunk_capacity
+
+REQUIRED_DEVICE_EXTENSIONS :: []cstring {
+	vk.KHR_SWAPCHAIN_EXTENSION_NAME,
+	vk.EXT_MESH_SHADER_EXTENSION_NAME,
+	vk.EXT_SHADER_OBJECT_EXTENSION_NAME,
+	vk.EXT_MEMORY_BUDGET_EXTENSION_NAME,
+}
+
+DeviceFeatureChain :: struct {
+	base:          vk.PhysicalDeviceFeatures,
+	v11:           vk.PhysicalDeviceVulkan11Features,
+	v12:           vk.PhysicalDeviceVulkan12Features,
+	v13:           vk.PhysicalDeviceVulkan13Features,
+	v14:           vk.PhysicalDeviceVulkan14Features,
+	shader_object: vk.PhysicalDeviceShaderObjectFeaturesEXT,
+	mesh_shader:   vk.PhysicalDeviceMeshShaderFeaturesEXT,
+}
 
 @(private)
 create_vulkan_instance :: proc() {
@@ -129,29 +147,10 @@ destroy_vulkan_surface :: proc() {
 	log.info("Vulkan surface destroyed successfully")
 }
 
-
-REQUIRED_DEVICE_EXTENSIONS :: []cstring {
-	vk.KHR_SWAPCHAIN_EXTENSION_NAME,
-	vk.EXT_MESH_SHADER_EXTENSION_NAME,
-	vk.EXT_SHADER_OBJECT_EXTENSION_NAME,
-	vk.EXT_MEMORY_BUDGET_EXTENSION_NAME, 
-}
-
-
-DeviceFeatureChain :: struct {
-	base:          vk.PhysicalDeviceFeatures,
-	v11:           vk.PhysicalDeviceVulkan11Features,
-	v12:           vk.PhysicalDeviceVulkan12Features,
-	v13:           vk.PhysicalDeviceVulkan13Features,
-	v14:           vk.PhysicalDeviceVulkan14Features,
-	shader_object: vk.PhysicalDeviceShaderObjectFeaturesEXT,
-	mesh_shader:   vk.PhysicalDeviceMeshShaderFeaturesEXT,
-}
-
 @(private)
 init_device_feature_chain :: proc(chain: ^DeviceFeatureChain) {
 	chain.base = {
-		shaderInt16 = true, 
+		shaderInt16 = true,
 	}
 	chain.v11 = {
 		sType                 = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
@@ -217,7 +216,7 @@ query_device_features :: proc(device: vk.PhysicalDevice) -> DeviceFeatureChain {
 		pNext = &chain.mesh_shader,
 	}
 	vk.GetPhysicalDeviceFeatures2(device, &features2)
-	chain.base = features2.features 
+	chain.base = features2.features
 	return chain
 }
 
@@ -321,7 +320,6 @@ create_swap_chain :: proc() {
 	width, height := glfw.GetFramebufferSize(app.glfwWindow)
 	app.windowWidth = u32(width)
 	app.windowHeight = u32(height)
-
 
 	surface_capabilities, image_count := get_swap_chain_capabilities()
 	surface_format := select_surface_format()
@@ -485,9 +483,6 @@ destroy_sync_objects :: proc() {
 	vk.DestroySemaphore(app.vkDevice, app.computeTimelineSemaphore, nil)
 	log.info("Sync objects destroyed successfully")
 }
-
-DESCRIPTOR_SET_BINDING_COUNT :: 21 // VS-11: + binding 19 (template_uvs); VS-13: + binding 20 (mirror_heightmap_ring)
-PUSH_CONSTANTS_SIZE :: 92 // VS-08 (REQ-CFG-06): + visible_chunk_capacity
 
 @(private)
 create_descriptor_layouts :: proc() {
@@ -818,7 +813,6 @@ setup_swap_chain_frames :: proc() {
 			raw_data(images),
 		),
 	)
-
 
 	app.presentation.swapChainImageCount = images_count
 

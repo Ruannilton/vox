@@ -3,7 +3,6 @@ package engine
 import vma "shared:vma"
 import vk "vendor:vulkan"
 
-
 QueueType :: enum {
 	Graphics,
 	Compute,

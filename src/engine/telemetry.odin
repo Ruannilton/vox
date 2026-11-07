@@ -1,6 +1,5 @@
 package engine
 
-
 import "core:fmt"
 import "core:log"
 import "core:os"
@@ -11,6 +10,11 @@ import vma "shared:vma"
 import vk "vendor:vulkan"
 
 TELEMETRY_DEFAULT_ENABLED :: true
+TELEMETRY_CSV_INTERVAL_MS :: 500.0 // intervalo da série temporal (0 = desligada)
+TELEMETRY_DIR :: "telemetry" // relativo ao cwd (bin/)
+TELEMETRY_GFX_QUERY_COUNT :: 16 // 5 operações + frame total (pares) = 12 ≤ 16
+TELEMETRY_COMPUTE_QUERY_COUNT :: 8 // generate + pack (pares) = 4 ≤ 8
+TELEMETRY_OPERATION_COUNT :: 7
 
 TelemetryOperation :: enum {
 	Generate,
@@ -21,11 +25,6 @@ TelemetryOperation :: enum {
 	MeshDraw,
 	FrameTotal,
 }
-TELEMETRY_OPERATION_COUNT :: 7
-
-TELEMETRY_GFX_QUERY_COUNT     :: 16 // 5 operações + frame total (pares) = 12 ≤ 16
-TELEMETRY_COMPUTE_QUERY_COUNT :: 8  // generate + pack (pares) = 4 ≤ 8
-
 
 TelemetryHeapSample :: struct {
 	used_bytes:       u64,
@@ -51,18 +50,10 @@ Telemetry :: struct {
 	last_csv_tick:       time.Tick,
 }
 
-TELEMETRY_CSV_INTERVAL_MS :: 500.0 // intervalo da série temporal (0 = desligada)
-TELEMETRY_DIR :: "telemetry" // relativo ao cwd (bin/)
+telemetry: Telemetry
 
 @(private)
-telemetry_timestamp_string :: proc() -> string {
-	now := time.now()
-	year, month, day := time.date(now)
-	hour, min, sec := time.clock(now)
-	return fmt.tprintf("%04d%02d%02d_%02d%02d%02d", year, int(month), day, hour, min, sec)
-}
-
-telemetry: Telemetry
+session_start_tick := time.tick_now()
 
 telemetry_init :: proc() {
 	telemetry.enabled = TELEMETRY_DEFAULT_ENABLED
@@ -83,12 +74,12 @@ telemetry_init :: proc() {
 	queue_families := make([]vk.QueueFamilyProperties, queue_family_count, context.temp_allocator)
 	vk.GetPhysicalDeviceQueueFamilyProperties(app.vkPhysicalDevice, &queue_family_count, raw_data(queue_families))
 
-	gfx_bits := queue_families[app.queues[.Graphics].familyIndex].timestampValidBits
-	cmp_bits := queue_families[app.queues[.Compute].familyIndex].timestampValidBits
+	graphics_bits := queue_families[app.queues[.Graphics].familyIndex].timestampValidBits
+	compute_bits := queue_families[app.queues[.Compute].familyIndex].timestampValidBits
 	telemetry.times_available =
 		telemetry.timestamp_period_ns > 0 &&
 		bool(properties.limits.timestampComputeAndGraphics) &&
-		gfx_bits > 0 && cmp_bits > 0
+		graphics_bits > 0 && compute_bits > 0
 
 	if !telemetry.times_available {
 		return
@@ -180,17 +171,6 @@ telemetry_reset_pool :: proc(cmd: vk.CommandBuffer, pool: vk.QueryPool, query_co
 	vk.CmdResetQueryPool(cmd, pool, 0, query_count)
 }
 
-@(private)
-telemetry_publish_pair :: proc(op: TelemetryOperation, values: []u64) {
-	begin_value, begin_ok := values[0], values[1]
-	end_value, end_ok := values[2], values[3]
-	if begin_ok == 0 || end_ok == 0 do return
-	if end_value <= begin_value do return
-	sync.mutex_lock(&telemetry.results_mutex)
-	telemetry.last_times_us[op] = f64(end_value - begin_value) * telemetry.timestamp_period_ns / 1000.0
-	sync.mutex_unlock(&telemetry.results_mutex)
-}
-
 telemetry_collect_graphics :: proc(frame_index: u32) {
 	if !telemetry.enabled || !telemetry.times_available do return
 	pool := telemetry.gfx_pools[frame_index]
@@ -250,54 +230,7 @@ telemetry_collect_compute :: proc(ring_index: int) {
 	telemetry_publish_pair(.Pack, values[4:8])
 }
 
-// --- VRAM (REQ-PROF-03) ---
-
-telemetry_collect_vram :: proc() {
-	if !telemetry.enabled do return
-
-	budgets: [vk.MAX_MEMORY_HEAPS]vma.Budget
-	vma.GetHeapBudgets(app.vmaAllocator, &budgets[0])
-	stats: vma.TotalStatistics
-	vma.CalculateStatistics(app.vmaAllocator, &stats)
-
-	for heap in 0 ..< telemetry.heap_count {
-		budget := budgets[heap]
-		heap_stats := stats.memoryHeap[heap].statistics
-		telemetry.heaps[heap] = TelemetryHeapSample {
-			used_bytes       = u64(budget.usage),
-			budget_bytes     = u64(budget.budget),
-			block_bytes      = u64(heap_stats.blockBytes),
-			allocation_bytes = u64(heap_stats.allocationBytes),
-			block_count      = heap_stats.blockCount,
-			allocation_count = heap_stats.allocationCount,
-		}
-	}
-}
-
 // --- Export para arquivo (REQ-PROF-04) ---
-
-@(private)
-telemetry_csv_open :: proc() {
-	if TELEMETRY_CSV_INTERVAL_MS <= 0 do return
-	os.make_directory(TELEMETRY_DIR)
-	path := fmt.tprintf("%s/telemetry_%s.csv", TELEMETRY_DIR, telemetry_timestamp_string())
-	handle, err := os.open(path, os.O_CREATE | os.O_WRONLY | os.O_APPEND)
-	if err != nil {
-		log.warnf("VS-05: não foi possível abrir o CSV de telemetria em {}: {}", path, err)
-		return
-	}
-	telemetry.csv_file = handle
-	telemetry.last_csv_tick = time.tick_now()
-
-	sb := strings.builder_make(context.temp_allocator)
-	fmt.sbprintf(&sb, "timestamp_ms,tick,generate_us,pack_us,apply_edits_us,build_work_queue_us,finalize_work_queue_us,mesh_draw_us,frame_total_us")
-	for heap in 0 ..< telemetry.heap_count {
-		fmt.sbprintf(&sb, ",heap%d_used_mib,heap%d_budget_mib", heap, heap)
-	}
-	fmt.sbprintln(&sb)
-	os.write_string(handle, strings.to_string(sb))
-	log.infof("VS-05: série temporal de telemetria em {}", path)
-}
 
 telemetry_service :: proc() {
 	if !telemetry.enabled || telemetry.csv_file == nil do return
@@ -322,8 +255,6 @@ telemetry_service :: proc() {
 	fmt.sbprintln(&sb)
 	os.write_string(telemetry.csv_file, strings.to_string(sb))
 }
-
-session_start_tick := time.tick_now()
 
 telemetry_snapshot :: proc() {
 	if !telemetry.enabled do return
@@ -382,4 +313,69 @@ telemetry_snapshot :: proc() {
 	os.write_string(handle, strings.to_string(sb))
 	os.close(handle)
 	log.infof("VS-05: snapshot de telemetria em {}", path)
+}
+
+@(private)
+telemetry_collect_vram :: proc() {
+	if !telemetry.enabled do return
+
+	budgets: [vk.MAX_MEMORY_HEAPS]vma.Budget
+	vma.GetHeapBudgets(app.vmaAllocator, &budgets[0])
+	stats: vma.TotalStatistics
+	vma.CalculateStatistics(app.vmaAllocator, &stats)
+
+	for heap in 0 ..< telemetry.heap_count {
+		budget := budgets[heap]
+		heap_stats := stats.memoryHeap[heap].statistics
+		telemetry.heaps[heap] = TelemetryHeapSample {
+			used_bytes       = u64(budget.usage),
+			budget_bytes     = u64(budget.budget),
+			block_bytes      = u64(heap_stats.blockBytes),
+			allocation_bytes = u64(heap_stats.allocationBytes),
+			block_count      = heap_stats.blockCount,
+			allocation_count = heap_stats.allocationCount,
+		}
+	}
+}
+
+@(private)
+telemetry_csv_open :: proc() {
+	if TELEMETRY_CSV_INTERVAL_MS <= 0 do return
+	os.make_directory(TELEMETRY_DIR)
+	path := fmt.tprintf("%s/telemetry_%s.csv", TELEMETRY_DIR, telemetry_timestamp_string())
+	handle, err := os.open(path, os.O_CREATE | os.O_WRONLY | os.O_APPEND)
+	if err != nil {
+		log.warnf("VS-05: não foi possível abrir o CSV de telemetria em {}: {}", path, err)
+		return
+	}
+	telemetry.csv_file = handle
+	telemetry.last_csv_tick = time.tick_now()
+
+	sb := strings.builder_make(context.temp_allocator)
+	fmt.sbprintf(&sb, "timestamp_ms,tick,generate_us,pack_us,apply_edits_us,build_work_queue_us,finalize_work_queue_us,mesh_draw_us,frame_total_us")
+	for heap in 0 ..< telemetry.heap_count {
+		fmt.sbprintf(&sb, ",heap%d_used_mib,heap%d_budget_mib", heap, heap)
+	}
+	fmt.sbprintln(&sb)
+	os.write_string(handle, strings.to_string(sb))
+	log.infof("VS-05: série temporal de telemetria em {}", path)
+}
+
+@(private)
+telemetry_publish_pair :: proc(op: TelemetryOperation, values: []u64) {
+	begin_value, begin_ok := values[0], values[1]
+	end_value, end_ok := values[2], values[3]
+	if begin_ok == 0 || end_ok == 0 do return
+	if end_value <= begin_value do return
+	sync.mutex_lock(&telemetry.results_mutex)
+	telemetry.last_times_us[op] = f64(end_value - begin_value) * telemetry.timestamp_period_ns / 1000.0
+	sync.mutex_unlock(&telemetry.results_mutex)
+}
+
+@(private)
+telemetry_timestamp_string :: proc() -> string {
+	now := time.now()
+	year, month, day := time.date(now)
+	hour, min, sec := time.clock(now)
+	return fmt.tprintf("%04d%02d%02d_%02d%02d%02d", year, int(month), day, hour, min, sec)
 }

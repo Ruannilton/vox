@@ -7,10 +7,33 @@ import vma "shared:vma"
 import vk "vendor:vulkan"
 
 BLOCK_REGISTRY_CAPACITY :: 256
-MESH_TEMPLATE_CAPACITY  :: 256
+MESH_TEMPLATE_CAPACITY :: 256
+BUILTIN_CUBE_VERTICES :: [8][3]f32 {
+	{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0},
+	{0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1},
+}
+
+BUILTIN_CUBE_TRIANGLES :: [12][4]u32 {
+	{1, 3, 7, 0}, {1, 7, 5, 0}, // +X
+	{0, 4, 6, 1}, {0, 6, 2, 1}, // -X
+	{2, 7, 3, 2}, {2, 6, 7, 2}, // +Y
+	{0, 1, 5, 3}, {0, 5, 4, 3}, // -Y
+	{4, 5, 7, 4}, {4, 7, 6, 4}, // +Z
+	{0, 3, 1, 5}, {0, 2, 3, 5}, // -Z
+}
+
+BUILTIN_PLANT_VERTICES :: [8][3]f32 {
+	{0, 0, 0}, {1, 0, 1}, {1, 1, 1}, {0, 1, 0}, // quad diagonal 1
+	{1, 0, 0}, {0, 0, 1}, {0, 1, 1}, {1, 1, 0}, // quad diagonal 2
+}
+
+BUILTIN_PLANT_TRIANGLES :: [4][4]u32 {
+	{0, 1, 2, CULL_FACE_NEVER}, {0, 2, 3, CULL_FACE_NEVER},
+	{4, 5, 6, CULL_FACE_NEVER}, {4, 6, 7, CULL_FACE_NEVER},
+}
 
 VoxelGpu :: struct {
-	scratch:                GpuBuffer, 
+	scratch:                GpuBuffer,
 	generation_jobs:        GpuBuffer,
 	generation_jobs_mapped: [^]ChunkGenerationJob,
 	occupancy_pool:         GpuBuffer,
@@ -42,7 +65,7 @@ VoxelGpu :: struct {
 	// VS-10 (REQ-VRT-02): flags do pack por slot (binding 18, host-visible).
 	chunk_result_flags:        GpuBuffer,
 	chunk_result_flags_mapped: [^]u32,
-	dummy_buffer:           GpuBuffer, 
+	dummy_buffer:           GpuBuffer,
 	albedo_palette_image:      vk.Image,
 	albedo_palette_allocation: vma.Allocation,
 	albedo_palette_view:       vk.ImageView,
@@ -54,15 +77,15 @@ VoxelGpu :: struct {
 	descriptor_pool:        vk.DescriptorPool,
 	descriptor_set:         vk.DescriptorSet,
 
-	shader_module:          vk.ShaderModule, 
-	edit_shader_module:     vk.ShaderModule, 
-	render_shader_module:   vk.ShaderModule, 
+	shader_module:          vk.ShaderModule,
+	edit_shader_module:     vk.ShaderModule,
+	render_shader_module:   vk.ShaderModule,
 	generation_pipeline:    vk.Pipeline,
 	packing_pipeline:       vk.Pipeline,
 
 	build_work_queue_pipeline:    vk.Pipeline,
 	finalize_work_queue_pipeline: vk.Pipeline,
-	edit_pipeline:                vk.Pipeline, 
+	edit_pipeline:                vk.Pipeline,
 	mesh_pipeline:          vk.Pipeline,
 
 	compute_command_pool:    vk.CommandPool,
@@ -70,257 +93,6 @@ VoxelGpu :: struct {
 }
 
 voxel_gpu: VoxelGpu
-
-@(private)
-gpu_buffer_create_host :: proc(size: vk.DeviceSize, usage: vk.BufferUsageFlags) -> (buffer: GpuBuffer, mapped: rawptr) {
-	return gpu_buffer_create_host_flags(size, usage, {.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED})
-}
-
-@(private)
-load_shader_module :: proc(path: string) -> (module: vk.ShaderModule) {
-	shader_code := load_file(path, context.temp_allocator)
-	vk_check(
-		vk.CreateShaderModule(
-			app.vkDevice,
-			&vk.ShaderModuleCreateInfo {
-				sType    = .SHADER_MODULE_CREATE_INFO,
-				codeSize = len(shader_code),
-				pCode    = cast(^u32)raw_data(shader_code),
-			},
-			nil,
-			&module,
-		),
-	)
-	return
-}
-
-@(private)
-gpu_buffer_create_host_flags :: proc(
-	size: vk.DeviceSize,
-	usage: vk.BufferUsageFlags,
-	flags: vma.AllocationCreateFlags,
-) -> (buffer: GpuBuffer, mapped: rawptr) {
-	buffer.size = size
-	buffer_info := vk.BufferCreateInfo {
-		sType       = .BUFFER_CREATE_INFO,
-		size        = size,
-		usage       = usage,
-		sharingMode = .EXCLUSIVE,
-	}
-	allocation_info := vma.AllocationCreateInfo {
-		usage = .AUTO,
-		flags = flags,
-	}
-	info: vma.AllocationInfo
-	vk_check(
-		vma.CreateBuffer(app.vmaAllocator, buffer_info, allocation_info, &buffer.handle, &buffer.allocation, &info),
-	)
-	mapped = info.pMappedData
-	return
-}
-
-@(private)
-upload_to_device_buffer :: proc(data: rawptr, size: vk.DeviceSize, dst: vk.Buffer) {
-	staging, staging_mapped := gpu_buffer_create_host(size, {.TRANSFER_SRC})
-	mem.copy(staging_mapped, data, int(size))
-	defer gpu_buffer_destroy(&staging)
-
-	cmd := voxel_gpu.compute_command_buffers[0]
-	vk_check(vk.ResetCommandBuffer(cmd, {}))
-	begin_info := vk.CommandBufferBeginInfo {
-		sType = .COMMAND_BUFFER_BEGIN_INFO,
-		flags = {.ONE_TIME_SUBMIT},
-	}
-	vk_check(vk.BeginCommandBuffer(cmd, &begin_info))
-	vk.CmdCopyBuffer(cmd, staging.handle, dst, 1, &vk.BufferCopy{size = size})
-	vk_check(vk.EndCommandBuffer(cmd))
-
-	cmd_info := vk.CommandBufferSubmitInfo {
-		sType         = .COMMAND_BUFFER_SUBMIT_INFO,
-		commandBuffer = cmd,
-	}
-	submit_info := vk.SubmitInfo2 {
-		sType                  = .SUBMIT_INFO_2,
-		commandBufferInfoCount = 1,
-		pCommandBufferInfos    = &cmd_info,
-	}
-	vk_check(vk.QueueSubmit2(app.queues[.Compute].queue, 1, &submit_info, {}))
-	vk_check(vk.DeviceWaitIdle(app.vkDevice))
-}
-
-@(private)
-gpu_image_2d_array_create :: proc(
-	width, height, layers: u32,
-) -> (
-	image: vk.Image,
-	allocation: vma.Allocation,
-) {
-	families := [2]u32{app.queues[.Graphics].familyIndex, app.queues[.Compute].familyIndex}
-	image_info := vk.ImageCreateInfo {
-		sType       = .IMAGE_CREATE_INFO,
-		imageType   = .D2,
-		format      = .R8G8B8A8_UNORM,
-		extent      = {width = width, height = height, depth = 1},
-		mipLevels   = 1,
-		arrayLayers = layers,
-		samples     = {._1},
-		tiling      = .OPTIMAL,
-		usage       = {.SAMPLED, .TRANSFER_DST},
-	}
-	if families[0] != families[1] {
-		image_info.sharingMode = .CONCURRENT
-		image_info.queueFamilyIndexCount = 2
-		image_info.pQueueFamilyIndices = &families[0]
-	}
-	allocation_info := vma.AllocationCreateInfo {
-		usage = .AUTO,
-	}
-	vk_check(vma.CreateImage(app.vmaAllocator, image_info, allocation_info, &image, &allocation, nil))
-	return
-}
-
-@(private)
-gpu_image_2d_array_view_create :: proc(image: vk.Image, layers: u32) -> (view: vk.ImageView) {
-	vk_check(
-		vk.CreateImageView(
-			app.vkDevice,
-			&vk.ImageViewCreateInfo {
-				sType = .IMAGE_VIEW_CREATE_INFO,
-				image = image,
-				viewType = .D2_ARRAY,
-				format = .R8G8B8A8_UNORM,
-				subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
-			},
-			nil,
-			&view,
-		),
-	)
-	return
-}
-
-@(private)
-upload_to_device_image :: proc(pixels: rawptr, size: vk.DeviceSize, dst: vk.Image, width, height, layers: u32) {
-	staging, staging_mapped := gpu_buffer_create_host(size, {.TRANSFER_SRC})
-	mem.copy(staging_mapped, pixels, int(size))
-	defer gpu_buffer_destroy(&staging)
-
-	cmd := voxel_gpu.compute_command_buffers[0]
-	vk_check(vk.ResetCommandBuffer(cmd, {}))
-	vk_check(
-		vk.BeginCommandBuffer(
-			cmd,
-			&vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}},
-		),
-	)
-
-	to_transfer := vk.ImageMemoryBarrier2 {
-		sType = .IMAGE_MEMORY_BARRIER_2,
-		image = dst,
-		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
-		oldLayout = .UNDEFINED,
-		newLayout = .TRANSFER_DST_OPTIMAL,
-		srcStageMask = {.COPY},
-		dstStageMask = {.COPY},
-		dstAccessMask = {.TRANSFER_WRITE},
-	}
-	vk.CmdPipelineBarrier2(
-		cmd,
-		&vk.DependencyInfo{sType = .DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = &to_transfer},
-	)
-
-	region := vk.BufferImageCopy {
-		imageSubresource = {aspectMask = {.COLOR}, layerCount = layers},
-		imageExtent      = {width = width, height = height, depth = 1},
-	}
-	vk.CmdCopyBufferToImage(cmd, staging.handle, dst, .TRANSFER_DST_OPTIMAL, 1, &region)
-
-	to_read := vk.ImageMemoryBarrier2 {
-		sType = .IMAGE_MEMORY_BARRIER_2,
-		image = dst,
-		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
-		oldLayout = .TRANSFER_DST_OPTIMAL,
-		newLayout = .SHADER_READ_ONLY_OPTIMAL,
-		srcStageMask = {.COPY},
-		srcAccessMask = {.TRANSFER_WRITE},
-		dstStageMask = {.COPY},
-	}
-	vk.CmdPipelineBarrier2(
-		cmd,
-		&vk.DependencyInfo{sType = .DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = &to_read},
-	)
-	vk_check(vk.EndCommandBuffer(cmd))
-
-	vk_check(
-		vk.QueueSubmit2(
-			app.queues[.Compute].queue,
-			1,
-			&vk.SubmitInfo2 {
-				sType = .SUBMIT_INFO_2,
-				commandBufferInfoCount = 1,
-				pCommandBufferInfos = &vk.CommandBufferSubmitInfo {
-					sType = .COMMAND_BUFFER_SUBMIT_INFO,
-					commandBuffer = cmd,
-				},
-			},
-			{},
-		),
-	)
-	vk_check(vk.DeviceWaitIdle(app.vkDevice))
-}
-
-@(private)
-upload_palette_textures :: proc() {
-	LAYER :: ALBEDO_PALETTE_LAYER_SIZE
-	LAYERS :: ALBEDO_PALETTE_LAYERS
-
-	voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation =
-		gpu_image_2d_array_create(LAYER, LAYER, LAYERS)
-	voxel_gpu.albedo_palette_view = gpu_image_2d_array_view_create(voxel_gpu.albedo_palette_image, LAYERS)
-
-	voxel_gpu.pbr_dummy_image, voxel_gpu.pbr_dummy_allocation = gpu_image_2d_array_create(1, 1, 1)
-	voxel_gpu.pbr_dummy_view = gpu_image_2d_array_view_create(voxel_gpu.pbr_dummy_image, 1)
-
-	vk_check(
-		vk.CreateSampler(
-			app.vkDevice,
-			&vk.SamplerCreateInfo {
-				sType = .SAMPLER_CREATE_INFO,
-				magFilter = .LINEAR,
-				minFilter = .LINEAR,
-				addressModeU = .REPEAT,
-				addressModeV = .REPEAT,
-				addressModeW = .REPEAT,
-				maxLod = 0.0,
-			},
-			nil,
-			&voxel_gpu.texture_sampler,
-		),
-	)
-
-	colors: [LAYERS][3]u8
-	for &c in colors do c = {128, 128, 128}
-	colors[0] = {0, 0, 0}
-	colors[1] = {89, 191, 64} // grama: verde
-	colors[2] = {128, 89, 51} // terra: marrom
-	colors[3] = {140, 140, 148} // pedra: cinza
-
-	pixels: [LAYERS * LAYER * LAYER][4]u8
-	for layer in 0 ..< LAYERS {
-		base := layer * LAYER * LAYER
-		for texel in 0 ..< LAYER * LAYER {
-			pixels[base + texel] = {colors[layer][0], colors[layer][1], colors[layer][2], 255}
-		}
-	}
-	upload_to_device_image(
-		&pixels[0],
-		vk.DeviceSize(size_of(pixels)),
-		voxel_gpu.albedo_palette_image,
-		LAYER, LAYER, LAYERS,
-	)
-
-	black := [4]u8{0, 0, 0, 255}
-	upload_to_device_image(&black, vk.DeviceSize(4), voxel_gpu.pbr_dummy_image, 1, 1, 1)
-}
 
 voxel_gpu_init :: proc() {
 	log.info("Inicializando recursos GPU do voxel engine")
@@ -625,7 +397,7 @@ voxel_gpu_init :: proc() {
 		11 = voxel_gpu.template_vertices.handle,
 		12 = voxel_gpu.template_triangles.handle,
 		13 = voxel_gpu.edit_jobs.handle,
-		14 = voxel_gpu.voxel_edits.handle, 
+		14 = voxel_gpu.voxel_edits.handle,
 		15 = voxel_gpu.edit_results.handle,
 		16 = voxel_gpu.mirror_export_ring.handle,
 		17 = voxel_gpu.work_queue.handle,
@@ -742,6 +514,7 @@ voxel_gpu_destroy :: proc() {
 }
 
 
+@(private)
 debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	coord: ChunkCoordinate
 	record: ChunkRecord
@@ -994,6 +767,7 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	}
 }
 
+@(private)
 debug_readback_decode_voxels :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate, local_voxels: [][3]i32, tag: string) {
 	record, found := ve.active_chunks[chunk_coord]
 	if !found || record.state == .GENERATING || record.state == .EMPTY {
@@ -1067,6 +841,7 @@ debug_readback_decode_voxels :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordin
 
 
 
+@(private)
 debug_mirror_parity :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate) {
 	page, found := ve.mirror.pages[chunk_coord]
 	if !found || page.state != .MATERIALIZED {
@@ -1154,29 +929,6 @@ debug_mirror_parity :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate) {
 }
 
 
-BUILTIN_CUBE_VERTICES :: [8][3]f32 {
-	{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0},
-	{0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1},
-}
-
-BUILTIN_CUBE_TRIANGLES :: [12][4]u32 {
-	{1, 3, 7, 0}, {1, 7, 5, 0}, // +X
-	{0, 4, 6, 1}, {0, 6, 2, 1}, // -X
-	{2, 7, 3, 2}, {2, 6, 7, 2}, // +Y
-	{0, 1, 5, 3}, {0, 5, 4, 3}, // -Y
-	{4, 5, 7, 4}, {4, 7, 6, 4}, // +Z
-	{0, 3, 1, 5}, {0, 2, 3, 5}, // -Z
-}
-
-BUILTIN_PLANT_VERTICES :: [8][3]f32 {
-	{0, 0, 0}, {1, 0, 1}, {1, 1, 1}, {0, 1, 0}, // quad diagonal 1
-	{1, 0, 0}, {0, 0, 1}, {0, 1, 1}, {1, 1, 0}, // quad diagonal 2
-}
-
-BUILTIN_PLANT_TRIANGLES :: [4][4]u32 {
-	{0, 1, 2, CULL_FACE_NEVER}, {0, 2, 3, CULL_FACE_NEVER},
-	{4, 5, 6, CULL_FACE_NEVER}, {4, 6, 7, CULL_FACE_NEVER},
-}
 
 @(private)
 upload_asset_templates :: proc() {
@@ -1325,4 +1077,255 @@ upload_block_registry :: proc() {
 		registry[id] = BlockDefinition{mesh_template_index = 1, albedo_texture_index = u32(id)}
 	}
 	upload_to_device_buffer(&registry, size_of(registry), voxel_gpu.block_registry.handle)
+}
+
+@(private)
+gpu_buffer_create_host :: proc(size: vk.DeviceSize, usage: vk.BufferUsageFlags) -> (buffer: GpuBuffer, mapped: rawptr) {
+	return gpu_buffer_create_host_flags(size, usage, {.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED})
+}
+
+@(private)
+load_shader_module :: proc(path: string) -> (module: vk.ShaderModule) {
+	shader_code := load_file(path, context.temp_allocator)
+	vk_check(
+		vk.CreateShaderModule(
+			app.vkDevice,
+			&vk.ShaderModuleCreateInfo {
+				sType    = .SHADER_MODULE_CREATE_INFO,
+				codeSize = len(shader_code),
+				pCode    = cast(^u32)raw_data(shader_code),
+			},
+			nil,
+			&module,
+		),
+	)
+	return
+}
+
+@(private)
+gpu_buffer_create_host_flags :: proc(
+	size: vk.DeviceSize,
+	usage: vk.BufferUsageFlags,
+	flags: vma.AllocationCreateFlags,
+) -> (buffer: GpuBuffer, mapped: rawptr) {
+	buffer.size = size
+	buffer_info := vk.BufferCreateInfo {
+		sType       = .BUFFER_CREATE_INFO,
+		size        = size,
+		usage       = usage,
+		sharingMode = .EXCLUSIVE,
+	}
+	allocation_info := vma.AllocationCreateInfo {
+		usage = .AUTO,
+		flags = flags,
+	}
+	info: vma.AllocationInfo
+	vk_check(
+		vma.CreateBuffer(app.vmaAllocator, buffer_info, allocation_info, &buffer.handle, &buffer.allocation, &info),
+	)
+	mapped = info.pMappedData
+	return
+}
+
+@(private)
+upload_to_device_buffer :: proc(data: rawptr, size: vk.DeviceSize, dst: vk.Buffer) {
+	staging, staging_mapped := gpu_buffer_create_host(size, {.TRANSFER_SRC})
+	mem.copy(staging_mapped, data, int(size))
+	defer gpu_buffer_destroy(&staging)
+
+	cmd := voxel_gpu.compute_command_buffers[0]
+	vk_check(vk.ResetCommandBuffer(cmd, {}))
+	begin_info := vk.CommandBufferBeginInfo {
+		sType = .COMMAND_BUFFER_BEGIN_INFO,
+		flags = {.ONE_TIME_SUBMIT},
+	}
+	vk_check(vk.BeginCommandBuffer(cmd, &begin_info))
+	vk.CmdCopyBuffer(cmd, staging.handle, dst, 1, &vk.BufferCopy{size = size})
+	vk_check(vk.EndCommandBuffer(cmd))
+
+	cmd_info := vk.CommandBufferSubmitInfo {
+		sType         = .COMMAND_BUFFER_SUBMIT_INFO,
+		commandBuffer = cmd,
+	}
+	submit_info := vk.SubmitInfo2 {
+		sType                  = .SUBMIT_INFO_2,
+		commandBufferInfoCount = 1,
+		pCommandBufferInfos    = &cmd_info,
+	}
+	vk_check(vk.QueueSubmit2(app.queues[.Compute].queue, 1, &submit_info, {}))
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+}
+
+@(private)
+gpu_image_2d_array_create :: proc(
+	width, height, layers: u32,
+) -> (
+	image: vk.Image,
+	allocation: vma.Allocation,
+) {
+	families := [2]u32{app.queues[.Graphics].familyIndex, app.queues[.Compute].familyIndex}
+	image_info := vk.ImageCreateInfo {
+		sType       = .IMAGE_CREATE_INFO,
+		imageType   = .D2,
+		format      = .R8G8B8A8_UNORM,
+		extent      = {width = width, height = height, depth = 1},
+		mipLevels   = 1,
+		arrayLayers = layers,
+		samples     = {._1},
+		tiling      = .OPTIMAL,
+		usage       = {.SAMPLED, .TRANSFER_DST},
+	}
+	if families[0] != families[1] {
+		image_info.sharingMode = .CONCURRENT
+		image_info.queueFamilyIndexCount = 2
+		image_info.pQueueFamilyIndices = &families[0]
+	}
+	allocation_info := vma.AllocationCreateInfo {
+		usage = .AUTO,
+	}
+	vk_check(vma.CreateImage(app.vmaAllocator, image_info, allocation_info, &image, &allocation, nil))
+	return
+}
+
+@(private)
+gpu_image_2d_array_view_create :: proc(image: vk.Image, layers: u32) -> (view: vk.ImageView) {
+	vk_check(
+		vk.CreateImageView(
+			app.vkDevice,
+			&vk.ImageViewCreateInfo {
+				sType = .IMAGE_VIEW_CREATE_INFO,
+				image = image,
+				viewType = .D2_ARRAY,
+				format = .R8G8B8A8_UNORM,
+				subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
+			},
+			nil,
+			&view,
+		),
+	)
+	return
+}
+
+@(private)
+upload_to_device_image :: proc(pixels: rawptr, size: vk.DeviceSize, dst: vk.Image, width, height, layers: u32) {
+	staging, staging_mapped := gpu_buffer_create_host(size, {.TRANSFER_SRC})
+	mem.copy(staging_mapped, pixels, int(size))
+	defer gpu_buffer_destroy(&staging)
+
+	cmd := voxel_gpu.compute_command_buffers[0]
+	vk_check(vk.ResetCommandBuffer(cmd, {}))
+	vk_check(
+		vk.BeginCommandBuffer(
+			cmd,
+			&vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}},
+		),
+	)
+
+	to_transfer := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		image = dst,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
+		oldLayout = .UNDEFINED,
+		newLayout = .TRANSFER_DST_OPTIMAL,
+		srcStageMask = {.COPY},
+		dstStageMask = {.COPY},
+		dstAccessMask = {.TRANSFER_WRITE},
+	}
+	vk.CmdPipelineBarrier2(
+		cmd,
+		&vk.DependencyInfo{sType = .DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = &to_transfer},
+	)
+
+	region := vk.BufferImageCopy {
+		imageSubresource = {aspectMask = {.COLOR}, layerCount = layers},
+		imageExtent      = {width = width, height = height, depth = 1},
+	}
+	vk.CmdCopyBufferToImage(cmd, staging.handle, dst, .TRANSFER_DST_OPTIMAL, 1, &region)
+
+	to_read := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		image = dst,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
+		oldLayout = .TRANSFER_DST_OPTIMAL,
+		newLayout = .SHADER_READ_ONLY_OPTIMAL,
+		srcStageMask = {.COPY},
+		srcAccessMask = {.TRANSFER_WRITE},
+		dstStageMask = {.COPY},
+	}
+	vk.CmdPipelineBarrier2(
+		cmd,
+		&vk.DependencyInfo{sType = .DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = &to_read},
+	)
+	vk_check(vk.EndCommandBuffer(cmd))
+
+	vk_check(
+		vk.QueueSubmit2(
+			app.queues[.Compute].queue,
+			1,
+			&vk.SubmitInfo2 {
+				sType = .SUBMIT_INFO_2,
+				commandBufferInfoCount = 1,
+				pCommandBufferInfos = &vk.CommandBufferSubmitInfo {
+					sType = .COMMAND_BUFFER_SUBMIT_INFO,
+					commandBuffer = cmd,
+				},
+			},
+			{},
+		),
+	)
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+}
+
+@(private)
+upload_palette_textures :: proc() {
+	LAYER :: ALBEDO_PALETTE_LAYER_SIZE
+	LAYERS :: ALBEDO_PALETTE_LAYERS
+
+	voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation =
+		gpu_image_2d_array_create(LAYER, LAYER, LAYERS)
+	voxel_gpu.albedo_palette_view = gpu_image_2d_array_view_create(voxel_gpu.albedo_palette_image, LAYERS)
+
+	voxel_gpu.pbr_dummy_image, voxel_gpu.pbr_dummy_allocation = gpu_image_2d_array_create(1, 1, 1)
+	voxel_gpu.pbr_dummy_view = gpu_image_2d_array_view_create(voxel_gpu.pbr_dummy_image, 1)
+
+	vk_check(
+		vk.CreateSampler(
+			app.vkDevice,
+			&vk.SamplerCreateInfo {
+				sType = .SAMPLER_CREATE_INFO,
+				magFilter = .LINEAR,
+				minFilter = .LINEAR,
+				addressModeU = .REPEAT,
+				addressModeV = .REPEAT,
+				addressModeW = .REPEAT,
+				maxLod = 0.0,
+			},
+			nil,
+			&voxel_gpu.texture_sampler,
+		),
+	)
+
+	colors: [LAYERS][3]u8
+	for &c in colors do c = {128, 128, 128}
+	colors[0] = {0, 0, 0}
+	colors[1] = {89, 191, 64} // grama: verde
+	colors[2] = {128, 89, 51} // terra: marrom
+	colors[3] = {140, 140, 148} // pedra: cinza
+
+	pixels: [LAYERS * LAYER * LAYER][4]u8
+	for layer in 0 ..< LAYERS {
+		base := layer * LAYER * LAYER
+		for texel in 0 ..< LAYER * LAYER {
+			pixels[base + texel] = {colors[layer][0], colors[layer][1], colors[layer][2], 255}
+		}
+	}
+	upload_to_device_image(
+		&pixels[0],
+		vk.DeviceSize(size_of(pixels)),
+		voxel_gpu.albedo_palette_image,
+		LAYER, LAYER, LAYERS,
+	)
+
+	black := [4]u8{0, 0, 0, 255}
+	upload_to_device_image(&black, vk.DeviceSize(4), voxel_gpu.pbr_dummy_image, 1, 1, 1)
 }

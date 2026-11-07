@@ -1,6 +1,5 @@
 package engine
 
-
 import "core:log"
 import "core:math"
 import "core:sync"
@@ -26,7 +25,7 @@ GenerationTask :: struct {
 	coordinate:         ChunkCoordinate,
 	storage_slot_index: u32,
 	generation:         u32,
-	mirror_ring_slot:   i32, 
+	mirror_ring_slot:   i32,
 	export_only:        bool,
 }
 
@@ -35,12 +34,10 @@ SubmittedBatch :: struct {
 	tasks:                  [dynamic]GenerationTask, // cap = config.chunks_per_batch (VS-08)
 }
 
-
 RetiringSlot :: struct {
 	storage_slot_index:  u32,
 	release_frame_value: u64,
 }
-
 
 RetiringComputeSlot :: struct {
 	storage_slot_index:     u32,
@@ -77,7 +74,6 @@ VoxelEngine :: struct {
 	worker: ^thread.Thread,
 }
 
-
 active_ve: ^VoxelEngine
 
 calculate_squared_distance :: proc "contextless" (a, b: ChunkCoordinate) -> i64 {
@@ -93,14 +89,6 @@ floor_div_i32 :: proc "contextless" (value, divisor: i32) -> i32 {
 		q -= 1
 	}
 	return q
-}
-
-chunk_coordinate_from_world :: proc "contextless" (pos: [3]f32) -> ChunkCoordinate {
-	return {
-		floor_div_i32(i32(math.floor(pos.x)), CHUNK_SIZE),
-		floor_div_i32(i32(math.floor(pos.y)), CHUNK_SIZE),
-		floor_div_i32(i32(math.floor(pos.z)), CHUNK_SIZE),
-	}
 }
 
 task_matches :: proc "contextless" (task: GenerationTask, coord: ChunkCoordinate, record: ChunkRecord) -> bool {
@@ -238,34 +226,6 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 	}
 }
 
-
-retire_generating_slot :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {	sync.mutex_lock(&ve.queue_mutex)
-	defer sync.mutex_unlock(&ve.queue_mutex)
-
-	for task, i in ve.pending_tasks {
-		if task_matches(task, coord, record) {
-			unordered_remove(&ve.pending_tasks, i)
-			append(&ve.free_storage_slots, record.storage_slot_index)
-			return
-		}
-	}
-
-	for batch in ve.submitted_batches {
-		for task in batch.tasks {
-			if task_matches(task, coord, record) {
-				append(
-					&ve.retiring_compute_slots,
-					RetiringComputeSlot{record.storage_slot_index, batch.compute_timeline_value},
-				)
-				return
-			}
-		}
-	}
-
-	append(&ve.free_storage_slots, record.storage_slot_index)
-}
-
-
 voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	offset := int(frame_index) * int(config.visible_capacity)
 	count: u32 = 0
@@ -297,24 +257,8 @@ voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 
 	return count
 }
 
-
 // VS-10 (REQ-VRT-05): log periódico dos contadores de chunks vazios
 // virtuais (reativos são recontados no map; economia é acumulada).
-ve_log_empty_stats :: proc(ve: ^VoxelEngine) {
-	actives := 0
-	for _, record in ve.active_chunks {
-		if record.state == .EMPTY do actives += 1
-	}
-	ve.empty_chunks_active = actives
-	ve.last_empty_log_time = time.tick_now()
-	log.infof(
-		"VS-10: chunks EMPTY ativos={} (slots economizados acumulados={}, slots livres={})",
-		actives,
-		ve.slots_saved_total,
-		len(ve.free_storage_slots),
-	)
-}
-
 
 voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 	voxel_engine_service_completions(ve)
@@ -395,15 +339,14 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 		}
 	}
 
-
 	for coord, record in ve.active_chunks {
 		is_visible := calculate_squared_distance(camera_chunk, coord) <= i64(config.radius_vision) * i64(config.radius_vision)
 		if record.state == .CACHED && is_visible {
-			rec := &ve.active_chunks[coord]
-			rec.state = .RENDERABLE
+			chunk_record := &ve.active_chunks[coord]
+			chunk_record.state = .RENDERABLE
 		} else if record.state == .RENDERABLE && !is_visible {
-			rec := &ve.active_chunks[coord]
-			rec.state = .CACHED
+			chunk_record := &ve.active_chunks[coord]
+			chunk_record.state = .CACHED
 		}
 	}
 
@@ -418,4 +361,57 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 	if time.duration_seconds(time.tick_since(ve.last_empty_log_time)) >= 5.0 {
 		ve_log_empty_stats(ve)
 	}
+}
+
+@(private)
+chunk_coordinate_from_world :: proc "contextless" (position: [3]f32) -> ChunkCoordinate {
+	return {
+		floor_div_i32(i32(math.floor(position.x)), CHUNK_SIZE),
+		floor_div_i32(i32(math.floor(position.y)), CHUNK_SIZE),
+		floor_div_i32(i32(math.floor(position.z)), CHUNK_SIZE),
+	}
+}
+
+@(private)
+retire_generating_slot :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {
+	sync.mutex_lock(&ve.queue_mutex)
+	defer sync.mutex_unlock(&ve.queue_mutex)
+
+	for task, i in ve.pending_tasks {
+		if task_matches(task, coord, record) {
+			unordered_remove(&ve.pending_tasks, i)
+			append(&ve.free_storage_slots, record.storage_slot_index)
+			return
+		}
+	}
+
+	for batch in ve.submitted_batches {
+		for task in batch.tasks {
+			if task_matches(task, coord, record) {
+				append(
+					&ve.retiring_compute_slots,
+					RetiringComputeSlot{record.storage_slot_index, batch.compute_timeline_value},
+				)
+				return
+			}
+		}
+	}
+
+	append(&ve.free_storage_slots, record.storage_slot_index)
+}
+
+@(private)
+ve_log_empty_stats :: proc(ve: ^VoxelEngine) {
+	actives := 0
+	for _, record in ve.active_chunks {
+		if record.state == .EMPTY do actives += 1
+	}
+	ve.empty_chunks_active = actives
+	ve.last_empty_log_time = time.tick_now()
+	log.infof(
+		"VS-10: chunks EMPTY ativos={} (slots economizados acumulados={}, slots livres={})",
+		actives,
+		ve.slots_saved_total,
+		len(ve.free_storage_slots),
+	)
 }

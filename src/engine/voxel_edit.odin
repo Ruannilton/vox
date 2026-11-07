@@ -28,25 +28,11 @@ EditManager :: struct {
 	stats_applied:     u64,
 	stats_noop:        u64,
 	stats_rejected:    u64,
-	stats_deferred:    u64, 
+	stats_deferred:    u64,
 }
 
 // Mundo -> (chunk, índice denso do voxel). Layout denso igual ao Slang:
 // x | z<<5 | y<<10.
-@(private)
-voxel_chunk_and_index :: proc "contextless" (world_voxel: [3]i32) -> (chunk: ChunkCoordinate, voxel_index: u32) {
-	chunk = ChunkCoordinate{
-		floor_div_i32(world_voxel.x, CHUNK_SIZE),
-		floor_div_i32(world_voxel.y, CHUNK_SIZE),
-		floor_div_i32(world_voxel.z, CHUNK_SIZE),
-	}
-	local_x := world_voxel.x - chunk.x * CHUNK_SIZE
-	local_y := world_voxel.y - chunk.y * CHUNK_SIZE
-	local_z := world_voxel.z - chunk.z * CHUNK_SIZE
-	voxel_index = u32(local_x) | (u32(local_z) << 5) | (u32(local_y) << 10)
-	return
-}
-
 
 ve_request_voxel_edit :: proc(ve: ^VoxelEngine, world_voxel: [3]i32, block_id: u32) {
 	if block_id > 65535 do return // fora do domínio de 16 bits do registro do lote
@@ -76,43 +62,6 @@ ve_request_voxel_edit :: proc(ve: ^VoxelEngine, world_voxel: [3]i32, block_id: u
 // geração (com mirror sintetizado se na bolha de simulação) e volta para
 // GENERATING. A edição segue para a fila/pendências do E1 normalmente.
 // Retorna false se o pool de slots estiver vazio (retry por update).
-ve_try_materialize_empty :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) -> bool {
-	if len(ve.free_storage_slots) == 0 do return false
-	slot := pop(&ve.free_storage_slots)
-	ve.slot_generations[slot] += 1
-	generation := ve.slot_generations[slot]
-	rec := &ve.active_chunks[coord]
-	rec.state = .GENERATING
-	rec.storage_slot_index = slot
-	rec.generation = generation
-	ve.empty_chunks_active -= 1
-
-	// Mirror: se o chunk está na bolha de simulação e a página não existe,
-	// sintetiza zeros (conteúdo worldgen = ar conhecido) antes do journal.
-	if coord in ve.mirror.pages {
-		// página existente (zeros do ring ou já sintetizada): nada a fazer.
-	} else {
-		sim_radius2 := i64(config.radius_simulation) * i64(config.radius_simulation)
-		if calculate_squared_distance(ve.last_camera_chunk, coord) <= sim_radius2 {
-			if page := mirror_page_acquire(ve, coord); page != nil {
-				mirror_page_fill_empty(ve, coord, page)
-			}
-		}
-	}
-
-	task := GenerationTask {
-		coordinate         = coord,
-		storage_slot_index = slot,
-		generation         = generation,
-		mirror_ring_slot   = -1,
-	}
-	sync.mutex_lock(&ve.queue_mutex)
-	append(&ve.pending_tasks, task)
-	sync.cond_signal(&ve.queue_condition)
-	sync.mutex_unlock(&ve.queue_mutex)
-	log.infof("VS-10: materializando chunk EMPTY {} (slot {}, geração {})", coord, slot, generation)
-	return true
-}
 
 // VS-10 (REQ-VRT-04): retenta a materialização de edições cujo chunk ainda
 // está EMPTY (pool esgotado na solicitação). No-op de ar-em-ar é removido.
@@ -150,6 +99,162 @@ ve_request_voxel_edits_in_box :: proc(ve: ^VoxelEngine, min_corner, max_corner: 
 }
 
 
+
+
+edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
+	frame_idx := int(frame_index % NUM_FRAMES_IN_FLIGHT)
+
+	// Feedback do flush que usou este slot há NUM_FRAMES_IN_FLIGHT frames.
+	// O buffer é HOST_ACCESS_RANDOM: invalida antes de ler (no-op em memória
+	// coerente).
+	vk_check(
+		vma.InvalidateAllocation(
+			app.vmaAllocator,
+			voxel_gpu.edit_results.allocation,
+			0,
+			vk.DeviceSize(voxel_gpu.edit_results.size),
+		),
+	)
+	previous := ve.edit.ring_counts[frame_idx]
+	if previous.edit_count > 0 {
+		// Log por flush (diagnóstico): contagem por código neste slot.
+		applied, noop, rejected: u32
+		for i in 0 ..< previous.edit_count {
+			code := voxel_gpu.edit_results_mapped[frame_idx * MAX_EDITS_PER_FLUSH + int(i)]
+			switch code {
+			case EDIT_RESULT_APPLIED:
+				applied += 1
+			case EDIT_RESULT_NOOP:
+				noop += 1
+			case:
+				rejected += 1
+				// VS-04 (REQ-MIRROR-09): o mirror aplicou otimisticamente —
+				// reconcilia a página mapeando a posição do ring de volta a
+				// (chunk, voxel, bloco). Os rings de jobs/edições do slot
+				// ainda estão intactos na colheita (só são regravados abaixo).
+				mirror_reconcile_ring_position(ve, frame_idx, previous, i)
+			}
+		}
+		log.infof(
+			"DEBUG EDIT feedback: {} edições ({} jobs) — applied={} noop={} rejected={}",
+			previous.edit_count,
+			previous.job_count,
+			applied,
+			noop,
+			rejected,
+		)
+		if previous.edit_count <= 128 {
+			// TEMPORÁRIO (diagnóstico): par (edição packed, código) por posição.
+			for i in 0 ..< previous.edit_count {
+				packed := voxel_gpu.voxel_edits_mapped[frame_idx * MAX_EDITS_PER_FLUSH + int(i)]
+				code := voxel_gpu.edit_results_mapped[frame_idx * MAX_EDITS_PER_FLUSH + int(i)]
+				log.infof(
+					"  edit[{}]: voxel={} block={} -> code={}",
+					i,
+					packed & 0x7FFF,
+					packed >> 16,
+					code,
+				)
+			}
+		}
+		ve.edit.stats_applied += u64(applied)
+		ve.edit.stats_noop += u64(noop)
+		ve.edit.stats_rejected += u64(rejected)
+	}
+
+	job_count := u32(len(ve.edit.staged_jobs))
+	edit_count := u32(len(ve.edit.staged_edits))
+	jobs_base := frame_idx * MAX_EDIT_JOBS_PER_FLUSH
+	edits_base := frame_idx * MAX_EDITS_PER_FLUSH
+	for job, i in ve.edit.staged_jobs {
+		global_job := job
+		global_job.first_edit += u32(edits_base) // índice global no ring (shader usa direto)
+		voxel_gpu.edit_jobs_mapped[jobs_base + i] = global_job
+	}
+	for packed_edit, i in ve.edit.staged_edits {
+		voxel_gpu.voxel_edits_mapped[edits_base + i] = packed_edit
+	}
+
+	ve.edit.ring_counts[frame_idx] = EditRingCounts{job_count, edit_count}
+	// O staging vale por UMA cópia: sem limpar, frames seguintes re-copiam e
+	// re-despacham o mesmo flush (vistos como no-ops redundantes no feedback).
+	clear(&ve.edit.staged_jobs)
+	clear(&ve.edit.staged_edits)
+	return job_count
+}
+
+edit_update :: proc(ve: ^VoxelEngine) {
+	if edit_flush_due(ve) do flush_voxel_edits(ve)
+}
+
+edit_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
+	log.infof(
+		"{} applied={} noop={} rejected={} deferred={} (fila={}, pendências={})",
+		prefix,
+		ve.edit.stats_applied,
+		ve.edit.stats_noop,
+		ve.edit.stats_rejected,
+		ve.edit.stats_deferred,
+		len(ve.edit.queue),
+		len(ve.edit.pending),
+	)
+}
+
+
+
+@(private)
+voxel_chunk_and_index :: proc "contextless" (world_voxel: [3]i32) -> (chunk: ChunkCoordinate, voxel_index: u32) {
+	chunk = ChunkCoordinate{
+		floor_div_i32(world_voxel.x, CHUNK_SIZE),
+		floor_div_i32(world_voxel.y, CHUNK_SIZE),
+		floor_div_i32(world_voxel.z, CHUNK_SIZE),
+	}
+	local_x := world_voxel.x - chunk.x * CHUNK_SIZE
+	local_y := world_voxel.y - chunk.y * CHUNK_SIZE
+	local_z := world_voxel.z - chunk.z * CHUNK_SIZE
+	voxel_index = u32(local_x) | (u32(local_z) << 5) | (u32(local_y) << 10)
+	return
+}
+
+@(private)
+ve_try_materialize_empty :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) -> bool {
+	if len(ve.free_storage_slots) == 0 do return false
+	slot := pop(&ve.free_storage_slots)
+	ve.slot_generations[slot] += 1
+	generation := ve.slot_generations[slot]
+	chunk_record := &ve.active_chunks[coord]
+	chunk_record.state = .GENERATING
+	chunk_record.storage_slot_index = slot
+	chunk_record.generation = generation
+	ve.empty_chunks_active -= 1
+
+	// Mirror: se o chunk está na bolha de simulação e a página não existe,
+	// sintetiza zeros (conteúdo worldgen = ar conhecido) antes do journal.
+	if coord in ve.mirror.pages {
+		// página existente (zeros do ring ou já sintetizada): nada a fazer.
+	} else {
+		sim_radius2 := i64(config.radius_simulation) * i64(config.radius_simulation)
+		if calculate_squared_distance(ve.last_camera_chunk, coord) <= sim_radius2 {
+			if page := mirror_page_acquire(ve, coord); page != nil {
+				mirror_page_fill_empty(ve, coord, page)
+			}
+		}
+	}
+
+	task := GenerationTask {
+		coordinate         = coord,
+		storage_slot_index = slot,
+		generation         = generation,
+		mirror_ring_slot   = -1,
+	}
+	sync.mutex_lock(&ve.queue_mutex)
+	append(&ve.pending_tasks, task)
+	sync.cond_signal(&ve.queue_condition)
+	sync.mutex_unlock(&ve.queue_mutex)
+	log.infof("VS-10: materializando chunk EMPTY {} (slot {}, geração {})", coord, slot, generation)
+	return true
+}
+
 @(private)
 edit_defer_to_pending :: proc(ve: ^VoxelEngine, chunk: ChunkCoordinate, request: VoxelEditRequest) {
 	list := ve.edit.pending[chunk] // dynamic array compartilha o backing
@@ -174,7 +279,7 @@ edit_flush_due :: proc(ve: ^VoxelEngine) -> bool {
 	return time.duration_milliseconds(time.tick_since(ve.edit.last_flush)) >= EDIT_FLUSH_INTERVAL_MS
 }
 
-
+@(private)
 flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 	clear(&ve.edit.staged_jobs)
 	clear(&ve.edit.staged_edits)
@@ -267,7 +372,6 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 	ve.edit.force_next_flush = false
 }
 
-
 @(private)
 mirror_reconcile_ring_position :: proc(ve: ^VoxelEngine, frame_idx: int, counts: EditRingCounts, index: u32) {
 	// job que cobre a posição (edições contíguas por chunk)
@@ -301,106 +405,6 @@ mirror_reconcile_ring_position :: proc(ve: ^VoxelEngine, frame_idx: int, counts:
 		coord.z * CHUNK_SIZE + i32((voxel_index >> 5) & 31),
 	}
 	mirror_reconcile_rejection(ve, coord, VoxelEditRequest{world_voxel, packed_edit >> 16})
-}
-
-edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
-	frame_idx := int(frame_index % NUM_FRAMES_IN_FLIGHT)
-
-	// Feedback do flush que usou este slot há NUM_FRAMES_IN_FLIGHT frames.
-	// O buffer é HOST_ACCESS_RANDOM: invalida antes de ler (no-op em memória
-	// coerente).
-	vk_check(
-		vma.InvalidateAllocation(
-			app.vmaAllocator,
-			voxel_gpu.edit_results.allocation,
-			0,
-			vk.DeviceSize(voxel_gpu.edit_results.size),
-		),
-	)
-	previous := ve.edit.ring_counts[frame_idx]
-	if previous.edit_count > 0 {
-		// Log por flush (diagnóstico): contagem por código neste slot.
-		applied, noop, rejected: u32
-		for i in 0 ..< previous.edit_count {
-			code := voxel_gpu.edit_results_mapped[frame_idx * MAX_EDITS_PER_FLUSH + int(i)]
-			switch code {
-			case EDIT_RESULT_APPLIED:
-				applied += 1
-			case EDIT_RESULT_NOOP:
-				noop += 1
-			case:
-				rejected += 1
-				// VS-04 (REQ-MIRROR-09): o mirror aplicou otimisticamente —
-				// reconcilia a página mapeando a posição do ring de volta a
-				// (chunk, voxel, bloco). Os rings de jobs/edições do slot
-				// ainda estão intactos na colheita (só são regravados abaixo).
-				mirror_reconcile_ring_position(ve, frame_idx, previous, i)
-			}
-		}
-		log.infof(
-			"DEBUG EDIT feedback: {} edições ({} jobs) — applied={} noop={} rejected={}",
-			previous.edit_count,
-			previous.job_count,
-			applied,
-			noop,
-			rejected,
-		)
-		if previous.edit_count <= 128 {
-			// TEMPORÁRIO (diagnóstico): par (edição packed, código) por posição.
-			for i in 0 ..< previous.edit_count {
-				packed := voxel_gpu.voxel_edits_mapped[frame_idx * MAX_EDITS_PER_FLUSH + int(i)]
-				code := voxel_gpu.edit_results_mapped[frame_idx * MAX_EDITS_PER_FLUSH + int(i)]
-				log.infof(
-					"  edit[{}]: voxel={} block={} -> code={}",
-					i,
-					packed & 0x7FFF,
-					packed >> 16,
-					code,
-				)
-			}
-		}
-		ve.edit.stats_applied += u64(applied)
-		ve.edit.stats_noop += u64(noop)
-		ve.edit.stats_rejected += u64(rejected)
-	}
-
-	job_count := u32(len(ve.edit.staged_jobs))
-	edit_count := u32(len(ve.edit.staged_edits))
-	jobs_base := frame_idx * MAX_EDIT_JOBS_PER_FLUSH
-	edits_base := frame_idx * MAX_EDITS_PER_FLUSH
-	for job, i in ve.edit.staged_jobs {
-		global_job := job
-		global_job.first_edit += u32(edits_base) // índice global no ring (shader usa direto)
-		voxel_gpu.edit_jobs_mapped[jobs_base + i] = global_job
-	}
-	for packed_edit, i in ve.edit.staged_edits {
-		voxel_gpu.voxel_edits_mapped[edits_base + i] = packed_edit
-	}
-
-	ve.edit.ring_counts[frame_idx] = EditRingCounts{job_count, edit_count}
-	// O staging vale por UMA cópia: sem limpar, frames seguintes re-copiam e
-	// re-despacham o mesmo flush (vistos como no-ops redundantes no feedback).
-	clear(&ve.edit.staged_jobs)
-	clear(&ve.edit.staged_edits)
-	return job_count
-}
-
-
-edit_update :: proc(ve: ^VoxelEngine) {
-	if edit_flush_due(ve) do flush_voxel_edits(ve)
-}
-
-edit_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
-	log.infof(
-		"{} applied={} noop={} rejected={} deferred={} (fila={}, pendências={})",
-		prefix,
-		ve.edit.stats_applied,
-		ve.edit.stats_noop,
-		ve.edit.stats_rejected,
-		ve.edit.stats_deferred,
-		len(ve.edit.queue),
-		len(ve.edit.pending),
-	)
 }
 
 @(private)

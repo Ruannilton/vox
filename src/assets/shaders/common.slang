@@ -42,7 +42,7 @@ static const uint MAX_TEMPLATE_VERTICES  = 32; // por voxel; subdivisão x4 => 8
 static const uint MAX_TEMPLATE_TRIANGLES = 24; // pior-caso por voxel; x4 => 8*24 = 192
 static const uint TEMPLATE_FLAG_HAS_FLUSH_FACES = 1;
 static const uint CULL_FACE_NEVER = 7; // triângulo nunca culpado (interior/diagonal)
-
+static const uint NO_TEMPLATE_UV_OFFSET = 0xFFFFFFFFu;
 
 static const uint NEIGHBOR_SLOT_INVALID       = 0xFFFFFFFFu;
 
@@ -53,7 +53,6 @@ static const uint WORK_QUEUE_STATE_WORDS       = 8;
 static const uint WORK_QUEUE_APPEND_COUNT_WORD = 0;
 static const uint WORK_QUEUE_OVERFLOW_WORD     = 1;
 static const uint WORK_QUEUE_INDIRECT_X_WORD   = 2;
-
 
 static const uint MAX_EDITS_PER_FLUSH            = 4096; // edições por flush (16 KiB no ring)
 static const uint MAX_EDIT_JOBS_PER_FLUSH        = 256;  // chunks tocados por flush
@@ -93,7 +92,7 @@ struct ChunkHeader {
 };
 
 struct SpecialVoxelRecord {
-    uint voxel_index; 
+    uint voxel_index;
     uint shape_and_orientation;
     uint block_identifier;
 };
@@ -102,15 +101,14 @@ struct BlockDefinition {
     uint   mesh_template_index;
     uint   albedo_texture_index;
     uint   pbr_texture_index;
-    uint   flags;              
+    uint   flags;
     float3 emission_color;
     float  base_roughness;
     float  base_metallic;
-    uint   rotation;       
+    uint   rotation;
     uint   padding_2;
     uint   padding_3;
 };
-
 
 struct MeshTemplate {
     uint vertex_offset;   // no pool template_vertices
@@ -126,9 +124,6 @@ struct MeshTemplate {
     uint padding_1;
 }
 
-// VS-11 (REQ-UV-02): ausência de pool de UVs no template (sentinela interna).
-static const uint NO_TEMPLATE_UV_OFFSET = 0xFFFFFFFFu;
-
 struct PushConstants {
     column_major float4x4 view_projection_matrix;
     float3 camera_position;
@@ -138,14 +133,12 @@ struct PushConstants {
     uint   visible_chunk_capacity; // VS-08 (REQ-CFG-06): 88 -> 92 B
 };
 
-
 struct VisibleChunk {
     int3 chunk_world_origin;
     uint storage_slot_index;
     uint neighbor_slots[6]; // ordem: +X,-X,+Y,-Y,+Z,-Z (mesma de FACE_NORMALS)
     uint _padding[2];
 };
-
 
 struct EditChunkJob {
     uint storage_slot_index;
@@ -154,6 +147,58 @@ struct EditChunkJob {
     uint _padding;
 };
 
+struct MeshVertex {
+    float4 clip_position  : SV_Position;
+    float3 world_position : WORLD_POSITION;
+    uint   block_id       : BLENDINDICES;
+    float2 uv             : TEXCOORD0; // (-1,-1) = sentinela: fragment usa triplanar
+};
+
+// VS-02: saída do mesh shader. VS-11 (REQ-UV-01): +uv (TEXCOORD0) — 10
+// componentes de saída por vértice, distante do limite de
+// maxMeshOutputComponents; world_position segue necessário para as normais
+// por derivadas (REQ-SHADE-02).
+
+[[vk::push_constant]] PushConstants push_constants;
+
+// ----------------------------------------------------------------------------
+// Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–15 = VS-03;
+// 16 = VS-04; 18 = VS-10; 19 = VS-11; 20 = VS-13)
+// ----------------------------------------------------------------------------
+[[vk::binding(0, 0)]] RWStructuredBuffer<uint>               temporary_dense_chunks;
+[[vk::binding(1, 0)]] StructuredBuffer<ChunkGenerationJob>   generation_jobs;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint>               occupancy_pool;
+[[vk::binding(3, 0)]] RWStructuredBuffer<uint>               material_plane_pool;
+[[vk::binding(4, 0)]] RWStructuredBuffer<ChunkHeader>        chunk_headers;
+[[vk::binding(5, 0)]] RWStructuredBuffer<SpecialVoxelRecord> special_voxel_records;
+[[vk::binding(6, 0)]] StructuredBuffer<VisibleChunk>         visible_chunks;
+[[vk::binding(7, 0)]] StructuredBuffer<BlockDefinition>      global_block_registry;
+[[vk::binding(8, 0)]] Sampler2DArray                         block_albedo_textures;
+[[vk::binding(9, 0)]] Sampler2DArray                         block_pbr_textures; // dummy nesta fatia (ADR-B7)
+[[vk::binding(10, 0)]] StructuredBuffer<MeshTemplate>        mesh_templates;
+[[vk::binding(11, 0)]] StructuredBuffer<float4>              template_vertices;
+[[vk::binding(12, 0)]] StructuredBuffer<uint>                template_triangles;
+[[vk::binding(13, 0)]] StructuredBuffer<EditChunkJob>        edit_jobs;
+[[vk::binding(14, 0)]] StructuredBuffer<uint>                voxel_edits;
+[[vk::binding(15, 0)]] RWStructuredBuffer<uint>              edit_results;
+[[vk::binding(16, 0)]] RWStructuredBuffer<uint16_t>          mirror_export_ring;
+[[vk::binding(17, 0)]] RWStructuredBuffer<uint>                work_queue;
+// VS-10 (REQ-VRT-02): flags do header por slot, escritas pelo pack e lidas
+// pelo handler de conclusão (host-visible) após a timeline do lote.
+[[vk::binding(18, 0)]] RWStructuredBuffer<uint>                chunk_result_flags;
+// VS-11 (REQ-UV-02): pool de UVs dos templates — paralelo e indexado como
+// template_vertices (stride 8 B, std430 float2); MeshTemplate.uv_offset.
+[[vk::binding(19, 0)]] StructuredBuffer<float2>                template_uvs;
+// VS-13 (REQ-MIR-01): heightmap de export do mirror — ring paralelo ao denso
+// (binding 16, mesmo índice de slot). 64 slots x 1.024 u16 (2 KiB/slot),
+// z-contíguo x|z<<5; y do sólido mais alto da coluna (0xFFFF = coluna vazia).
+[[vk::binding(20, 0)]] RWStructuredBuffer<uint16_t>          mirror_heightmap_ring;
+
+uint work_queue_base_words() {
+    // VS-08: slot do ring = estado + capacidade de visíveis do push constant.
+    return (push_constants.visible_chunk_offset / push_constants.visible_chunk_capacity) *
+           (WORK_QUEUE_STATE_WORDS + push_constants.visible_chunk_capacity * BRICKS_PER_CHUNK);
+}
 
 // VS-06 (REQ-CULL-01): planos do frustum por Gribb-Hartmann sobre a MESMA
 // view_projection_matrix que leva a clip_position no mesh shader — o frustum
@@ -205,59 +250,6 @@ uint pack_work_item(uint visible_index, uint brick_index, uint part, uint subdiv
     return (visible_index & 0xFFFFu) | ((brick_index & 1023u) << 16u) | ((part & 3u) << 26u) | ((subdivision & 3u) << 28u);
 }
 
-// VS-02: saída do mesh shader. VS-11 (REQ-UV-01): +uv (TEXCOORD0) — 10
-// componentes de saída por vértice, distante do limite de
-// maxMeshOutputComponents; world_position segue necessário para as normais
-// por derivadas (REQ-SHADE-02).
-struct MeshVertex {
-    float4 clip_position  : SV_Position;
-    float3 world_position : WORLD_POSITION;
-    uint   block_id       : BLENDINDICES;
-    float2 uv             : TEXCOORD0; // (-1,-1) = sentinela: fragment usa triplanar
-};
-
-[[vk::push_constant]] PushConstants push_constants;
-
-// ----------------------------------------------------------------------------
-// Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–15 = VS-03;
-// 16 = VS-04; 18 = VS-10; 19 = VS-11; 20 = VS-13)
-// ----------------------------------------------------------------------------
-[[vk::binding(0, 0)]] RWStructuredBuffer<uint>               temporary_dense_chunks;
-[[vk::binding(1, 0)]] StructuredBuffer<ChunkGenerationJob>   generation_jobs;
-[[vk::binding(2, 0)]] RWStructuredBuffer<uint>               occupancy_pool;
-[[vk::binding(3, 0)]] RWStructuredBuffer<uint>               material_plane_pool;
-[[vk::binding(4, 0)]] RWStructuredBuffer<ChunkHeader>        chunk_headers;
-[[vk::binding(5, 0)]] RWStructuredBuffer<SpecialVoxelRecord> special_voxel_records;
-[[vk::binding(6, 0)]] StructuredBuffer<VisibleChunk>         visible_chunks;
-[[vk::binding(7, 0)]] StructuredBuffer<BlockDefinition>      global_block_registry;
-[[vk::binding(8, 0)]] Sampler2DArray                         block_albedo_textures;
-[[vk::binding(9, 0)]] Sampler2DArray                         block_pbr_textures; // dummy nesta fatia (ADR-B7)
-[[vk::binding(10, 0)]] StructuredBuffer<MeshTemplate>        mesh_templates;
-[[vk::binding(11, 0)]] StructuredBuffer<float4>              template_vertices;
-[[vk::binding(12, 0)]] StructuredBuffer<uint>                template_triangles;
-[[vk::binding(13, 0)]] StructuredBuffer<EditChunkJob>        edit_jobs;
-[[vk::binding(14, 0)]] StructuredBuffer<uint>                voxel_edits;
-[[vk::binding(15, 0)]] RWStructuredBuffer<uint>              edit_results;
-[[vk::binding(16, 0)]] RWStructuredBuffer<uint16_t>          mirror_export_ring;
-[[vk::binding(17, 0)]] RWStructuredBuffer<uint>                work_queue;
-// VS-10 (REQ-VRT-02): flags do header por slot, escritas pelo pack e lidas
-// pelo handler de conclusão (host-visible) após a timeline do lote.
-[[vk::binding(18, 0)]] RWStructuredBuffer<uint>                chunk_result_flags;
-// VS-11 (REQ-UV-02): pool de UVs dos templates — paralelo e indexado como
-// template_vertices (stride 8 B, std430 float2); MeshTemplate.uv_offset.
-[[vk::binding(19, 0)]] StructuredBuffer<float2>                template_uvs;
-// VS-13 (REQ-MIR-01): heightmap de export do mirror — ring paralelo ao denso
-// (binding 16, mesmo índice de slot). 64 slots x 1.024 u16 (2 KiB/slot),
-// z-contíguo x|z<<5; y do sólido mais alto da coluna (0xFFFF = coluna vazia).
-[[vk::binding(20, 0)]] RWStructuredBuffer<uint16_t>          mirror_heightmap_ring;
-
-
-uint work_queue_base_words() {
-    // VS-08: slot do ring = estado + capacidade de visíveis do push constant.
-    return (push_constants.visible_chunk_offset / push_constants.visible_chunk_capacity) *
-           (WORK_QUEUE_STATE_WORDS + push_constants.visible_chunk_capacity * BRICKS_PER_CHUNK);
-}
-
 // ----------------------------------------------------------------------------
 // Funções auxiliares de coordenadas
 // ----------------------------------------------------------------------------
@@ -270,9 +262,7 @@ int3 coordinate_from_dense_index(uint index) { return int3(int(index & 31u), int
 uint mirror_index_from_coordinate(int3 coord) { return uint(coord.y) | (uint(coord.z) << 5u) | (uint(coord.x) << 10u); }
 uint coarse_cell_index_from_brick_coordinate(int3 coord) { int3 cell = coord / BRICKS_PER_COARSE_CELL; return uint(cell.x) + 4u * (uint(cell.z) + 4u * uint(cell.y)); }
 
-
 static const int3 FACE_NORMALS[6] = { int3(1,0,0), int3(-1,0,0), int3(0,1,0), int3(0,-1,0), int3(0,0,1), int3(0,0,-1) };
-
 
 static const uint ROTATED_FACE[24] = {
     0, 1, 2, 3, 4, 5,  // r=0: identidade
@@ -318,7 +308,6 @@ bool is_brick_occluded(uint slot, uint occupancy_word, int3 brick_coord, uint ne
     }
     return true;
 }
-
 
 bool is_voxel_solid(uint slot, int3 coord, uint neighbor_slots[6]) {
     if (all(coord >= 0) && all(coord < CHUNK_SIZE)) {
@@ -375,7 +364,6 @@ bool triangle_survives_culling(uint packed_tri, uint rotation, uint face_mask) {
     return (face_mask & (1u << rotated_face)) != 0u;
 }
 
-
 uint read_block_identifier(uint slot, ChunkHeader header, int3 coord) {
     uint brick_idx = brick_index_from_coordinate(coord / BRICK_SIZE);
     uint bit_idx = bit_index_from_local_coordinate(coord % BRICK_SIZE);
@@ -387,7 +375,6 @@ uint read_block_identifier(uint slot, ChunkHeader header, int3 coord) {
     }
     return header.palette[min(palette_index, max(header.palette_size, 1u) - 1u)];
 }
-
 
 uint read_palette_index_at(uint slot, uint plane_count, int3 coord) {
     uint brick_idx = brick_index_from_coordinate(coord / BRICK_SIZE);

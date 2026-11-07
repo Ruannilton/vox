@@ -1,7 +1,5 @@
-
 import common;
 #include "./lib/FastNoiseLite.slang"
-
 
 // VS-13 (REQ-GEN-01/02): heightmap da fatia 8x8 do workgroup em groupshared.
 // As threads com y-local 0 (64/workgroup) calculam a altura de cada coluna
@@ -69,7 +67,6 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
         mirror_export_ring[uint(job.mirror_ring_slot) * CHUNK_VOXEL_COUNT + mirror_index_from_coordinate(coord)] = uint16_t(block_id);
     }
 }
-
 
 groupshared uint shared_block_presence[BLOCK_PRESENCE_WORDS];
 groupshared uint shared_presence_prefix[BLOCK_PRESENCE_WORDS];
@@ -161,7 +158,6 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
     }
     GroupMemoryBarrierWithGroupSync();
 
-
     for (uint step = 0; step < step_count; step++) {
         uint brick_idx = thread + step * PACK_THREADS;
         uint occupancy = occupancy_pool[occupancy_base + brick_idx];
@@ -172,7 +168,6 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
         }
     }
     GroupMemoryBarrierWithGroupSync();
-
 
     uint thread_partial = 0;
     for (uint i = 0; i < PRESENCE_WORDS_PER_THREAD; i++) {
@@ -273,7 +268,7 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
                 record.block_identifier = block_id;
                 special_voxel_records[slot * SPECIAL_RECORDS_PER_CHUNK + write_idx] = record;
             }
-            continue; 
+            continue;
         }
 
         InterlockedAdd(shared_refcount[palette_index], 1u);

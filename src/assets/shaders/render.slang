@@ -1,6 +1,5 @@
 import common;
 
-
 groupshared uint shared_item_offsets[BRICKS_PER_CHUNK]; // scan: offset do brick no lote do chunk
 groupshared uint shared_chunk_item_total;
 groupshared uint shared_chunk_item_base;
@@ -22,13 +21,12 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
 
     ChunkHeader header = chunk_headers[chunk.storage_slot_index];
     if ((header.flags & CHUNK_FLAG_EMPTY) != 0) {
-        return; 
+        return;
     }
 
     uint occupancy_base = chunk.storage_slot_index * OCCUPANCY_WORDS_PER_CHUNK;
     uint queue_base = work_queue_base_words();
     uint step_count = BRICKS_PER_CHUNK / 128;
-
 
     for (uint step = 0; step < step_count; step++) {
         uint brick_index = thread + step * 128;
@@ -104,12 +102,22 @@ void finalize_work_queue() {
     work_queue[queue_base + WORK_QUEUE_INDIRECT_X_WORD + 2] = 1u;
 }
 
-
 groupshared uint shared_v_count[VOXELS_PER_BRICK];
 groupshared uint shared_t_count[VOXELS_PER_BRICK];
 groupshared uint shared_face_mask[VOXELS_PER_BRICK];
 groupshared uint shared_total_v;
 groupshared uint shared_total_t;
+
+float3 sample_triplanar_albedo(float3 world_pos, float3 world_normal, uint texture_index) {
+    float3 blend_weights = abs(world_normal);
+    blend_weights = blend_weights / (blend_weights.x + blend_weights.y + blend_weights.z);
+
+    float3 x_projection = block_albedo_textures.Sample(float3(world_pos.zy, float(texture_index))).rgb;
+    float3 y_projection = block_albedo_textures.Sample(float3(world_pos.xz, float(texture_index))).rgb;
+    float3 z_projection = block_albedo_textures.Sample(float3(world_pos.xy, float(texture_index))).rgb;
+
+    return x_projection * blend_weights.x + y_projection * blend_weights.y + z_projection * blend_weights.z;
+}
 
 [shader("mesh")]
 [outputtopology("triangle")]
@@ -172,7 +180,6 @@ void build_brick_mesh(
     shared_face_mask[local_id.x] = face_mask;
     GroupMemoryBarrierWithGroupSync();
 
-
     if (local_id.x == 0) {
         uint v_acc = 0u, t_acc = 0u;
         for (uint i = 0; i < VOXELS_PER_BRICK; i++) {
@@ -220,18 +227,6 @@ void build_brick_mesh(
         uint3 tri = uint3(packed_tri & 0xFFu, (packed_tri >> 8u) & 0xFFu, (packed_tri >> 16u) & 0xFFu);
         tris[t_cur++] = tri + first_v;
     }
-}
-
-
-float3 sample_triplanar_albedo(float3 world_pos, float3 world_normal, uint texture_index) {
-    float3 blend_weights = abs(world_normal);
-    blend_weights = blend_weights / (blend_weights.x + blend_weights.y + blend_weights.z);
-
-    float3 x_projection = block_albedo_textures.Sample(float3(world_pos.zy, float(texture_index))).rgb;
-    float3 y_projection = block_albedo_textures.Sample(float3(world_pos.xz, float(texture_index))).rgb;
-    float3 z_projection = block_albedo_textures.Sample(float3(world_pos.xy, float(texture_index))).rgb;
-
-    return x_projection * blend_weights.x + y_projection * blend_weights.y + z_projection * blend_weights.z;
 }
 
 [shader("fragment")]

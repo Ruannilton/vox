@@ -10,7 +10,7 @@ GpuBuffer :: struct {
 }
 
 gpu_buffer_create :: proc(size: vk.DeviceSize, usage: vk.BufferUsageFlags) -> (buffer: GpuBuffer) {
-    buffer.size = size
+	buffer.size = size
 
 	buffer_info := vk.BufferCreateInfo {
 		sType       = .BUFFER_CREATE_INFO,

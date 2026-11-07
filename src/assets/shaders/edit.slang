@@ -1,6 +1,4 @@
-
 import common;
-
 
 groupshared uint shared_edit_palette[PALETTE_SIZE_MAXIMUM];
 groupshared uint shared_edit_refcount[PALETTE_SIZE_MAXIMUM];
@@ -36,7 +34,6 @@ void edit_hash_reserve(uint block_id, out uint bucket, out bool owned) {
     }
 }
 
-
 void edit_hash_tombstone(uint block_id) {
     uint h = edit_hash_bucket(block_id);
     for (uint probe = 0u; probe < EDIT_HASH_CAPACITY; probe++) {
@@ -52,7 +49,6 @@ void edit_hash_tombstone(uint block_id) {
     }
 }
 
-
 uint edit_hash_wait_slot(uint bucket) {
     for (uint spin = 0u; spin < 4096u; spin++) {
         uint value;
@@ -61,7 +57,6 @@ uint edit_hash_wait_slot(uint bucket) {
     }
     return EDIT_SLOT_REJECTED; // defensivo: timeout
 }
-
 
 uint edit_alloc_slot(uint slot, uint block_id, uint bucket) {
     for (uint s = 1u; s < PALETTE_SIZE_MAXIMUM; s++) {
@@ -104,7 +99,6 @@ uint edit_claim_slot(uint slot_idx, uint block_id, out bool counted) {
     }
     return EDIT_HASH_EMPTY; // defensivo: contenção patológica
 }
-
 
 uint edit_resolve_slot(uint slot, uint block_id, out bool counted) {
     counted = false;
@@ -166,7 +160,6 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
         return;
     }
 
-
     for (uint i = thread; i < h_palette_size; i += 128u) {
         if (i == 0u || shared_edit_refcount[i] > 0u) {
             uint bucket; bool owned;
@@ -200,7 +193,6 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
     }
     GroupMemoryBarrierWithGroupSync();
 
-
     uint old_planes = shared_edit_plane_count;
     uint required_planes = old_planes;
     while ((1u << required_planes) < max(shared_edit_palette_size, 1u)) { required_planes++; }
@@ -232,7 +224,6 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
         uint bit_idx = bit_index_from_local_coordinate(coord % BRICK_SIZE);
         uint mask = 1u << bit_idx;
 
-
         for (uint plane = 0u; plane < shared_edit_plane_count; plane++) {
             bool old_bit = ((old_index >> plane) & 1u) != 0u;
             bool new_bit = ((new_index >> plane) & 1u) != 0u;
@@ -254,7 +245,6 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
     }
     GroupMemoryBarrierWithGroupSync();
 
-
     uint local_or = 0u;
     for (uint i = thread; i < BRICKS_PER_CHUNK; i += 128u) {
         local_or |= occupancy_pool[occupancy_base + i];
@@ -274,7 +264,6 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
         if (any_solid) { InterlockedOr(occupancy_pool[cell_addr], cell_mask); }
         else { InterlockedAnd(occupancy_pool[cell_addr], ~cell_mask); }
     }
-
 
     for (uint i = thread; i < PALETTE_SIZE_MAXIMUM; i += 128u) {
         uint rc = shared_edit_refcount[i];

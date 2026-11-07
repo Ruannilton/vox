@@ -1,5 +1,9 @@
 package engine
 
+// VS-07 — bus central de eventos: produtores (callbacks GLFW, cursor de replay)
+// apenas empurram eventos na fila; o loop drena uma vez por frame, grava em
+// JSONL e despacha aos handlers registrados.
+
 import "core:encoding/json"
 import "core:fmt"
 import "core:log"
@@ -7,10 +11,6 @@ import "core:os"
 import "core:strings"
 import "core:time"
 import "vendor:glfw"
-
-// VS-07 — bus central de eventos: produtores (callbacks GLFW, cursor de
-// replay) apenas empurram eventos na fila; o loop principal drena uma vez por
-// frame, grava em JSONL e despacha aos handlers registrados.
 
 EVENT_QUEUE_CAPACITY :: 4096
 EVENTS_DIR :: "events" // relativo ao cwd (bin/)
@@ -74,13 +74,30 @@ Event :: struct {
 	payload: EventPayload,
 }
 
+@(private)
+json_event :: struct {
+	t:        f64           `json:"t"`,
+	type:     string        `json:"type"`,
+	key:      Maybe(i32)    `json:"key"`,
+	key_name: string        `json:"key_name"`,
+	duration: Maybe(f64)    `json:"duration"`,
+	dx:       Maybe(f64)    `json:"dx"`,
+	dy:       Maybe(f64)    `json:"dy"`,
+	button:   Maybe(i32)    `json:"button"`,
+	action:   Maybe(string) `json:"action"`,
+	position: Maybe([]f64)  `json:"position"`,
+	target:   Maybe([]f64)  `json:"target"`,
+	block_id: Maybe(u32)    `json:"block_id"`,
+	seconds:  Maybe(f64)    `json:"seconds"`,
+}
+
 events: struct {
 	t0: f64,
 
 	// fila anel (produtores: callbacks "c"/contextless e cursor de replay)
-	queue:          [EVENT_QUEUE_CAPACITY]Event,
-	head, tail:     int,
-	overflow_count: u64,
+	queue:           [EVENT_QUEUE_CAPACITY]Event,
+	head, tail:      int,
+	overflow_count:  u64,
 	overflow_warned: bool,
 
 	// estado derivado de KeyPress/KeyRelease (substitui o polling glfw.GetKey)
@@ -95,15 +112,15 @@ events: struct {
 	record_file:    ^os.File,
 
 	// replay
-	replay_path:          string,
-	replay_events:        []Event, // ordenado por t
-	replay_cursor:        int,
-	replay_hold_until:    f64, // nenhum evento com t < hold é despachado
-	replay_dispatched:    u64,
-	replay_skipped:       u64, // linhas inválidas + tipos desconhecidos
-	replay_finished:      bool,
-	replay_finish_time:   f64,
-	exit_after_replay:    bool,
+	replay_path:        string,
+	replay_events:      []Event, // ordenado por t
+	replay_cursor:      int,
+	replay_hold_until:  f64, // nenhum evento com t < hold é despachado
+	replay_dispatched:  u64,
+	replay_skipped:     u64, // linhas inválidas + tipos desconhecidos
+	replay_finished:    bool,
+	replay_finish_time: f64,
+	exit_after_replay:  bool,
 }
 
 events_init :: proc() {
@@ -180,23 +197,7 @@ events_destroy :: proc() {
 
 // --- Produtores ---
 
-@(private)
-events_now :: proc "contextless" () -> f64 {
-	return glfw.GetTime() - events.t0
-}
-
 // Empurra um evento na fila. Contextless: pode ser chamado de callbacks "c".
-events_push :: proc "contextless" (e: Event) {
-	next := (events.tail + 1) % EVENT_QUEUE_CAPACITY
-	if next == events.head {
-		events.overflow_count += 1
-		return
-	}
-	events.queue[events.tail] = e
-	events.tail = next
-}
-
-// Versão com timestamp para callbacks "c"/contextless: apenas produz.
 events_push_now :: proc "contextless" (type: EventType, payload: EventPayload) {
 	events_push(Event{t = events_now(), type = type, payload = payload})
 }
@@ -205,7 +206,7 @@ events_time_now :: proc() -> f64 {
 	return events_now()
 }
 
-// Emissão fora de callback (cursor de replay, handlers): timestama e empurra.
+// Emissão fora de callback (cursor de replay, handlers): timestamp e empurra.
 events_emit :: proc(type: EventType, payload: EventPayload) {
 	events_push(Event{t = events_now(), type = type, payload = payload})
 }
@@ -218,117 +219,6 @@ events_register :: proc(types: []EventType, handler: proc(Event)) {
 
 events_is_pressed :: proc(key: i32) -> bool {
 	return events.pressed[key]
-}
-
-// --- Gravação ---
-
-@(private)
-events_timestamp_string :: proc() -> string {
-	now := time.now()
-	year, month, day := time.date(now)
-	hour, min, sec := time.clock(now)
-	return fmt.tprintf("%04d%02d%02d_%02d%02d%02d", year, int(month), day, hour, min, sec)
-}
-
-@(private)
-events_recorder_open :: proc() {
-	path := events.record_path
-	if path == "" {
-		if !os.is_dir(EVENTS_DIR) {
-			os.make_directory(EVENTS_DIR)
-		}
-		path = fmt.tprintf("%s/events_%s.jsonl", EVENTS_DIR, events_timestamp_string())
-	}
-	f := events_try_open(path)
-	if f == nil {
-		log.errorf("Falha ao abrir arquivo de eventos {}", path)
-		events.record_enabled = false
-		return
-	}
-	events.record_file = f
-	events.record_path = path
-	log.infof("Gravação de eventos em {}", path)
-}
-
-// Abre o arquivo de gravação, criando os diretórios do caminho se preciso.
-@(private)
-events_try_open :: proc(path: string) -> ^os.File {
-	for i := 0; i < len(path); i += 1 {
-		if path[i] == '/' do os.make_directory(path[:i]) // já existe: erro ignorado
-	}
-	f, err := os.open(path, os.O_WRONLY | os.O_CREATE | os.O_TRUNC)
-	if err == nil do return f
-	return nil
-}
-
-@(private)
-events_record_line :: proc(e: Event) {
-	if events.record_file == nil do return
-	line: string
-	switch p in e.payload {
-	case KeyPayload:
-		key_name := events_key_name(p.key, p.scancode)
-		if p.duration >= 0 {
-			line = fmt.tprintf(
-				`{{"t": {}, "type": "KeyPress", "key": {}, "key_name": "{}", "duration": {}}}` + "\n",
-				fmt.tprintf("%.6f", e.t), p.key, key_name, fmt.tprintf("%.3f", p.duration),
-			)
-		} else {
-			line = fmt.tprintf(
-				`{{"t": {}, "type": "{}", "key": {}, "key_name": "{}"}}` + "\n",
-				fmt.tprintf("%.6f", e.t), event_type_name(e.type), p.key, key_name,
-			)
-		}
-	case MouseMovePayload:
-		line = fmt.tprintf(
-			`{{"t": {}, "type": "MouseMove", "dx": {}, "dy": {}}}` + "\n",
-			fmt.tprintf("%.6f", e.t), fmt.tprintf("%.4f", p.dx), fmt.tprintf("%.4f", p.dy),
-		)
-	case MouseButtonPayload:
-		action := p.press ? "press" : "release"
-		line = fmt.tprintf(
-			`{{"t": {}, "type": "MouseButton", "button": {}, "action": "{}"}}` + "\n",
-			fmt.tprintf("%.6f", e.t), p.button, action,
-		)
-	case Vec3fPayload:
-		field := e.type == .TeleportTo ? "position" : "target"
-		line = fmt.tprintf(
-			`{{"t": {}, "type": "{}", "{}": [{}, {}, {}]}}` + "\n",
-			fmt.tprintf("%.6f", e.t), event_type_name(e.type), field,
-			fmt.tprintf("%.4f", p.v.x), fmt.tprintf("%.4f", p.v.y), fmt.tprintf("%.4f", p.v.z),
-		)
-	case Vec3iPayload:
-		if e.type == .AddBlock {
-			line = fmt.tprintf(
-				`{{"t": {}, "type": "AddBlock", "position": [{}, {}, {}], "block_id": {}}}` + "\n",
-				fmt.tprintf("%.6f", e.t), p.v.x, p.v.y, p.v.z, p.block_id,
-			)
-		} else {
-			line = fmt.tprintf(
-				`{{"t": {}, "type": "RemoveBlock", "position": [{}, {}, {}]}}` + "\n",
-				fmt.tprintf("%.6f", e.t), p.v.x, p.v.y, p.v.z,
-			)
-		}
-	case WaitPayload:
-		line = fmt.tprintf(
-			`{{"t": {}, "type": "Wait", "seconds": {}}}` + "\n",
-			fmt.tprintf("%.6f", e.t), fmt.tprintf("%.3f", p.seconds),
-		)
-	case struct {}:
-		line = fmt.tprintf(
-			`{{"t": {}, "type": "{}"}}` + "\n",
-			fmt.tprintf("%.6f", e.t), event_type_name(e.type),
-		)
-	}
-	os.write_string(events.record_file, line)
-	os.flush(events.record_file)
-}
-
-@(private)
-events_key_name :: proc(key, scancode: i32) -> string {
-	name := glfw.GetKeyName(key, scancode)
-	if name == "" do return "?"
-	return string(name)
 }
 
 // --- Dreno (uma vez por frame, thread principal) ---
@@ -363,6 +253,45 @@ events_drain :: proc() {
 	}
 }
 
+// Alimenta a fila com os eventos do replay devidos até `now` (REQ-EVT-05:
+// Wait segura o cursor; nada com t < hold_until é despachado).
+events_replay_feed :: proc(now: f64) {
+	if events.replay_path == "" || events.replay_finished do return
+
+	for events.replay_cursor < len(events.replay_events) {
+		e := events.replay_events[events.replay_cursor]
+		if e.t > now do break
+		// Wait: eventos com t anterior ao fim da espera só saem quando o
+		// relógio da sessão também passou desse instante (REQ-EVT-05)
+		if e.t < events.replay_hold_until && now < events.replay_hold_until do break
+
+		events.replay_cursor += 1
+		events.replay_dispatched += 1
+		events_push(Event{t = events_now(), type = e.type, payload = e.payload})
+		if w, is_wait := e.payload.(WaitPayload); is_wait {
+			events.replay_hold_until = e.t + w.seconds
+		}
+	}
+
+	if events.replay_cursor >= len(events.replay_events) {
+		events.replay_finished = true
+		events.replay_finish_time = now
+		ignored := len(events.replay_events) - events.replay_cursor
+		log.infof(
+			"REPLAY SUMMARY: despachados={}, pulados(linhas)={}, ignorados(aguardando)={}, duração={}s",
+			events.replay_dispatched, events.replay_skipped, ignored, fmt.tprintf("%.3f", now),
+		)
+	}
+}
+
+events_replay_is_finished :: proc() -> bool {
+	return events.replay_finished
+}
+
+events_should_exit_after_replay :: proc() -> bool {
+	return events.exit_after_replay && events.replay_finished
+}
+
 @(private)
 events_apply_key_state :: proc(e: Event, t_drain: f64) {
 	p, is_key := e.payload.(KeyPayload)
@@ -379,62 +308,6 @@ events_apply_key_state :: proc(e: Event, t_drain: f64) {
 		delete_key(&events.scheduled_release, p.key)
 	case:
 	}
-}
-
-// --- Replay ---
-
-@(private)
-json_event :: struct {
-	t:        f64             `json:"t"`,
-	type:     string          `json:"type"`,
-	key:      Maybe(i32)      `json:"key"`,
-	key_name: string          `json:"key_name"`,
-	duration: Maybe(f64)      `json:"duration"`,
-	dx:       Maybe(f64)      `json:"dx"`,
-	dy:       Maybe(f64)      `json:"dy"`,
-	button:   Maybe(i32)      `json:"button"`,
-	action:   Maybe(string)   `json:"action"`,
-	position: Maybe([]f64)    `json:"position"`,
-	target:   Maybe([]f64)    `json:"target"`,
-	block_id: Maybe(u32)      `json:"block_id"`,
-	seconds:  Maybe(f64)      `json:"seconds"`,
-}
-
-@(private)
-event_type_from_name :: proc(name: string) -> (EventType, bool) {
-	switch name {
-	case "KeyPress":      return .KeyPress, true
-	case "KeyRelease":    return .KeyRelease, true
-	case "MouseMove":     return .MouseMove, true
-	case "MouseButton":   return .MouseButton, true
-	case "CloseRequested": return .CloseRequested, true
-	case "TeleportTo":    return .TeleportTo, true
-	case "LookAt":        return .LookAt, true
-	case "AddBlock":      return .AddBlock, true
-	case "RemoveBlock":   return .RemoveBlock, true
-	case "Wait":          return .Wait, true
-	case "ToggleTelemetry":    return .ToggleTelemetry, true
-	case "TelemetrySnapshot":  return .TelemetrySnapshot, true
-	}
-	return {}, false
-}
-
-event_type_name :: proc(type: EventType) -> string {
-	switch type {
-	case .KeyPress:            return "KeyPress"
-	case .KeyRelease:          return "KeyRelease"
-	case .MouseMove:           return "MouseMove"
-	case .MouseButton:         return "MouseButton"
-	case .CloseRequested:      return "CloseRequested"
-	case .TeleportTo:          return "TeleportTo"
-	case .LookAt:              return "LookAt"
-	case .AddBlock:            return "AddBlock"
-	case .RemoveBlock:         return "RemoveBlock"
-	case .Wait:                return "Wait"
-	case .ToggleTelemetry:     return "ToggleTelemetry"
-	case .TelemetrySnapshot:   return "TelemetrySnapshot"
-	}
-	return "?"
 }
 
 // Converte uma linha JSON em evento; ok = false marca skip (linha inválida
@@ -541,41 +414,167 @@ events_load_replay :: proc(path: string) {
 	)
 }
 
-// Alimenta a fila com os eventos do replay devidos até `now` (REQ-EVT-05:
-// Wait segura o cursor; nada com t < hold_until é despachado).
-events_replay_feed :: proc(now: f64) {
-	if events.replay_path == "" || events.replay_finished do return
+@(private)
+events_key_name :: proc(key, scancode: i32) -> string {
+	name := glfw.GetKeyName(key, scancode)
+	if name == "" do return "?"
+	return string(name)
+}
 
-	for events.replay_cursor < len(events.replay_events) {
-		e := events.replay_events[events.replay_cursor]
-		if e.t > now do break
-		// Wait: eventos com t anterior ao fim da espera só saem quando o
-		// relógio da sessão também passou desse instante (REQ-EVT-05)
-		if e.t < events.replay_hold_until && now < events.replay_hold_until do break
+@(private)
+events_now :: proc "contextless" () -> f64 {
+	return glfw.GetTime() - events.t0
+}
 
-		events.replay_cursor += 1
-		events.replay_dispatched += 1
-		events_push(Event{t = events_now(), type = e.type, payload = e.payload})
-		if w, is_wait := e.payload.(WaitPayload); is_wait {
-			events.replay_hold_until = e.t + w.seconds
-		}
+@(private)
+events_push :: proc "contextless" (e: Event) {
+	next := (events.tail + 1) % EVENT_QUEUE_CAPACITY
+	if next == events.head {
+		events.overflow_count += 1
+		return
 	}
+	events.queue[events.tail] = e
+	events.tail = next
+}
 
-	if events.replay_cursor >= len(events.replay_events) {
-		events.replay_finished = true
-		events.replay_finish_time = now
-		ignored := len(events.replay_events) - events.replay_cursor
-		log.infof(
-			"REPLAY SUMMARY: despachados={}, pulados(linhas)={}, ignorados(aguardando)={}, duração={}s",
-			events.replay_dispatched, events.replay_skipped, ignored, fmt.tprintf("%.3f", now),
+// --- Gravação ---
+
+@(private)
+events_record_line :: proc(e: Event) {
+	if events.record_file == nil do return
+	line: string
+	switch p in e.payload {
+	case KeyPayload:
+		key_name := events_key_name(p.key, p.scancode)
+		if p.duration >= 0 {
+			line = fmt.tprintf(
+				`{{"t": {}, "type": "KeyPress", "key": {}, "key_name": "{}", "duration": {}}}` + "\n",
+				fmt.tprintf("%.6f", e.t), p.key, key_name, fmt.tprintf("%.3f", p.duration),
+			)
+		} else {
+			line = fmt.tprintf(
+				`{{"t": {}, "type": "{}", "key": {}, "key_name": "{}"}}` + "\n",
+				fmt.tprintf("%.6f", e.t), event_type_name(e.type), p.key, key_name,
+			)
+		}
+	case MouseMovePayload:
+		line = fmt.tprintf(
+			`{{"t": {}, "type": "MouseMove", "dx": {}, "dy": {}}}` + "\n",
+			fmt.tprintf("%.6f", e.t), fmt.tprintf("%.4f", p.dx), fmt.tprintf("%.4f", p.dy),
+		)
+	case MouseButtonPayload:
+		action := p.press ? "press" : "release"
+		line = fmt.tprintf(
+			`{{"t": {}, "type": "MouseButton", "button": {}, "action": "{}"}}` + "\n",
+			fmt.tprintf("%.6f", e.t), p.button, action,
+		)
+	case Vec3fPayload:
+		field := e.type == .TeleportTo ? "position" : "target"
+		line = fmt.tprintf(
+			`{{"t": {}, "type": "{}", "{}": [{}, {}, {}]}}` + "\n",
+			fmt.tprintf("%.6f", e.t), event_type_name(e.type), field,
+			fmt.tprintf("%.4f", p.v.x), fmt.tprintf("%.4f", p.v.y), fmt.tprintf("%.4f", p.v.z),
+		)
+	case Vec3iPayload:
+		if e.type == .AddBlock {
+			line = fmt.tprintf(
+				`{{"t": {}, "type": "AddBlock", "position": [{}, {}, {}], "block_id": {}}}` + "\n",
+				fmt.tprintf("%.6f", e.t), p.v.x, p.v.y, p.v.z, p.block_id,
+			)
+		} else {
+			line = fmt.tprintf(
+				`{{"t": {}, "type": "RemoveBlock", "position": [{}, {}, {}]}}` + "\n",
+				fmt.tprintf("%.6f", e.t), p.v.x, p.v.y, p.v.z,
+			)
+		}
+	case WaitPayload:
+		line = fmt.tprintf(
+			`{{"t": {}, "type": "Wait", "seconds": {}}}` + "\n",
+			fmt.tprintf("%.6f", e.t), fmt.tprintf("%.3f", p.seconds),
+		)
+	case struct {}:
+		line = fmt.tprintf(
+			`{{"t": {}, "type": "{}"}}` + "\n",
+			fmt.tprintf("%.6f", e.t), event_type_name(e.type),
 		)
 	}
+	os.write_string(events.record_file, line)
+	os.flush(events.record_file)
 }
 
-events_replay_is_finished :: proc() -> bool {
-	return events.replay_finished
+@(private)
+events_recorder_open :: proc() {
+	path := events.record_path
+	if path == "" {
+		if !os.is_dir(EVENTS_DIR) {
+			os.make_directory(EVENTS_DIR)
+		}
+		path = fmt.tprintf("%s/events_%s.jsonl", EVENTS_DIR, events_timestamp_string())
+	}
+	f := events_try_open(path)
+	if f == nil {
+		log.errorf("Falha ao abrir arquivo de eventos {}", path)
+		events.record_enabled = false
+		return
+	}
+	events.record_file = f
+	events.record_path = path
+	log.infof("Gravação de eventos em {}", path)
 }
 
-events_should_exit_after_replay :: proc() -> bool {
-	return events.exit_after_replay && events.replay_finished
+@(private)
+events_timestamp_string :: proc() -> string {
+	now := time.now()
+	year, month, day := time.date(now)
+	hour, min, sec := time.clock(now)
+	return fmt.tprintf("%04d%02d%02d_%02d%02d%02d", year, int(month), day, hour, min, sec)
+}
+
+// Abre o arquivo de gravação, criando os diretórios do caminho se preciso.
+@(private)
+events_try_open :: proc(path: string) -> ^os.File {
+	for i := 0; i < len(path); i += 1 {
+		if path[i] == '/' do os.make_directory(path[:i]) // já existe: erro ignorado
+	}
+	f, err := os.open(path, os.O_WRONLY | os.O_CREATE | os.O_TRUNC)
+	if err == nil do return f
+	return nil
+}
+
+@(private)
+event_type_from_name :: proc(name: string) -> (EventType, bool) {
+	switch name {
+	case "KeyPress":          return .KeyPress, true
+	case "KeyRelease":        return .KeyRelease, true
+	case "MouseMove":         return .MouseMove, true
+	case "MouseButton":       return .MouseButton, true
+	case "CloseRequested":    return .CloseRequested, true
+	case "TeleportTo":        return .TeleportTo, true
+	case "LookAt":            return .LookAt, true
+	case "AddBlock":          return .AddBlock, true
+	case "RemoveBlock":       return .RemoveBlock, true
+	case "Wait":              return .Wait, true
+	case "ToggleTelemetry":   return .ToggleTelemetry, true
+	case "TelemetrySnapshot": return .TelemetrySnapshot, true
+	}
+	return {}, false
+}
+
+@(private)
+event_type_name :: proc(type: EventType) -> string {
+	switch type {
+	case .KeyPress:            return "KeyPress"
+	case .KeyRelease:          return "KeyRelease"
+	case .MouseMove:           return "MouseMove"
+	case .MouseButton:         return "MouseButton"
+	case .CloseRequested:      return "CloseRequested"
+	case .TeleportTo:          return "TeleportTo"
+	case .LookAt:              return "LookAt"
+	case .AddBlock:            return "AddBlock"
+	case .RemoveBlock:         return "RemoveBlock"
+	case .Wait:                return "Wait"
+	case .ToggleTelemetry:     return "ToggleTelemetry"
+	case .TelemetrySnapshot:   return "TelemetrySnapshot"
+	}
+	return "?"
 }

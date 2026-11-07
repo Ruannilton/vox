@@ -1,28 +1,11 @@
 package engine
 
-
 import "core:sync"
 import "core:thread"
-import vk "vendor:vulkan"
 import "core:time"
+import vk "vendor:vulkan"
 
-@(private)
-wait_for_compute_timeline :: proc(target_value: u64) {
-	semaphore := app.computeTimelineSemaphore
-	value := target_value
-	vk_check(
-		vk.WaitSemaphores(
-			app.vkDevice,
-			&vk.SemaphoreWaitInfo {
-				sType          = .SEMAPHORE_WAIT_INFO,
-				semaphoreCount = 1,
-				pSemaphores    = &semaphore,
-				pValues        = &value,
-			},
-			max(u64),
-		),
-	)
-}
+
 
 worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 	context = app.runtimeContext
@@ -51,17 +34,17 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		} else {
 
 		for len(claimed_batch.tasks) < int(config.chunks_per_batch) && len(ve.pending_tasks) > 0 {
-			best_idx := 0
-			best_dist := max(i64)
+			best_index := 0
+			best_distance := max(i64)
 			for task, i in ve.pending_tasks {
 				d := calculate_squared_distance(task.coordinate, ve.priority_camera_chunk)
-				if d < best_dist {
-					best_dist = d
-					best_idx = i
+				if d < best_distance {
+					best_distance = d
+					best_index = i
 				}
 			}
-			append(&claimed_batch.tasks, ve.pending_tasks[best_idx])
-			unordered_remove(&ve.pending_tasks, best_idx)
+			append(&claimed_batch.tasks, ve.pending_tasks[best_index])
+			unordered_remove(&ve.pending_tasks, best_index)
 		}
 		}
 
@@ -190,4 +173,22 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		
 		time.sleep(32 * time.Millisecond)
 	}
+}
+
+@(private)
+wait_for_compute_timeline :: proc(target_value: u64) {
+	semaphore := app.computeTimelineSemaphore
+	value := target_value
+	vk_check(
+		vk.WaitSemaphores(
+			app.vkDevice,
+			&vk.SemaphoreWaitInfo {
+				sType          = .SEMAPHORE_WAIT_INFO,
+				semaphoreCount = 1,
+				pSemaphores    = &semaphore,
+				pValues        = &value,
+			},
+			max(u64),
+		),
+	)
 }
