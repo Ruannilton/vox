@@ -26,14 +26,18 @@ zone_end :: #force_inline proc(ctx: ZoneCtx) {
 }
 
 when TRACY_ENABLE {
+	// Chama ZoneBegin (sem defer) e é o ÚNICO dono do par deferido: as
+	// procs ZoneN/Zone do odin-tracy já têm @(deferred_out=ZoneEnd), então
+	// delegar a elas com defer próprio emitia dois ZoneEnd por ZoneBegin
+	// ("zone ended twice" na UI/capture Tracy).
 	@(deferred_out=zone_end)
-	ZoneN :: #force_inline proc(name: string, active := true) -> (ctx: ZoneCtx) {
-		return tracy.ZoneN(name, active)
+	ZoneN :: #force_inline proc(name: string, active := true, loc := #caller_location) -> (ctx: ZoneCtx) {
+		return tracy.ZoneBegin(active, 0, name, 0, loc)
 	}
 
 	@(deferred_out=zone_end)
-	Zone :: #force_inline proc(name: string = "", active := true) -> (ctx: ZoneCtx) {
-		return tracy.ZoneN(name, active)
+	Zone :: #force_inline proc(name: string = "", active := true, loc := #caller_location) -> (ctx: ZoneCtx) {
+		return tracy.ZoneBegin(active, 0, name, 0, loc)
 	}
 } else {
 	@(deferred_out=zone_end)
