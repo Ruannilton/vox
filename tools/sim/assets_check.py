@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-# VS-12 (REQ-VAL-07) — validador offline de assets/blocks.json: schema,
-# referências por nome, limites e bounds — sem rodar a engine.
-# Uso: python3 assets_check.py <arquivo.json> ; exit 0 = válido, 1 = inválido.
+# VS-12 (REQ-VAL-07) / VS-14 (REQ-SIM-11) — validador offline de
+# assets/blocks.json: schema, referências por nome, limites e bounds — sem
+# rodar a engine. Uso: python3 assets_check.py <arquivo.json> ; exit 0 = válido, 1 = inválido.
 # As mensagens espelham o carregador em src/engine/voxel_assets.odin.
+# VS-14: campo opcional 'transparent' (bool) por bloco e contrato ids 1..4.
 
 import json
 import os
@@ -17,7 +18,7 @@ MAX_TRIANGLES = 24
 MAX_TEXTURE_DIM = 256
 VERTEX_POOL_CAPACITY = 1024
 CULL_FACE_NEVER = 7
-REQUIRED_BLOCK_IDS = (1, 2, 3)  # contrato do worldgen (grama/terra/pedra)
+REQUIRED_BLOCK_IDS = (1, 2, 3, 4)  # contrato do worldgen (grama/terra/pedra/planta)
 
 
 def fail(msg):
@@ -211,6 +212,9 @@ def validate(doc, base_dir):
             errors.append(f"{where}: campo 'name' ausente ou vazio")
             continue
         where = f"bloco '{name}'"
+        transparent = block.get("transparent")
+        if transparent is not None and not isinstance(transparent, bool):
+            errors.append(f"{where}: campo 'transparent' deve ser booleano (recebido {transparent!r})")
         bid = block.get("id")
         if not isinstance(bid, int) or isinstance(bid, bool):
             errors.append(f"{where}: campo 'id' ausente ou malformado (esperado inteiro)")

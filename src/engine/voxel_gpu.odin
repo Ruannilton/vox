@@ -1076,6 +1076,13 @@ upload_block_registry :: proc() {
 	for id in 1 ..= 3 {
 		registry[id] = BlockDefinition{mesh_template_index = 1, albedo_texture_index = u32(id)}
 	}
+	// VS-14 (REQ-PLT-05): fallback sem assets — id 4 (planta) usa o template
+	// cruz built-in (2) + camada 4 da paleta, com alpha-test (flags bit 0).
+	registry[4] = BlockDefinition{
+		mesh_template_index = 2,
+		albedo_texture_index = 4,
+		flags = BLOCK_DEFINITION_FLAG_TRANSPARENT,
+	}
 	upload_to_device_buffer(&registry, size_of(registry), voxel_gpu.block_registry.handle)
 }
 
@@ -1311,6 +1318,7 @@ upload_palette_textures :: proc() {
 	colors[1] = {89, 191, 64} // grama: verde
 	colors[2] = {128, 89, 51} // terra: marrom
 	colors[3] = {140, 140, 148} // pedra: cinza
+	colors[4] = {60, 160, 60} // VS-14: planta (fallback sem assets): verde folha
 
 	pixels: [LAYERS * LAYER * LAYER][4]u8
 	for layer in 0 ..< LAYERS {
@@ -1329,3 +1337,4 @@ upload_palette_textures :: proc() {
 	black := [4]u8{0, 0, 0, 255}
 	upload_to_device_image(&black, vk.DeviceSize(4), voxel_gpu.pbr_dummy_image, 1, 1, 1)
 }
+

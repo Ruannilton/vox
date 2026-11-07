@@ -42,6 +42,10 @@ static const uint MAX_TEMPLATE_VERTICES  = 32; // por voxel; subdivisão x4 => 8
 static const uint MAX_TEMPLATE_TRIANGLES = 24; // pior-caso por voxel; x4 => 8*24 = 192
 static const uint TEMPLATE_FLAG_HAS_FLUSH_FACES = 1;
 static const uint CULL_FACE_NEVER = 7; // triângulo nunca culpado (interior/diagonal)
+// VS-14 (REQ-PLT-01): bit 0 de BlockDefinition.flags — bloco com recorte
+// alpha (folhagem). O fragment descarta fragmentos com albedo.a < 0.5
+// (limiar constante, cutout opaco — sem blending nem ordenação).
+static const uint BLOCK_DEFINITION_FLAG_TRANSPARENT = 1;
 static const uint NO_TEMPLATE_UV_OFFSET = 0xFFFFFFFFu;
 
 static const uint NEIGHBOR_SLOT_INVALID       = 0xFFFFFFFFu;

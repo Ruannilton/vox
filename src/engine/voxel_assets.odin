@@ -52,10 +52,12 @@ assets_json_texture :: struct {
 }
 
 assets_json_block :: struct {
-	id:      i64 `json:"id"`,
-	name:    string `json:"name"`,
-	mesh:    string `json:"mesh"`,
-	texture: string `json:"texture"`,
+	id:         i64 `json:"id"`,
+	name:       string `json:"name"`,
+	mesh:       string `json:"mesh"`,
+	texture:    string `json:"texture"`,
+	// VS-14 (REQ-PLT-01): opcional; tipo errado falha o unmarshal (fatal).
+	transparent: bool `json:"transparent"`,
 }
 
 asset_tex_dim :: struct {
@@ -362,12 +364,14 @@ assets_build_blocks :: proc(doc: ^assets_json_doc) {
 			mesh_template_index  = mesh_index_value,
 			albedo_texture_index = u32(texture_index),
 			pbr_texture_index    = 0, // dummy PBR
+			flags                = block.transparent ? BLOCK_DEFINITION_FLAG_TRANSPARENT : 0,
 		}
 		voxel_assets.block_names[block.id] = strings.clone(block.name, context.allocator)
 	}
 
-	missing := make([dynamic]string, 0, 3, context.temp_allocator)
-	for id in 1 ..= 3 {
+	// VS-14 (REQ-PLT-05): contrato do worldgen exige ids 1..4 (planta = 4).
+	missing := make([dynamic]string, 0, 4, context.temp_allocator)
+	for id in 1 ..= 4 {
 		if voxel_assets.block_names[id] == "" {
 			append(&missing, fmt.tprintf("{}", id))
 		}

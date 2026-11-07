@@ -15,7 +15,7 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 
 | ID | Item | Origem | Notas |
 | --- | --- | --- | --- |
-| BLK-01 | **B6 — Plantas sem alpha-test** (`CULL_MODE_NONE` na pipeline; folhagem renderiza opaca) | arquitetura §9 | Corrigir junto com transparência via assets (BLK-13) |
+| BLK-01 | ~~**B6 — Plantas sem alpha-test**~~ **FECHADO pela VS-14** (Opção A da ADR-P1): alpha-test cutout no fragment + bloco planta id 4 com spawn determinístico | arquitetura §9 | Fechado em 2026-11-07; translucidez real/A2C viraram BLK-29/BLK-30 |
 | BLK-02 | **B7 — PBR não amostrado** (roughness/metallic chegam à GPU; fragment só Lambert + emissão) | arquitetura §9 | Cook-Torrance; roughness vem do dummy até texturas PBR reais |
 | BLK-03 | **B8 — Overflow int32 em `calculate_squared_distance`** | arquitetura §9 | Distâncias já usam i64 nos caminhos quentes; auditar restantes |
 | BLK-04 | `debug_readback_validate` sempre valida chunk subsuperfície (100% sólido) — forçar chunk de **superfície** (com ar) | ressalva VS-04 (correção 2026-11-06) | Decode/comparação idênticos ao `debug_mirror_parity`; baixo risco |
@@ -42,10 +42,10 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 
 | ID | Item | Origem | Notas |
 | --- | --- | --- | --- |
-| BLK-13 | Transparência/emissão/PBR via JSON (flags já existem no `BlockDefinition`) | VS-12 não-escopo + BLK-01 | Fecha o alpha-test de plantas |
+| BLK-13 | Emissão/PBR via JSON e **blending** de transparência (o `transparent` de cutout já veio na VS-14; flags restantes de `BlockDefinition`) | VS-12 não-escopo + BLK-01 | Parte do item fechada pela VS-14; blending real é BLK-29 |
 | BLK-14 | Mipmaps e filtragem trilinear nas texturas de blocos | VS-12 não-escopo | Alias em minificação em visões longas |
 | BLK-15 | Atlas interno por face / texturas por face | VS-12 não-escopo | Depende de BLK-08 (rotação) |
-| BLK-16 | **Worldgen data-driven** — desacoplar o contrato ids 1–3 do `generate` | VS-12 não-escopo | Hoje o JSON deve definir grama/terra/pedra nos ids fixos |
+| BLK-16 | **Worldgen data-driven** — desacoplar o contrato ids 1–4 do `generate` (grama/terra/pedra/planta) | VS-12 não-escopo + VS-14 (ids 1–4) | Hoje o JSON deve definir grama/terra/pedra/planta nos ids fixos |
 | BLK-17 | Hot-reload de assets, pacotes/mods com dependências, formato binário | VS-12 não-escopo | Depende do sistema de mods amadurecer |
 
 ## Gameplay e input
@@ -68,6 +68,10 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 | BLK-26 | Contadores da VS-10 (empties ativos, slots economizados) no CSV de telemetria | VS-10 questão aberta | — |
 | BLK-27 | Guard permanente "replay ativo ignora input live" (capturas/smokes automatizados movem a câmera ao focar a janela) | ressalva VS-13 | Hoje é contorno manual por roteiro; afeta qualquer smoke com captura |
 | BLK-28 | Corrida de desligamento intermitente (worker × thread principal no teardown) | ressalva VS-13 | Vista 1× em smokes; intermitente |
+| BLK-29 | **Blending/translucidez real** (vidro, água) com ordenação de transparência | VS-14 não-escopo + ADR-P1 Opção B | Pipeline muda (OIT ou ordenação por chunk); hoje só cutout opaco |
+| BLK-30 | **Alpha-to-coverage** para suavizar o recorte da folhagem | VS-14 não-escopo | Depende de MSAA na pipeline |
+| BLK-31 | **Probabilidade de spawn da planta configurável** (hoje constante 10% no shader) | VS-14 não-escopo | Via `vox.ini`/push constant; exige caminho de config até o generate |
+| BLK-32 | **Heights do mirror vs denso em chunks abaixo de y=0**: o comparador `int`×`uint` do generate faz esses chunks serem ar no denso, mas o export do heightmap grava `min(altura-base, 31)` — coluna reporta topo 31 onde o denso é ar | ressalva VS-14 (achado na validação) | Artefato pré-existente da VS-13; sem impacto em plantas/ACs; alinhar semântica (export replica o comparador) quando o mirror ganhar consumidor de gameplay |
 
 ## Regras
 

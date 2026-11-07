@@ -18,19 +18,33 @@ CUBE_TRIS = [[1, 3, 7], [1, 7, 5], [0, 4, 6], [0, 6, 2], [2, 7, 3], [2, 6, 7], [
 CUBE_TAGS = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]
 CUBE_UVS = [[0, 0], [1, 0], [0, 0], [1, 0], [0, 1], [1, 1], [0, 1], [1, 1]]
 
+# VS-14: mesh "planta" em X (mesmo formato do template built-in 2)
+PLANT_VERTS = [[0, 0, 0], [1, 0, 1], [1, 1, 1], [0, 1, 0],
+               [1, 0, 0], [0, 0, 1], [0, 1, 1], [1, 1, 0]]
+PLANT_TRIS = [[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]]
+PLANT_TAGS = [7, 7, 7, 7]
+PLANT_UVS = [[0, 0], [1, 0], [1, 1], [0, 1]] * 2
 
-def doc(verts=CUBE_VERTS, tris=CUBE_TRIS, tags=CUBE_TAGS, uvs=CUBE_UVS, blocks=None, textures=None):
+
+def doc(verts=CUBE_VERTS, tris=CUBE_TRIS, tags=CUBE_TAGS, uvs=CUBE_UVS, blocks=None, textures=None,
+        meshes=None):
     return {
-        "meshes": [{"name": "cubo", "vertices": verts, "triangles": tris, "cull_tags": tags, "uvs": uvs}],
+        "meshes": meshes if meshes is not None else [
+            {"name": "cubo", "vertices": verts, "triangles": tris, "cull_tags": tags, "uvs": uvs},
+            {"name": "planta", "vertices": PLANT_VERTS, "triangles": PLANT_TRIS,
+             "cull_tags": PLANT_TAGS, "uvs": PLANT_UVS},
+        ],
         "textures": textures if textures is not None else [
             {"name": "grama", "path": "textures/grama.png"},
             {"name": "terra", "path": "textures/terra.png"},
             {"name": "pedra", "path": "textures/pedra.png"},
+            {"name": "planta", "path": "textures/planta.png"},
         ],
         "blocks": blocks if blocks is not None else [
             {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama"},
             {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
             {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+            {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "transparent": True},
         ],
     }
 
@@ -47,6 +61,24 @@ CASES = {
     "vertice_fora": doc(verts=[v[:] if i else [2, 0, 0] for i, v in enumerate(CUBE_VERTS)]),
     "indice_fora": doc(tris=CUBE_TRIS[:-1] + [[0, 3, 99]]),
     "png_ausente": doc(textures=[{"name": "grama", "path": "textures/nada.png"}]),
+    # VS-14: contrato ids 1..4, 'transparent' com tipo errado, textura da planta
+    "id4_ausente": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama"},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+    ]),
+    "transparent_tipo_errado": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama"},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "transparent": "sim"},
+    ]),
+    "textura_planta_ausente": doc(textures=[
+        {"name": "grama", "path": "textures/grama.png"},
+        {"name": "terra", "path": "textures/terra.png"},
+        {"name": "pedra", "path": "textures/pedra.png"},
+        {"name": "planta", "path": "textures/nada_planta.png"},
+    ]),
     "dimensao_divergente": doc(textures=[
         {"name": "grama", "path": "textures/grama.png"},
         {"name": "terra", "path": "textures/terra_8.png"},

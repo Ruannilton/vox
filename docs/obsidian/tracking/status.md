@@ -1,6 +1,6 @@
 # Painel de status
 
-Última revisão geral: 2026-11-06.
+Última revisão geral: 2026-11-07.
 
 Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o frontmatter correspondente no mesmo trabalho.
 
@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 14 |
-| Specs aprovadas | 14 |
+| Specs registradas | 16 |
+| Specs aprovadas | 16 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 14 |
-| Validações verificadas | 14 |
+| Implementações concluídas | 15 |
+| Validações verificadas | 15 |
 
-Quatorze especificações registradas e **integralmente concluídas** — VS-00 a VS-13. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Dezesseis especificações registradas, 16 integralmente concluídas; VS-14 (plantas — alpha-test e spawn determinístico) fechou o backlog B6 em 2026-11-07 (Opção A da ADR-P1). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -35,6 +35,7 @@ Quatorze especificações registradas e **integralmente concluídas** — VS-00 
 | VS-11 | [[VS-11-uvs-templates|UVs nos templates de malha]] | `aprovada` | `concluida` | `verificada` | VS-02 | — |
 | VS-12 | [[VS-12-assets-json|Assets data-driven via JSON]] | `aprovada` | `concluida` | `verificada` | VS-11 | — |
 | VS-13 | [[VS-13-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aprovada` | `concluida` | `verificada` | VS-04 | — |
+| VS-14 | [[VS-14-plantas-alpha-test-spawn|Plantas — alpha-test e spawn determinístico]] | `aprovada` | `concluida` | `verificada` | VS-12 | — |
 
 ## Decisões
 
@@ -64,6 +65,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-U1 | [[ADR-U1-uvs-templates-malha|UVs nos templates de malha]] | `aceita` | VS-11 |
 | ADR-A1 | [[ADR-A1-assets-json|Assets data-driven via JSON]] | `aceita` | VS-12 |
 | ADR-G1 | [[ADR-G1-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aceita` | VS-13 |
+| ADR-P1 | [[ADR-P1-plantas-alpha-test-spawn|Plantas — alpha-test e spawn determinístico]] | `aceita` | VS-14 |
 
 ## Vocabulário de status
 

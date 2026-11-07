@@ -17,7 +17,9 @@ fila e clamp do finalize, face_mask com redirecionamento B2 (AC-02), dois
 chunks adjacentes sem faces internas duplicadas (AC-02), rotacao yaw 0..3 vs
 ROTATED_FACE e tag 7 nunca culpada (AC-03), VS-10 (EMPTY como vizinho) e
 VS-11 (REQ-SIM-08): bounds de UV, roundtrip sentinela -> fallback triplanar
-e paridade de cor UV x triplanar na paleta solida.
+e paridade de cor UV x triplanar na paleta solida; VS-14 (REQ-SIM-11):
+template X da planta (orcamento, tags 7, UVs [0,1]^2) e alpha-test cutout
+(flags bit 0: descarte com albedo.a < 0.5).
 """
 
 import random
@@ -326,6 +328,20 @@ def emit_vertex_uv(template, vertex_index):
 def fragment_uses_triplanar(uv):
     """Espelha shade_voxel: uv.x >= 0 -> amostragem por UV; senao triplanar."""
     return uv[0] < 0.0
+
+
+# --- VS-14 (REQ-SIM-11): alpha-test cutout no fragment ---
+
+BLOCK_DEFINITION_FLAG_TRANSPARENT = 1  # bit 0 de BlockDefinition.flags
+ALPHA_TEST_THRESHOLD = 0.5  # limiar constante do shader (REQ-PLT-01)
+
+
+def fragment_survives_alpha_test(block_flags, albedo_alpha):
+    """Espelha shade_voxel: bloco transparente descarta fragmento com
+    albedo.a < 0.5 (cutout opaco; blocos opacos nunca descartam)."""
+    if (block_flags & BLOCK_DEFINITION_FLAG_TRANSPARENT) != 0:
+        return albedo_alpha >= ALPHA_TEST_THRESHOLD
+    return True
 
 
 # Template sintetico pesado: 32 vertices, 24 triangulos todos tag NEVER.
@@ -1446,6 +1462,53 @@ def scenario_uvs():
           worst_t <= MESH_TRIANGLE_MAXIMUM)
 
 
+def scenario_plant_cutout():
+    print("[cenario] VS-14: template X da planta e alpha-test cutout")
+
+    # REQ-PLT-02: mesh "planta" em X — duas quads cruzadas (4 triângulos,
+    # cull_tags 7, UVs [0,1]^2 por quad) — mesmo formato do built-in 2, agora
+    # como asset reaproveitável no JSON (bloco id 4 -> template da planta)
+    plant = TEMPLATES[2]
+    check("planta X: 4 triângulos (<= 24 do orçamento)", plant.triangle_count == 4)
+    check("planta X: 8 vértices", plant.vertex_count == 8)
+    check("planta X: cull_tags 7 em todos os triângulos (nunca culpada)",
+          all(t[3] == CULL_FACE_NEVER for t in plant.triangles))
+    check("planta X: UVs [0,1]^2 por quad (pool paralelo aos vértices)",
+          len(plant.uvs) == 8 and all(uv_in_bounds(uv) for uv in plant.uvs)
+          and {(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)} <= set(plant.uvs))
+    check("planta X: pior caso 4 triângulos (tag 7 não culpa)", plant.worst_case_tris == 4)
+
+    # orçamento: brick inteiro de plantas (8 voxels x 8v/4t) não subdivide
+    registry = {4: BlockDef(2)}
+    chunks = {0: make_chunk((0, 0, 0), lambda c: 4)}
+    pack_subdivisions(chunks[0], registry)
+    check("brick cheio de plantas: subdivisão 0",
+          all(s == 0 for s in chunks[0]["subdivisions"]))
+    worst_v = 0
+    worst_t = 0
+    for item in build_work_queue(chunks, [0])[0]:
+        for camera in CAMERAS_6:
+            v, t = mesh_group_counts(item, chunks, [0], registry, camera)
+            worst_v = max(worst_v, v)
+            worst_t = max(worst_t, t)
+    check(f"brick de plantas: vertices <= {MESH_VERTEX_MAXIMUM} (pior {worst_v})",
+          worst_v <= MESH_VERTEX_MAXIMUM)
+    check(f"brick de plantas: triângulos <= {MESH_TRIANGLE_MAXIMUM} (pior {worst_t})",
+          worst_t <= MESH_TRIANGLE_MAXIMUM)
+
+    # REQ-PLT-01: cutout — transparente descarta alpha < 0.5; opaco nunca
+    check("cutout: alpha 0.4 descartado (transparente)",
+          not fragment_survives_alpha_test(BLOCK_DEFINITION_FLAG_TRANSPARENT, 0.4))
+    check("cutout: alpha 0.5 mantido (limiar inclusivo)",
+          fragment_survives_alpha_test(BLOCK_DEFINITION_FLAG_TRANSPARENT, 0.5))
+    check("cutout: alpha 0.0 descartado (fundo da textura)",
+          not fragment_survives_alpha_test(BLOCK_DEFINITION_FLAG_TRANSPARENT, 0.0))
+    check("cutout: bloco opaco com alpha 0.0 mantido (sem flag, sem descarte)",
+          fragment_survives_alpha_test(0, 0.0))
+    check("cutout: flags sem bit 0 (ex.: HAS_FLUSH_FACES=1<<k) não disparam",
+          fragment_survives_alpha_test(2, 0.1))
+
+
 def main():
     scenario_budget()
     scenario_selection()
@@ -1460,6 +1523,7 @@ def main():
     scenario_empty_neighbors()
     scenario_config()
     scenario_uvs()
+    scenario_plant_cutout()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
 

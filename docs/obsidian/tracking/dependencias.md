@@ -20,6 +20,7 @@ graph TD
     VS11[VS-11 — UVs nos templates]
     VS12[VS-12 — Assets JSON]
     VS13[VS-13 — Heightmap geração/mirror]
+    VS14[VS-14 — Plantas alpha-test/spawn]
 
     VS00 --> VS01
     VS01 --> VS02
@@ -34,6 +35,7 @@ graph TD
     VS10 --> VS11
     VS11 --> VS12
     VS12 --> VS13
+    VS13 --> VS14
 ```
 
 ## Registro normativo
@@ -54,6 +56,7 @@ graph TD
 | [[VS-11-uvs-templates|VS-11]] | VS-02 | — | — |
 | [[VS-12-assets-json|VS-12]] | VS-11 | — | — |
 | [[VS-13-heightmap-geracao-mirror|VS-13]] | VS-04 | — | — |
+| [[VS-14-plantas-alpha-test-spawn|VS-14]] | VS-12 | — | — |
 
 ## Decisões incorporadas
 
@@ -69,6 +72,7 @@ graph TD
 - ADR-U1: VS-11 migra o albedo de triplanar para UVs por vértice dos templates (binding 19 template_uvs, MeshVertex +TEXCOORD0, sentinela (-1,-1) → fallback triplanar); orçamento mesh shader inalterado; REQ-SHADE-03 da VS-02 emendada.
 - ADR-A1: VS-12 carrega blocos/malhas/texturas de um JSON único no startup — malhas reaproveitáveis por nome, PNG única por bloco em camadas de um Texture2DArray (mesma dimensão exigida), saída formatada nos contratos atuais do pipeline (zero mudança de shader); ausente → fallback built-ins + paleta.
 - ADR-G1: VS-13 calcula o heightmap 32×32 uma única vez por chunk (groupshared, threads y-local 0) com estados de ruído 1×/thread-de-coluna (8× menos avaliações — medido; saída bit a bit idêntica) e o exporta ao mirror (binding 20 + campo na ChunkPage, journal do E1 mantém; chão O(1)).
+- ADR-P1: VS-14 fecha o backlog B6 com alpha-test cutout (discard condicional à flag `transparente`, pipeline inalterada, CULL_MODE_NONE permanece) e introduz o bloco planta (id 4, malha em X via assets) com spawn por hash determinístico da coluna (x,z), 10% de probabilidade, heightmap exportando altura+1.
 
 ## Dependências transversais a registrar nas specs
 

@@ -6,6 +6,23 @@ import common;
 // uma única vez; após barrier todos leem. 128 B/workgroup.
 groupshared uint16_t heights_gs[8][8];
 
+// VS-14 (REQ-PLT-03): hash determinístico da coluna (x,z) mundial — wang
+// hash u32. Puro função da coordenada: a planta na fronteira entre chunks
+// nasce igual nos dois. Probabilidade constante: 10% (hash % 1000 < 100).
+uint wang_hash(uint a) {
+    a = (a ^ 61u) ^ (a >> 16);
+    a = a + (a << 3);
+    a = a ^ (a >> 4);
+    a = a * 0x27d4eb2du;
+    a = a ^ (a >> 15);
+    return a;
+}
+
+bool plant_spawns(int world_x, int world_z) {
+    uint h = wang_hash(wang_hash(uint(world_x)) ^ uint(world_z));
+    return h % 1000u < 100u; // 10% das colunas
+}
+
 [shader("compute")]
 [numthreads(8, 8, 8)]
 void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_GroupThreadID) {
@@ -40,9 +57,13 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
 
         // VS-13 (REQ-MIR-01): export do heightmap no ring paralelo (binding
         // 20, z-contíguo x|z<<5). Topologia: y do sólido mais alto da coluna
-        // neste chunk; 0xFFFF = coluna de ar.
+        // neste chunk; 0xFFFF = coluna de ar. VS-14 (REQ-PLT-04): coluna com
+        // planta exporta altura+1 (topo sólido real) quando o voxel cabe no
+        // chunk; altura+1 fora do chunk -> sem planta, topo = altura.
         if (job.mirror_ring_slot >= 0) {
-            int top_local = min(int(height) - job.chunk_world_origin.y, CHUNK_SIZE - 1);
+            bool plant = plant_spawns(voxel_world_position.x, voxel_world_position.z)
+                && int(height) + 1 <= job.chunk_world_origin.y + CHUNK_SIZE - 1;
+            int top_local = min(int(height) + (plant ? 1 : 0) - job.chunk_world_origin.y, CHUNK_SIZE - 1);
             uint16_t top = top_local < 0 ? uint16_t(0xFFFF) : uint16_t(top_local);
             mirror_heightmap_ring[uint(job.mirror_ring_slot) * 1024 + uint(thread_id.x) | (uint(local_z) << 5)] = top;
         }
@@ -52,7 +73,15 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
 
     uint block_id = 0;
     if(voxel_world_position.y > height) {
-        block_id = 0; // ar
+        // VS-14 (REQ-PLT-03): voxel acima da grama (y == altura+1) vira planta
+        // (id 4) quando a coluna sorteia spawn; altura+1 fora do chunk nunca
+        // casa com y de thread, então a planta não nasce.
+        if (voxel_world_position.y == int(height) + 1
+            && plant_spawns(voxel_world_position.x, voxel_world_position.z)) {
+            block_id = 4; // planta
+        } else {
+            block_id = 0; // ar
+        }
     }else if (voxel_world_position.y < (height-8)) {
         block_id = 3; // pedra profunda
     } else if (voxel_world_position.y < height) {

@@ -29,6 +29,10 @@ MAX_TEMPLATE_TRIANGLES :: 24
 TEMPLATE_FLAG_HAS_FLUSH_FACES :: 1
 CULL_FACE_NEVER :: 7
 
+// VS-14 (REQ-PLT-01): bit 0 de BlockDefinition.flags — bloco com recorte
+// alpha (folhagem); o fragment descarta albedo.a < 0.5. Espelha common.slang.
+BLOCK_DEFINITION_FLAG_TRANSPARENT :: 1
+
 // --- Renderização
 // VS-08: capacidades da fila/visíveis não são constantes de compilação — vêm
 // do Config (config.odin), derivadas dos raios do INI.

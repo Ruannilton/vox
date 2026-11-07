@@ -205,7 +205,7 @@ Estados: PENDING_READBACK → (timeline + memcpy + replay pending) → MATERIALI
 | E1 | correção | Flush do journal não era mais chamado (removido com os testes em 6897431) e `last_flush`/`force_next_flush` eram consumidos pelo ring write todo frame, matando o gating de 100 ms; restaurado via `edit_update` no loop | Corrigido |
 | VS-10 | otimização | Chunks vazios virtuais: estado `EMPTY` sem slot, feedback do pack por binding 18, liberação imediata do slot na conclusão, edição materializa com retry | Implementado |
 | B5 | backlog | Raio de geração > slots — **absorvida pela VS-08** (slots derivados da esfera de unload ×1,05 — emenda 2026-11-06) | Absorvida |
-| B6 | backlog | Plantas sem alpha-test; CULL_MODE_NONE | Pendente |
+| B6 | bug médio | Plantas sem alpha-test; CULL_MODE_NONE — **VS-14** (Opção A da ADR-P1): cutout por discard condicional à flag `transparente` (`BlockDefinition.flags` bit 0, limiar 0.5), pipeline inalterada; bloco planta (id 4) no JSON com spawn por wang hash (x,z) 10% | Corrigido |
 | B7 | backlog | PBR não amostrado (só Lambert + emissão) | Pendente |
 | B8 | backlog | Overflow int32 em calculate_squared_distance | Pendente |
 

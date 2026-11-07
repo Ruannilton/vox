@@ -19,16 +19,34 @@
         [0, 0], [1, 0], [0, 0], [1, 0],
         [0, 1], [1, 1], [0, 1], [1, 1]
       ]
+    },
+    {
+      "name": "planta",
+      "vertices": [
+        [0, 0, 0], [1, 0, 1], [1, 1, 1], [0, 1, 0],
+        [1, 0, 0], [0, 0, 1], [0, 1, 1], [1, 1, 0]
+      ],
+      "triangles": [
+        [0, 1, 2], [0, 2, 3],
+        [4, 5, 6], [4, 6, 7]
+      ],
+      "cull_tags": [7, 7, 7, 7],
+      "uvs": [
+        [0, 0], [1, 0], [1, 1], [0, 1],
+        [0, 0], [1, 0], [1, 1], [0, 1]
+      ]
     }
   ],
   "textures": [
     { "name": "grama", "path": "textures/grama.png" },
     { "name": "terra", "path": "textures/terra.png" },
-    { "name": "pedra", "path": "textures/pedra.png" }
+    { "name": "pedra", "path": "textures/pedra.png" },
+    { "name": "planta", "path": "textures/planta.png" }
   ],
   "blocks": [
     { "id": 1, "name": "grama", "mesh": "cubo", "texture": "grama" },
     { "id": 2, "name": "terra", "mesh": "cubo", "texture": "terra" },
-    { "id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra" }
+    { "id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra" },
+    { "id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "transparent": true }
   ]
 }

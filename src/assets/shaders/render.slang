@@ -108,13 +108,13 @@ groupshared uint shared_face_mask[VOXELS_PER_BRICK];
 groupshared uint shared_total_v;
 groupshared uint shared_total_t;
 
-float3 sample_triplanar_albedo(float3 world_pos, float3 world_normal, uint texture_index) {
+float4 sample_triplanar_albedo(float3 world_pos, float3 world_normal, uint texture_index) {
     float3 blend_weights = abs(world_normal);
     blend_weights = blend_weights / (blend_weights.x + blend_weights.y + blend_weights.z);
 
-    float3 x_projection = block_albedo_textures.Sample(float3(world_pos.zy, float(texture_index))).rgb;
-    float3 y_projection = block_albedo_textures.Sample(float3(world_pos.xz, float(texture_index))).rgb;
-    float3 z_projection = block_albedo_textures.Sample(float3(world_pos.xy, float(texture_index))).rgb;
+    float4 x_projection = block_albedo_textures.Sample(float3(world_pos.zy, float(texture_index)));
+    float4 y_projection = block_albedo_textures.Sample(float3(world_pos.xz, float(texture_index)));
+    float4 z_projection = block_albedo_textures.Sample(float3(world_pos.xy, float(texture_index)));
 
     return x_projection * blend_weights.x + y_projection * blend_weights.y + z_projection * blend_weights.z;
 }
@@ -240,14 +240,21 @@ float4 shade_voxel(MeshVertex input) : SV_Target {
     // VS-11 (REQ-UV-03): com UV (uv.x >= 0) amostra a camada de albedo por
     // UV; com a sentinela cai no triplanar (fallback inalterado da VS-02).
     // Na paleta de cores sólidas as duas rotas são idênticas por construção.
-    float3 albedo = input.uv.x >= 0.0
-        ? block_albedo_textures.Sample(float3(input.uv, float(def.albedo_texture_index))).rgb
+    float4 albedo = input.uv.x >= 0.0
+        ? block_albedo_textures.Sample(float3(input.uv, float(def.albedo_texture_index)))
         : sample_triplanar_albedo(input.world_position, normal, def.albedo_texture_index);
+
+    // VS-14 (REQ-PLT-01, ADR-P1 Opção A): alpha-test cutout — blocos com
+    // flags bit 0 (transparente) descartam fragmentos com albedo.a < 0.5
+    // (limiar constante). Cutout opaco: sem blending, CULL_MODE_NONE permanece.
+    if ((def.flags & BLOCK_DEFINITION_FLAG_TRANSPARENT) != 0u && albedo.a < 0.5) {
+        discard;
+    }
 
     float3 light_dir = normalize(float3(0.5, 0.8, 0.3));
     float diffuse = max(dot(normal, light_dir), 0.0);
     float3 ambient = float3(0.2);
-    float3 final_color = albedo * (ambient + diffuse) + def.emission_color;
+    float3 final_color = albedo.rgb * (ambient + diffuse) + def.emission_color;
 
     return float4(final_color, 1.0);
 }

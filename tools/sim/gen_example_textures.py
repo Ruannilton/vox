@@ -3,6 +3,8 @@
 # assets/textures/. Padrões procedurais determinísticos com variação de tom
 # por pixel (textura visível no smoke) e cores base casando com a paleta
 # procedural antiga (grama 89,191,64 / terra 128,89,51 / pedra 140,140,148).
+# VS-14 (REQ-PLT-02): textura "planta" 16x16 RGBA com recorte — lâminas
+# verdes opacas (alpha 255) em fundo totalmente transparente (alpha 0).
 
 import os
 
@@ -30,6 +32,26 @@ def gen(base, fn):
     return encode_png(SIZE, SIZE, bytes(px))
 
 
+def gen_plant():
+    """VS-14: lâminas verdes em X sobre fundo alpha 0 (cutout no fragment)."""
+    px = bytearray()
+    for y in range(SIZE):
+        for x in range(SIZE):
+            # duas nervuras diagonais (cruz em X) com largura 3px e folhas
+            # laterais determinísticas; base da planta ocupa o terço inferior
+            d1 = abs(y - x)
+            d2 = abs(y - (SIZE - 1 - x))
+            blade = d1 <= 1 or d2 <= 1
+            leaf = (d1 <= 3 or d2 <= 3) and (x * 7 + y * 13) % 5 <= 1 and y < SIZE - 2
+            stem = (x in (7, 8)) and y >= 4
+            if blade or leaf or stem:
+                g = 140 + ((x * 31 + y * 17) % 40)
+                px += bytes((40 + (x * 11) % 30, clamp(g), 40, 255))
+            else:
+                px += bytes((0, 0, 0, 0))
+    return encode_png(SIZE, SIZE, bytes(px))
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     for name, base in (
@@ -41,6 +63,10 @@ def main():
         with open(path, "wb") as fh:
             fh.write(gen(base, None))
         print(f"gerado {path}")
+    path = os.path.join(OUT, "planta.png")
+    with open(path, "wb") as fh:
+        fh.write(gen_plant())
+    print(f"gerado {path}")
 
 
 if __name__ == "__main__":

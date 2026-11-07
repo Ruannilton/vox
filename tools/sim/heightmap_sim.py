@@ -17,8 +17,16 @@ Cobertura:
 - contagem de avaliacoes de ruído: por voxel (65.536/chunk) vs heightmap
   (threads de coluna, 4 grupos-y por fatia => 256/chunk).
 
-Cenario executado nos ACs da VS-13 (AC-01).
+VS-14 (REQ-SIM-11): spawn de planta (id 4) por coluna via wang hash de
+(x,z) mundial (10%: hash % 1000 < 100) — voxel y == altura+1 recebe o id 4;
+coluna com planta exporta heights = altura+1 (topo sólido real). O hash é
+espelhado em Python (mock do algoritmo do shader, sem FastNoiseLite).
+
+Cenario executado nos ACs da VS-13 (AC-01) e VS-14 (AC-01).
 """
+
+PLANT_BLOCK_ID = 4
+PLANT_PROBABILITY_PERCENT = 10  # hash % 1000 < 100 (constante do shader)
 
 import os
 import sys
@@ -61,6 +69,28 @@ def mock_noise2(z, x):
     return ((v & 0xFFFF) / 0xFFFF) * 2.0 - 1.0
 
 
+# --- VS-14: wang hash da coluna (espelha voxel.slang; mock, sem ruído) ---
+
+def wang_hash(a):
+    a &= 0xFFFFFFFF
+    a = (a ^ 61) ^ (a >> 16)
+    a = (a + (a << 3)) & 0xFFFFFFFF
+    a = a ^ (a >> 4)
+    a = (a * 0x27D4EB2D) & 0xFFFFFFFF
+    a = a ^ (a >> 15)
+    return a & 0xFFFFFFFF
+
+
+def hash_u32(x, z):
+    """Hash u32 determinístico de (x,z) mundial: wang(wang(x) ^ z)."""
+    return wang_hash(wang_hash(x & 0xFFFFFFFF) ^ (z & 0xFFFFFFFF))
+
+
+def plant_spawns(wx, wz):
+    """VS-14 (REQ-PLT-03): 10% das colunas ganham planta (y == altura+1)."""
+    return hash_u32(wx, wz) % 1000 < PLANT_PROBABILITY_PERCENT * 10
+
+
 def column_height(wx, wz):
     """Mesma expressão do generate: 32 + uint(h1*10) + uint(h2*5)."""
     h1 = int(mock_noise1(wx, wz) * 10)
@@ -69,14 +99,21 @@ def column_height(wx, wz):
 
 
 def column_top_local(chunk_base_y, wx, wz):
-    """VS-13: y do sólido mais alto da coluna DENTRO do chunk (0xFFFF se a
-    coluna é toda ar neste chunk). Deriva do mesmo `height` do worldgen:
-    topo = min(height - base_y, 31); coluna vazia se height < base_y."""
-    top = min(column_height(wx, wz) - chunk_base_y, CHUNK_SIZE - 1)
+    """VS-13/VS-14: y do sólido mais alto da coluna DENTRO do chunk (0xFFFF se a
+    coluna é toda ar neste chunk). Deriva do mesmo `height` do worldgen; coluna
+    com planta exporta altura+1 (topo sólido real) quando o voxel cabe no
+    chunk; fora do chunk a planta não nasce e o topo é a própria altura."""
+    height = column_height(wx, wz)
+    plant = plant_spawns(wx, wz) and height + 1 <= chunk_base_y + CHUNK_SIZE - 1
+    top = min((height + 1 if plant else height) - chunk_base_y, CHUNK_SIZE - 1)
     return 0xFFFF if top < 0 else top
 
 
-def block_id_from_height(wy, height):
+def block_id_from_height(wy, height, wx=0, wz=0):
+    # VS-14: voxel acima da grama (y == altura+1) vira planta quando a coluna
+    # sorteia spawn; demais y inalterados.
+    if wy == height + 1 and plant_spawns(wx, wz):
+        return PLANT_BLOCK_ID
     if wy > height:
         return 0
     if wy < height - 8:
@@ -100,7 +137,7 @@ def generate_per_voxel(origin, mirror_ring_slot=-1):
                 h1 = int(mock_noise1(wx, wz) * 10); noise_evals += 1
                 h2 = int(mock_noise2(wz, wx) * 5); noise_evals += 1
                 height = 32 + h1 + h2
-                bid = block_id_from_height(wy, height)
+                bid = block_id_from_height(wy, height, wx, wz)
                 dense[tx | (tz << 5) | (ty << 10)] = bid
                 if mirror_ring_slot >= 0:
                     ring[mirror_ring_slot * CHUNK_VOXEL_COUNT + (ty | (tz << 5) | (tx << 10))] = bid
@@ -150,8 +187,9 @@ def generate_heightmap(origin, mirror_ring_slot=-1):
                             tx = gx * GROUP + lx
                             ty = gy * GROUP + ly
                             tz = gz * GROUP + lz
+                            wx, wz = origin[0] + tx, origin[2] + tz
                             height = heights_gs[lx][lz]
-                            bid = block_id_from_height(origin[1] + ty, height)
+                            bid = block_id_from_height(origin[1] + ty, height, wx, wz)
                             dense[tx | (tz << 5) | (ty << 10)] = bid
                             if mirror_ring_slot >= 0:
                                 idx = ty | (tz << 5) | (tx << 10)  # y-contíguo
@@ -178,7 +216,9 @@ def scenario_thread_mapping():
         for tx in (0, 3, 8, 31):
             h = column_height(origin[0] + tx, origin[2] + tz)
             for ty in range(CHUNK_SIZE):
-                if dense[tx | (tz << 5) | (ty << 10)] != block_id_from_height(origin[1] + ty, h):
+                if dense[tx | (tz << 5) | (ty << 10)] != block_id_from_height(
+                    origin[1] + ty, h, origin[0] + tx, origin[2] + tz
+                ):
                     ok = False
     check("coluna inteira deriva do mesmo height", ok)
 
@@ -235,10 +275,80 @@ def scenario_ring_write():
     check("ring binding 20: slot correto, índice z-contíguo x|z<<5", ok_slot)
 
 
+def scenario_plant_spawn():
+    print("[cenario] VS-14: spawn determinístico da planta (wang hash por coluna)")
+
+    # determinismo: puro função de (x,z) — mesma resposta em chamadas e em
+    # chunks diferentes (a coluna na fronteira nasce igual nos dois chunks)
+    ok = True
+    for wx, wz in ((0, 0), (1, 0), (0, 1), (-1, 7), (12345, -6789), (31, 0), (32, 0)):
+        a = plant_spawns(wx, wz)
+        ok = ok and a == plant_spawns(wx, wz) and a == plant_spawns(wx, wz)
+    check("hash puro função de (x,z): mesma resposta em repetições", ok)
+
+    # taxa ~10% numa amostra larga de colunas de mundo (faixa 9%..11%)
+    total, plants = 0, 0
+    for wx in range(-256, 256):
+        for wz in range(-128, 128):
+            total += 1
+            plants += 1 if plant_spawns(wx, wz) else 0
+    ratio = plants / total
+    check(f"taxa de spawn ~10% ({plants}/{total} = {ratio:.3f})", 0.09 <= ratio <= 0.11)
+
+    # dense: voxel y == altura+1 com spawn -> id 4; demais inalterados; coluna
+    # sem planta idêntica ao worldgen da VS-13
+    origin = (0, 0, 0)
+    dense, _, ring_heights, _ = generate_heightmap(origin, mirror_ring_slot=0)
+    ok_id = True
+    ok_others = True
+    for tz in range(CHUNK_SIZE):
+        for tx in range(CHUNK_SIZE):
+            wx, wz = origin[0] + tx, origin[2] + tz
+            height = column_height(wx, wz)
+            for ty in range(CHUNK_SIZE):
+                bid = dense[tx | (tz << 5) | (ty << 10)]
+                if plant_spawns(wx, wz) and origin[1] + ty == height + 1:
+                    ok_id = ok_id and bid == PLANT_BLOCK_ID
+                elif not plant_spawns(wx, wz):
+                    ok_others = ok_others and bid != PLANT_BLOCK_ID
+    check("voxel y == altura+1 da coluna com spawn -> id 4", ok_id)
+    check("coluna sem spawn: nenhum voxel com id 4", ok_others)
+
+    # heightmap: coluna com planta exporta altura+1 (com clamp do chunk);
+    # sem planta exporta altura
+    ok_h = True
+    for tz in range(CHUNK_SIZE):
+        for tx in range(CHUNK_SIZE):
+            wx, wz = origin[0] + tx, origin[2] + tz
+            if plant_spawns(wx, wz):
+                ok_h = ok_h and ring_heights[tx | (tz << 5)] == column_top_local(origin[1], wx, wz)
+    check("ring binding 20: coluna com planta exporta altura+1", ok_h)
+
+    # altura+1 fora do chunk (topo na linha de cima do chunk): sem planta.
+    # alturas do mock: 17..47; topo no limite exige height == base+31 — só
+    # base_y=0 (height 31) é alcançável com planta na amostra
+    found = False
+    for wx in range(-512, 512):
+        for wz in range(-512, 512):
+            if column_height(wx, wz) == CHUNK_SIZE - 1 and plant_spawns(wx, wz):
+                dense2, _, _, _ = generate_heightmap((wx, 0, wz), mirror_ring_slot=-1)
+                col_has_plant = any(
+                    dense2[0 | (0 << 5) | (ty << 10)] == PLANT_BLOCK_ID
+                    for ty in range(CHUNK_SIZE)
+                )
+                check("altura+1 fora do chunk: planta não nasce", not col_has_plant)
+                found = True
+                break
+        if found:
+            break
+    check("caso de topo no limite do chunk encontrado", found)
+
+
 def main():
     scenario_thread_mapping()
     scenario_bit_exact_equivalence()
     scenario_ring_write()
+    scenario_plant_spawn()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
 
