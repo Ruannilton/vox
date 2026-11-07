@@ -362,8 +362,6 @@ main :: proc() {
 			}
 			vk_check(vk.QueueSubmit2(engine.app.queues[.Graphics].queue, 1, &submit_info, {}))
 			engine.telemetry.gfx_slot_submitted[engine.app.frameIndex] = true
-
-			engine.Present()
 		{
 			engine.ZoneN("present")
 			engine.Present()
