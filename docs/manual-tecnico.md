@@ -358,10 +358,11 @@ Profiling de CPU **opt-in por define de compilação**, via bindings Odin do [os
 
 ### Como rodar com a UI Tracy (AC-02, manual)
 
-1. Baixe o **Tracy Profiler v0.14.1** (binário `Tracy.exe` do release oficial em https://github.com/wolfpld/tracy/releases — não versionado no repo).
-2. Abra a UI Tracy **antes** de conectar (a descoberta é por broadcast na rede local; o Connect da UI inicia a escuta).
-3. Execute `run_tracy.bat` na raiz do repo (compila shaders + `odin build -define:TRACY_ENABLE=true` + roda `vox.exe`). Se `vendor\tracy\tracy.lib` estiver ausente, o script aponta `tools\build_tracy_client.bat` e sai com erro.
-4. Na UI Tracy, clique em **Connect** (ou aguarde o app aparecer no listen).
-5. Confira: frames no marcador `FrameMark`; zonas `frame`/`engine_update`/`render_record` na thread `main` e `worker_iteration`/`batch_assemble`/`batch_submit` na thread `voxel_worker`; plots `visible_chunks`/`work_items`/`empty_chunks` atualizando por frame.
+1. O pacote da UI Tracy (**v0.14.1**) já fica em `tools\tracy\` (`tracy-profiler.exe` + utilitários; não versionado, `*.exe` ignorado pelo git). Se precisar reobter: release oficial em https://github.com/wolfpld/tracy/releases/tag/v0.14.1.
+2. Execute `run_tracy.bat` na raiz do repo (abre a UI + compila shaders + `odin build -define:TRACY_ENABLE=true` + roda `vox.exe`). Se `vendor\tracy\tracy.lib` estiver ausente, o script aponta `tools\build_tracy_client.bat` e sai com erro.
+3. Na UI Tracy, clique em **Connect** (ou aguarde o app aparecer no listen). O profiler sobe logo após o init Vulkan (`TRACY_MANUAL_LIFETIME`), então a janela do app pode aparecer alguns segundos antes da conexão ser possível.
+4. Confira: frames no marcador `FrameMark`; zonas `frame`/`engine_update`/`render_record` na thread `main` e `worker_iteration`/`batch_assemble`/`batch_submit` na thread `voxel_worker`; plots `visible_chunks`/`work_items`/`empty_chunks` atualizando por frame.
 
 Sem a UI aberta o client roda desconectado com custo mínimo e o log mostra `Tracy IsConnected()=false`; os plots são pulados (`TracingIsConnected()` guarda a coleta). Não há GPU zones nesta versão (backlog BLK-33); memory profiling/lock tracking/call stacks em BLK-34..36.
+
+**Captura sem UI:** `tools\tracy\tracy-capture.exe -o sessao.tracy` conecta headless ao app e grava o trace — útil para validar o fluxo de zonas em smokes automatizados (ex.: AC-01/02 sem cliques).
