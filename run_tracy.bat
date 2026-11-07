@@ -3,24 +3,26 @@ setlocal
 
 :: VS-15 (REQ-TRC-01): build com Tracy ligado (-define:TRACY_ENABLE=true).
 :: Exige vendor\tracy\tracy.lib; se ausente, gere com tools\build_tracy_client.bat.
-:: A UI Tracy (tools\tracy\tracy-profiler.exe, release oficial v0.14.1) eh
-:: opcional: encontrada, este script a abre automaticamente antes do app.
+:: A UI Tracy fica em tools\tracy\tracy-profiler.exe; encontrada, o script a abre
+:: automaticamente antes do app.
 
-if not exist ".\vendor\tracy\tracy.lib" (
-    echo ERRO: vendor\tracy\tracy.lib ausente.
-    echo Gere a biblioteca com: tools\build_tracy_client.bat
-    exit /b 1
-)
+if not exist ".\vendor\tracy\tracy.lib" goto sem_lib
+goto com_lib
+:sem_lib
+echo ERRO: vendor\tracy\tracy.lib ausente.
+echo Gere a biblioteca com: tools\build_tracy_client.bat
+exit /b 1
+:com_lib
 
-if exist ".\tools\tracy\tracy-profiler.exe" (
-    echo Abrindo Tracy Profiler (tools\tracy\tracy-profiler.exe)...
-    start "" ".\tools\tracy\tracy-profiler.exe"
-) else (
-    echo UI Tracy nao encontrada em tools\tracy\tracy-profiler.exe.
-    echo Baixe o pacote Windows de https://github.com/wolfpld/tracy/releases/tag/v0.14.1
-    echo e extraia para tools\tracy\ -- ou abra a UI manualmente e de Connect.
-    echo.
-)
+if exist ".\tools\tracy\tracy-profiler.exe" goto com_ui
+echo UI Tracy nao encontrada em tools\tracy\tracy-profiler.exe.
+echo Baixe o pacote Windows de https://github.com/wolfpld/tracy/releases/tag/v0.14.1
+echo e extraia para tools\tracy\ - ou abra a UI manualmente e de Connect.
+goto pos_ui
+:com_ui
+echo Abrindo Tracy Profiler: tools\tracy\tracy-profiler.exe
+start "" ".\tools\tracy\tracy-profiler.exe"
+:pos_ui
 
 echo Compilando shaders...
 set "IN_DIR=.\src\assets\shaders"
