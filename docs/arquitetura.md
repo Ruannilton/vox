@@ -207,4 +207,6 @@ Estados: PENDING_READBACK → (fence + memcpy + replay pending) → MATERIALIZED
 | B7 | backlog | PBR não amostrado (só Lambert + emissão) | Pendente |
 | B8 | backlog | Overflow int32 em calculate_squared_distance | Pendente |
 
+O índice consolidado dos itens futuros (bugs, não-escopos de specs e consequências de ADRs) é mantido em **docs/obsidian/tracking/backlog.md**.
+
 Detalhes de implementação, estruturas de memória e contratos de carga estão no documento companheiro: **Manual Técnico do Motor de Voxels**.
