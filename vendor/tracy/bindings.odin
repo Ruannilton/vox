@@ -3,7 +3,10 @@ package tracy
 import "core:c"
 
 // NOTE(oskar): You need to recompile the client library with the same value if you change these.
-TRACY_MANUAL_LIFETIME :: #config(TRACY_MANUAL_LIFETIME, false)
+// VS-15 (BLK-37): a tracy.lib vendora é compilada com TRACY_MANUAL_LIFETIME +
+// TRACY_DELAYED_INIT (default true aqui para casar); o startup do profiler é
+// feito manualmente pelo app depois do init Vulkan (engine.TracingStartup).
+TRACY_MANUAL_LIFETIME :: #config(TRACY_MANUAL_LIFETIME, true)
 TRACY_FIBERS          :: #config(TRACY_FIBERS, false)
 
 // VS-15: com TRACY_ENABLE=false o foreign import declara o namespace sem

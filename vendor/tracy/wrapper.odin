@@ -72,6 +72,29 @@ ZoneBegin :: proc(active: bool, depth: i32, name: string = "", color: u32 = 0, l
 // Connection status
 IsConnected :: #force_inline proc() -> bool { return cast(bool)___tracy_connected() when TRACY_ENABLE else false }
 
+// VS-15 (BLK-37): a lib vendora é compilada com TRACY_MANUAL_LIFETIME +
+// TRACY_DELAYED_INIT — o profiler só existe entre StartupProfiler e
+// ShutdownProfiler; qualquer call Tracy fora desse intervalo é inválido.
+when TRACY_MANUAL_LIFETIME {
+	StartupProfiler :: #force_inline proc() {
+		when TRACY_ENABLE {
+			___tracy_startup_profiler()
+		}
+	}
+	ShutdownProfiler :: #force_inline proc() {
+		when TRACY_ENABLE {
+			___tracy_shutdown_profiler()
+		}
+	}
+	ProfilerStarted :: #force_inline proc() -> bool {
+		when TRACY_ENABLE {
+			return cast(bool)___tracy_profiler_started()
+		} else {
+			return false
+		}
+	}
+}
+
 // Fibers
 when TRACY_FIBERS {
 	@(disabled=!TRACY_ENABLE) FiberEnter :: #force_inline proc(name: cstring) { ___tracy_fiber_enter(name) }

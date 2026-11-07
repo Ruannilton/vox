@@ -351,7 +351,7 @@ Profiling de CPU **opt-in por define de compilação**, via bindings Odin do [os
 | Define | `TRACY_ENABLE` (`#config`, default `false`); `run.bat` desligado, `run_tracy.bat` ligado |
 | Wrapper | `src/engine/tracing.odin` — único módulo que referencia o package `tracy`; desligado, toda a API é no-op inline e `TracingIsConnected()` é `false` |
 | Link | `bindings.odin` vendored faz `foreign import tracy "tracy.lib"` **só com `TRACY_ENABLE=true`** (desligado usa `system:kernel32`) — o build default não depende da lib |
-| Rebuild da lib | `tools\build_tracy_client.bat` (clone `--recurse-submodules` do odin-tracy, client C++ com `-MD` — o `-MT` do upstream colide com o CRT do VMA) |
+| Rebuild da lib | `tools\build_tracy_client.bat` (clone `--recurse-submodules` do odin-tracy, client C++ com `-MD` — o `-MT` do upstream colide com o CRT do VMA — e `-DTRACY_MANUAL_LIFETIME -DTRACY_DELAYED_INIT`: o startup do profiler é manual, depois do init Vulkan — ver BLK-37 no backlog) |
 | Zones (main) | `frame`, `events_drain`, `engine_update`, `frame_wait`, `render_record`, `present` |
 | Zones (worker) | `worker_iteration`, `batch_assemble`, `batch_submit` |
 | Extras | `FrameMark` por frame; threads `main`/`voxel_worker`; `AppInfo` com a config efetiva; plots `visible_chunks`, `work_items`, `empty_chunks` (só quando conectado) |

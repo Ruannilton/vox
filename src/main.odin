@@ -34,6 +34,12 @@ main :: proc() {
 	engine.CreateEngine()
 	defer engine.DestroyEngine()
 
+	// VS-15 (BLK-37): profiler Tracy só inicia após o init Vulkan/GLFW;
+	// o defer fica antes do destroy do voxel engine porque o worker (que
+	// emite zones) é encerrado dentro dele.
+	engine.TracingStartup()
+	defer engine.TracingShutdown()
+
 	voxel_engine = engine.voxel_engine_init()
 	defer engine.voxel_engine_destroy(voxel_engine)
 

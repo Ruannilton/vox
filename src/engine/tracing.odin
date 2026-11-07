@@ -84,3 +84,20 @@ TracingIsConnected :: #force_inline proc() -> bool {
 		return false
 	}
 }
+
+// VS-15 (BLK-37): com a lib em TRACY_MANUAL_LIFETIME + TRACY_DELAYED_INIT o
+// profiler nasce só aqui — depois do init Vulkan/GLFW, que conflitava com o
+// client Tracy ativo desde o CRT init (hang em vkCreateComputePipelines).
+// Só chamar com TRACY_ENABLE ligado e fora do intervalo nenhuma API Tracy
+// pode ser usada (GetProfiler asserta com o profiler não iniciado).
+TracingStartup :: #force_inline proc() {
+	when TRACY_ENABLE {
+		tracy.StartupProfiler()
+	}
+}
+
+TracingShutdown :: #force_inline proc() {
+	when TRACY_ENABLE {
+		tracy.ShutdownProfiler()
+	}
+}

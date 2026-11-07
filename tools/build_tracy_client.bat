@@ -18,10 +18,14 @@ echo [TRACY] Clonando oskarnp/odin-tracy (com submodule tracy v0.14.1)...
 git clone --recurse-submodules https://github.com/oskarnp/odin-tracy "%WORK%" || exit /b 1
 
 pushd "%WORK%"
-echo [TRACY] Compilando client C++ (cl -MD -O2 -DTRACY_ENABLE)...
+echo [TRACY] Compilando client C++ (cl -MD -O2 -DTRACY_ENABLE -DTRACY_MANUAL_LIFETIME -DTRACY_DELAYED_INIT)...
 :: -MD (nao -MT do upstream): o runtime do projeto linka o CRT dinamico
 :: (mesma flag do vma_windows_x86_64.lib); -MT causa /FAILIFMISMATCH no link.
-sed "s/-MT /-MD /" build_windows.cmd > build_md.cmd || (popd & exit /b 1)
+:: TRACY_MANUAL_LIFETIME + TRACY_DELAYED_INIT (BLK-37): o profiler Tracy nao
+:: pode estar ativo durante o init Vulkan — com o client ativo desde o CRT
+:: init, vkCreateComputePipelines travava (hang no driver NVIDIA).
+:: O app sobe o profiler manualmente depois do init (engine.TracingStartup).
+sed "s/-MT /-MD /; s/-DTRACY_ENABLE /-DTRACY_ENABLE -DTRACY_MANUAL_LIFETIME -DTRACY_DELAYED_INIT /" build_windows.cmd > build_md.cmd || (popd & exit /b 1)
 call build_md.cmd || (popd & exit /b 1)
 popd
 

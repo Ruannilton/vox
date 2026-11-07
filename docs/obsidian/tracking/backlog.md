@@ -76,8 +76,9 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 | BLK-34 | **Memory profiling Tracy** (allocator custom do odin-tracy) | VS-15 não-escopo | Integra ao context/allocator do Odin |
 | BLK-35 | **Lock tracking Tracy** (`LockCtx` nos mutexes do streaming) | VS-15 não-escopo | `queue_mutex` é o candidato principal |
 | BLK-36 | **Call stacks Tracy** (`TRACY_CALLSTACK > 0` nas zones) + sampling | VS-15 não-escopo | Cliente recompilado com a flag; só Windows x64 |
-| BLK-37 | **Build Tracy trava após `voxel_gpu_init`** (log para em "Inicializando recursos GPU do voxel engine"; nem `IsConnected()` nem o loop principal chegam a rodar) | ressalva do fix de sincronização 2026-11-07 | Reproduz no HEAD `b70afda` sem o fix de present — pré-existente da VS-15, não relacionado ao duplicate-present; AC-01 da VS-15 precisa ser revalidado após a correção |
+| BLK-37 | ~~Build Tracy trava após `voxel_gpu_init`~~ **FECHADO (2026-11-07)** — fix: lib com `TRACY_MANUAL_LIFETIME` + `TRACY_DELAYED_INIT`, startup manual do profiler após o init Vulkan (`engine.TracingStartup`/`TracingShutdown`); ver histórico da VS-15 | ressalva do fix de sincronização 2026-11-07 | Fechado em 2026-11-07; 8/8 verdes pós-fix vs 5/5 hangs no HEAD |
 | BLK-38 | **THREADING ERROR `vkQueueSubmit2` × `vkDeviceWaitIdle` em threads distintas** durante tempestade de resize/minimize (recreate de swapchain em loop) | ressalva do fix de sincronização 2026-11-07 | Vista 1× sob minimize/restore agressivo repetido; investigar se o recreate drena a fila de outra thread ou se há uso concorrente da fila gráfica |
+| BLK-39 | **`vkDestroyDevice` leva ~60 s no teardown** após replay longo (125 eventos), com e sem Tracy — GPU work acumulado drenando no destroy | ressalva do fix BLK-37 (2026-11-07) | Pré-existente (reproduz no build default); não bloqueia smokes curtos; investigar drenagem explícita (wait idle por etapa) se incomodar |
 
 ## Regras
 
