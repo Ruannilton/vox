@@ -50,3 +50,4 @@ Decisões necessárias: técnica de transparência (cutout vs blending), onde a 
 
 - 2026-11-07 — Decisão registrada como pendente, com recomendação da Opção A; bloqueia a aprovação da VS-14 até a ratificação do mantenedor.
 - 2026-11-07 — **Opção A ratificada pelo mantenedor**; status `aceita`; desbloqueia a VS-14.
+- 2026-11-07 — **Emenda pós-validação (VS-14):** "heightmap exportando altura+1" fica **revogado** — a planta é não-sólida (`NON_SOLID`, bit 1 de `BlockDefinition.flags`; JSON `"solid": false`). O heightmap exporta o topo **sólido** (`altura`); a decisão de spawn/cutout/contrato ids 1–4 é inalterada.

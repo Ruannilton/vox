@@ -726,12 +726,13 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 					}
 					clamped := min(palette_index, max(header.palette_size, 1) - 1)
 					decoded := header.palette[clamped]
-					if decoded != 0 do solid += 1
+					if decoded != 0 do solid += 1 // ocupados (sólidos + plantas)
 
 					mi := u32(y) | (u32(z) << 5) | (u32(x) << 10) // índice y-contíguo do mirror
 					if u32(page.ids[mi]) != decoded {
 						errors += 1
-					} else if mirror_bit_test(page.solid[:], mi) != (decoded != 0) {
+					} else if mirror_bit_test(page.solid[:], mi) != block_is_solid(decoded) {
+						// VS-14 emenda: solid do mirror exclui planta (NON_SOLID)
 						errors += 1
 					}
 				}
@@ -1077,11 +1078,12 @@ upload_block_registry :: proc() {
 		registry[id] = BlockDefinition{mesh_template_index = 1, albedo_texture_index = u32(id)}
 	}
 	// VS-14 (REQ-PLT-05): fallback sem assets — id 4 (planta) usa o template
-	// cruz built-in (2) + camada 4 da paleta, com alpha-test (flags bit 0).
+	// cruz built-in (2) + camada 4 da paleta, com alpha-test (flags bit 0) e
+	// NON_SOLID (flags bit 1 — emenda 2026-11-07).
 	registry[4] = BlockDefinition{
 		mesh_template_index = 2,
 		albedo_texture_index = 4,
-		flags = BLOCK_DEFINITION_FLAG_TRANSPARENT,
+		flags = BLOCK_DEFINITION_FLAG_TRANSPARENT | BLOCK_DEFINITION_FLAG_NON_SOLID,
 	}
 	upload_to_device_buffer(&registry, size_of(registry), voxel_gpu.block_registry.handle)
 }

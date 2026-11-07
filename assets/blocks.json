@@ -47,6 +47,6 @@
     { "id": 1, "name": "grama", "mesh": "cubo", "texture": "grama" },
     { "id": 2, "name": "terra", "mesh": "cubo", "texture": "terra" },
     { "id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra" },
-    { "id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "transparent": true }
+    { "id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "transparent": true, "solid": false }
   ]
 }

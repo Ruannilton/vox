@@ -46,6 +46,10 @@ static const uint CULL_FACE_NEVER = 7; // triângulo nunca culpado (interior/dia
 // alpha (folhagem). O fragment descarta fragmentos com albedo.a < 0.5
 // (limiar constante, cutout opaco — sem blending nem ordenação).
 static const uint BLOCK_DEFINITION_FLAG_TRANSPARENT = 1;
+// VS-14 (emenda 2026-11-07): bit 1 — bloco ocupa o voxel mas NÃO é sólido
+// (planta/folhagem). Solidez é propriedade do tipo de bloco; a ocupação
+// (bit no brick) continua contendo plantas (o brick não perde itens).
+static const uint BLOCK_DEFINITION_FLAG_NON_SOLID = 2;
 static const uint NO_TEMPLATE_UV_OFFSET = 0xFFFFFFFFu;
 
 static const uint NEIGHBOR_SLOT_INVALID       = 0xFFFFFFFFu;
@@ -285,9 +289,13 @@ bool is_voxel_solid_local(uint slot, int3 coord) {
     return ((occupancy >> bit_index_from_local_coordinate(coord % BRICK_SIZE)) & 1u) != 0;
 }
 
-uint read_brick_occupancy_b2(uint slot, int3 brick_coord, uint neighbor_slots[6]) {
+// Redirecionamento B2 no nível de brick: resolve (slot, coord local) de um
+// brick vizinho entre chunks; falso se o vizinho não tem slot publicado.
+bool resolve_brick_slot(uint slot, int3 brick_coord, uint neighbor_slots[6], out uint out_slot, out int3 out_local) {
+    out_slot = slot;
+    out_local = brick_coord;
     if (all(brick_coord >= 0) && all(brick_coord < BRICKS_PER_CHUNK_AXIS)) {
-        return read_brick_occupancy(slot, brick_coord);
+        return true;
     }
     uint neighbor_slot = NEIGHBOR_SLOT_INVALID;
     int3 local = brick_coord;
@@ -297,47 +305,83 @@ uint read_brick_occupancy_b2(uint slot, int3 brick_coord, uint neighbor_slots[6]
     else if (brick_coord.y >= BRICKS_PER_CHUNK_AXIS.y)  { neighbor_slot = neighbor_slots[2]; local.y -= BRICKS_PER_CHUNK_AXIS.y; }
     else if (brick_coord.z < 0)                         { neighbor_slot = neighbor_slots[5]; local.z += BRICKS_PER_CHUNK_AXIS.z; }
     else                                                { neighbor_slot = neighbor_slots[4]; local.z -= BRICKS_PER_CHUNK_AXIS.z; }
-    if (neighbor_slot == NEIGHBOR_SLOT_INVALID) return 0;
-    return read_brick_occupancy(neighbor_slot, local);
+    if (neighbor_slot == NEIGHBOR_SLOT_INVALID) return false;
+    out_slot = neighbor_slot;
+    out_local = local;
+    return true;
 }
 
-bool is_brick_occluded(uint slot, uint occupancy_word, int3 brick_coord, uint neighbor_slots[6]) {
-    if (occupancy_word != 0xFFFFFFFFu) return false;
-    [unroll]
-    for (uint face = 0; face < 6; face++) {
-        int3 neighbor_coord = brick_coord + FACE_NORMALS[face];
-        if (read_brick_occupancy_b2(slot, neighbor_coord, neighbor_slots) != 0xFFFFFFFFu) {
-            return false;
-        }
+uint read_brick_occupancy_b2(uint slot, int3 brick_coord, uint neighbor_slots[6]) {
+    uint out_slot;
+    int3 out_local;
+    if (!resolve_brick_slot(slot, brick_coord, neighbor_slots, out_slot, out_local)) return 0;
+    return read_brick_occupancy(out_slot, out_local);
+}
+
+// VS-14 (emenda): os 32 voxels do brick são sólidos? Decodifica os ids — só é
+// chamado em brick com occupancy cheio (raro). Sem isso, um brick preenchido
+// por plantas empilhadas (edição) sumiria por oclusão.
+bool brick_voxels_all_solid(uint slot, int3 brick_coord) {
+    ChunkHeader header = chunk_headers[slot];
+    for (uint bit = 0; bit < VOXELS_PER_BRICK; bit++) {
+        int3 coord = brick_coord * BRICK_SIZE + local_coordinate_from_bit_index(bit);
+        if (!block_is_solid(read_block_identifier(slot, header, coord))) return false;
     }
     return true;
 }
 
-bool is_voxel_solid(uint slot, int3 coord, uint neighbor_slots[6]) {
-    if (all(coord >= 0) && all(coord < CHUNK_SIZE)) {
-        return is_voxel_solid_local(slot, coord);
+bool is_brick_occluded(uint slot, uint occupancy_word, int3 brick_coord, uint neighbor_slots[6]) {
+    if (occupancy_word != 0xFFFFFFFFu) return false;
+    if (!brick_voxels_all_solid(slot, brick_coord)) return false;
+    [unroll]
+    for (uint face = 0; face < 6; face++) {
+        int3 neighbor_coord = brick_coord + FACE_NORMALS[face];
+        uint neighbor_slot;
+        int3 neighbor_local;
+        if (!resolve_brick_slot(slot, neighbor_coord, neighbor_slots, neighbor_slot, neighbor_local)) return false;
+        if (read_brick_occupancy(neighbor_slot, neighbor_local) != 0xFFFFFFFFu) return false;
+        if (!brick_voxels_all_solid(neighbor_slot, neighbor_local)) return false;
     }
-    uint neighbor_slot = NEIGHBOR_SLOT_INVALID;
-    int3 local = coord;
-    if (coord.x < 0)                  { neighbor_slot = neighbor_slots[1]; local.x += CHUNK_SIZE; }
-    else if (coord.x >= CHUNK_SIZE)   { neighbor_slot = neighbor_slots[0]; local.x -= CHUNK_SIZE; }
-    else if (coord.y < 0)             { neighbor_slot = neighbor_slots[3]; local.y += CHUNK_SIZE; }
-    else if (coord.y >= CHUNK_SIZE)   { neighbor_slot = neighbor_slots[2]; local.y -= CHUNK_SIZE; }
-    else if (coord.z < 0)             { neighbor_slot = neighbor_slots[5]; local.z += CHUNK_SIZE; }
-    else                              { neighbor_slot = neighbor_slots[4]; local.z -= CHUNK_SIZE; }
-    if (neighbor_slot == NEIGHBOR_SLOT_INVALID) return false;
-    if (any(local < 0) || any(local >= CHUNK_SIZE)) return false;
-    return is_voxel_solid_local(neighbor_slot, local);
+    return true;
 }
 
-uint compute_visible_face_mask(uint slot, int3 coord, int3 chunk_world_origin, float3 camera_position, uint neighbor_slots[6]) {
+bool block_is_solid(uint block_id) {
+    // id 0 (AR) nunca é sólido; NON_SOLID marca planta/folhagem.
+    return block_id != 0u &&
+        (global_block_registry[block_id].flags & BLOCK_DEFINITION_FLAG_NON_SOLID) == 0u;
+}
+
+// VS-14 (emenda): solidez do voxel = ocupação setada E tipo sólido — decodifica
+// o id do voxel (read_block_identifier). Só roda o decode para vizinho ocupado.
+bool is_voxel_solid(uint slot, ChunkHeader header, int3 coord, uint neighbor_slots[6]) {
+    uint use_slot = slot;
+    ChunkHeader use_header = header;
+    int3 local = coord;
+    if (!(all(coord >= 0) && all(coord < CHUNK_SIZE))) {
+        uint neighbor_slot = NEIGHBOR_SLOT_INVALID;
+        if (coord.x < 0)                  { neighbor_slot = neighbor_slots[1]; local.x += CHUNK_SIZE; }
+        else if (coord.x >= CHUNK_SIZE)   { neighbor_slot = neighbor_slots[0]; local.x -= CHUNK_SIZE; }
+        else if (coord.y < 0)             { neighbor_slot = neighbor_slots[3]; local.y += CHUNK_SIZE; }
+        else if (coord.y >= CHUNK_SIZE)   { neighbor_slot = neighbor_slots[2]; local.y -= CHUNK_SIZE; }
+        else if (coord.z < 0)             { neighbor_slot = neighbor_slots[5]; local.z += CHUNK_SIZE; }
+        else                              { neighbor_slot = neighbor_slots[4]; local.z -= CHUNK_SIZE; }
+        if (neighbor_slot == NEIGHBOR_SLOT_INVALID) return false;
+        if (any(local < 0) || any(local >= CHUNK_SIZE)) return false;
+        use_slot = neighbor_slot;
+        use_header = chunk_headers[neighbor_slot];
+    }
+    if (!is_voxel_solid_local(use_slot, local)) return false;
+    return block_is_solid(read_block_identifier(use_slot, use_header, local));
+}
+
+uint compute_visible_face_mask(uint slot, ChunkHeader header, int3 coord, int3 chunk_world_origin, float3 camera_position, uint neighbor_slots[6]) {
     float3 voxel_min_world = float3(chunk_world_origin + coord);
     uint face_mask = 0;
 
     [unroll]
     for (uint face_index = 0; face_index < 6; face_index++) {
         int3 neighbor_coord = coord + FACE_NORMALS[face_index];
-        if (is_voxel_solid(slot, neighbor_coord, neighbor_slots)) continue;
+        if (is_voxel_solid(slot, header, neighbor_coord, neighbor_slots)) continue;
 
         uint axis_index = face_index >> 1;
         bool is_positive_face = (face_index & 1) == 0;

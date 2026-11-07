@@ -18,9 +18,10 @@ Cobertura:
   (threads de coluna, 4 grupos-y por fatia => 256/chunk).
 
 VS-14 (REQ-SIM-11): spawn de planta (id 4) por coluna via wang hash de
-(x,z) mundial (10%: hash % 1000 < 100) — voxel y == altura+1 recebe o id 4;
-coluna com planta exporta heights = altura+1 (topo sólido real). O hash é
-espelhado em Python (mock do algoritmo do shader, sem FastNoiseLite).
+(x,z) mundial (10%: hash % 1000 < 100) — voxel y == altura+1 recebe o id 4.
+Emenda 2026-11-07: a planta NÃO é sólida — o heightmap exporta `altura`
+(não altura+1); o topo sólido é o terreno. O hash é espelhado em Python
+(mock do algoritmo do shader, sem FastNoiseLite).
 
 Cenario executado nos ACs da VS-13 (AC-01) e VS-14 (AC-01).
 """
@@ -98,14 +99,18 @@ def column_height(wx, wz):
     return 32 + h1 + h2
 
 
+def is_solid_block(block_id):
+    """Emenda 2026-11-07: solidez é do tipo — planta (id 4) ocupa o voxel mas
+    não é sólida (espelha block_is_solid do registry)."""
+    return block_id != 0 and block_id != PLANT_BLOCK_ID
+
+
 def column_top_local(chunk_base_y, wx, wz):
-    """VS-13/VS-14: y do sólido mais alto da coluna DENTRO do chunk (0xFFFF se a
-    coluna é toda ar neste chunk). Deriva do mesmo `height` do worldgen; coluna
-    com planta exporta altura+1 (topo sólido real) quando o voxel cabe no
-    chunk; fora do chunk a planta não nasce e o topo é a própria altura."""
+    """VS-13/VS-14: y do SÓLIDO mais alto da coluna DENTRO do chunk (0xFFFF se a
+    coluna é toda ar neste chunk). Emenda 2026-11-07: planta não é sólida — o
+    export é `altura` (não altura+1); acima do terreno só há plantas."""
     height = column_height(wx, wz)
-    plant = plant_spawns(wx, wz) and height + 1 <= chunk_base_y + CHUNK_SIZE - 1
-    top = min((height + 1 if plant else height) - chunk_base_y, CHUNK_SIZE - 1)
+    top = min(height - chunk_base_y, CHUNK_SIZE - 1)
     return 0xFFFF if top < 0 else top
 
 
@@ -232,12 +237,13 @@ def scenario_bit_exact_equivalence():
         dense_ref, ring_ref, evals_ref = generate_per_voxel(origin, mirror_ring_slot=7)
         dense_new, ring_dense_new, ring_h_new, evals_new = generate_heightmap(origin, mirror_ring_slot=7)
         same = dense_ref == dense_new and ring_ref == ring_dense_new
-        # ring de heightmap: topo sólido = último y sólido da coluna
+        # ring de heightmap: topo sólido = último y SÓLIDO da coluna
+        # (planta ocupa o voxel mas não move a altura — emenda 2026-11-07)
         for tz in range(CHUNK_SIZE):
             for tx in range(CHUNK_SIZE):
                 top = 0xFFFF
                 for ty in range(CHUNK_SIZE - 1, -1, -1):
-                    if dense_ref[tx | (tz << 5) | (ty << 10)] != 0:
+                    if is_solid_block(dense_ref[tx | (tz << 5) | (ty << 10)]):
                         top = ty
                         break
                 if ring_h_new[7 * 1024 + (tx | (tz << 5))] != top:
@@ -265,10 +271,11 @@ def scenario_ring_write():
     ok_slot = True
     for tz in range(CHUNK_SIZE):
         for tx in range(CHUNK_SIZE):
-            # recompute da coluna pela definição (topo sólido do baseline)
+            # recompute da coluna pela definição (topo SÓLIDO do baseline —
+            # planta não conta; emenda 2026-11-07)
             top = 0xFFFF
             for ty in range(CHUNK_SIZE - 1, -1, -1):
-                if dense_ref[tx | (tz << 5) | (ty << 10)] != 0:
+                if is_solid_block(dense_ref[tx | (tz << 5) | (ty << 10)]):
                     top = ty
                     break
             ok_slot = ok_slot and ring_h[3 * 1024 + (tx | (tz << 5))] == top
@@ -314,15 +321,19 @@ def scenario_plant_spawn():
     check("voxel y == altura+1 da coluna com spawn -> id 4", ok_id)
     check("coluna sem spawn: nenhum voxel com id 4", ok_others)
 
-    # heightmap: coluna com planta exporta altura+1 (com clamp do chunk);
-    # sem planta exporta altura
+    # heightmap: coluna com planta exporta `altura` (topo SÓLIDO é o terreno —
+    # a planta não move a altura; emenda 2026-11-07); sem planta, idem
     ok_h = True
+    ok_p = True
     for tz in range(CHUNK_SIZE):
         for tx in range(CHUNK_SIZE):
             wx, wz = origin[0] + tx, origin[2] + tz
+            top = min(column_height(wx, wz), CHUNK_SIZE - 1)
+            ok_h = ok_h and ring_heights[tx | (tz << 5)] == top
             if plant_spawns(wx, wz):
-                ok_h = ok_h and ring_heights[tx | (tz << 5)] == column_top_local(origin[1], wx, wz)
-    check("ring binding 20: coluna com planta exporta altura+1", ok_h)
+                ok_p = ok_p and ring_heights[tx | (tz << 5)] == top
+    check("ring binding 20: coluna (com e sem planta) exporta altura", ok_h)
+    check("ring binding 20: planta não sobe o heightmap", ok_p)
 
     # altura+1 fora do chunk (topo na linha de cima do chunk): sem planta.
     # alturas do mock: 17..47; topo no limite exige height == base+31 — só

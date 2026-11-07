@@ -56,14 +56,12 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
         heights_gs[local_id.x][local_id.z] = uint16_t(height);
 
         // VS-13 (REQ-MIR-01): export do heightmap no ring paralelo (binding
-        // 20, z-contíguo x|z<<5). Topologia: y do sólido mais alto da coluna
-        // neste chunk; 0xFFFF = coluna de ar. VS-14 (REQ-PLT-04): coluna com
-        // planta exporta altura+1 (topo sólido real) quando o voxel cabe no
-        // chunk; altura+1 fora do chunk -> sem planta, topo = altura.
+        // 20, z-contíguo x|z<<5). Topologia: y do SÓLIDO mais alto da coluna
+        // neste chunk; 0xFFFF = coluna vazia. VS-14 (emenda 2026-11-07): planta
+        // não é sólida — o export é `altura` (não altura+1); o topo sólido é o
+        // terreno, acima dele só há plantas.
         if (job.mirror_ring_slot >= 0) {
-            bool plant = plant_spawns(voxel_world_position.x, voxel_world_position.z)
-                && int(height) + 1 <= job.chunk_world_origin.y + CHUNK_SIZE - 1;
-            int top_local = min(int(height) + (plant ? 1 : 0) - job.chunk_world_origin.y, CHUNK_SIZE - 1);
+            int top_local = min(int(height) - job.chunk_world_origin.y, CHUNK_SIZE - 1);
             uint16_t top = top_local < 0 ? uint16_t(0xFFFF) : uint16_t(top_local);
             mirror_heightmap_ring[uint(job.mirror_ring_slot) * 1024 + uint(thread_id.x) | (uint(local_z) << 5)] = top;
         }

@@ -265,12 +265,13 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 	hm_base := int(ring_slot) * CHUNK_SIZE * CHUNK_SIZE
 	copy(page.heights[:], voxel_gpu.mirror_heightmap_ring_mapped[hm_base:hm_base + CHUNK_SIZE * CHUNK_SIZE])
 
-	// ring -> página (y-contíguo u16) + reconstrução da bitmask de sólidos.
+	// ring -> página (y-contíguo u16) + reconstrução da bitmask de sólidos
+	// (registry: planta ocupa o voxel mas não é sólida — VS-14 emenda).
 	base := int(ring_slot) * CHUNK_VOXEL_COUNT
 	src := voxel_gpu.mirror_export_ring_mapped[base:base + CHUNK_VOXEL_COUNT]
 	for id, i in src {
 		page.ids[i] = id
-		mirror_bit_write(page.solid[:], u32(i), id != 0)
+		mirror_bit_write(page.solid[:], u32(i), block_is_solid(u32(id)))
 	}
 	if len(page.rejected_log) > 0 {
 
@@ -461,12 +462,15 @@ mirror_page_apply :: proc(page: ^MirrorChunkPage, world_voxel: [3]i32, block_id:
 	_, local := mirror_chunk_and_local(world_voxel)
 	index := mirror_index_from_local(local)
 	page.ids[index] = u16(block_id)
-	mirror_bit_write(page.solid[:], index, block_id != 0)
+	solid := block_is_solid(block_id)
+	mirror_bit_write(page.solid[:], index, solid)
 
 	// VS-13 (REQ-MIR-03): o journal mantém o heightmap da coluna (índice
-	// z-contíguo x|z<<5 — NÃO aplicar mirror_index_from_local aqui).
+	// z-contíguo x|z<<5 — NÃO aplicar mirror_index_from_local aqui). VS-14
+	// (emenda 2026-11-07): o topo é SÓLIDO — planta acima da superfície não
+	// move o heights (colocar/remover planta é no-op para a coluna).
 	column := u32(local.x) | (u32(local.z) << 5)
-	if block_id != 0 {
+	if solid {
 		// colocar sólido acima do topo — ou em coluna vazia (0xFFFF) — sobe
 		if page.heights[column] == 0xFFFF || u32(local.y) > u32(page.heights[column]) {
 			page.heights[column] = u16(local.y)
@@ -483,8 +487,8 @@ mirror_page_apply :: proc(page: ^MirrorChunkPage, world_voxel: [3]i32, block_id:
 		}
 		page.heights[column] = new_top
 	}
-	// demais casos (sólido em/abaixo do topo, remoção abaixo do topo):
-	// heights inalterado
+	// demais casos (sólido em/abaixo do topo, planta acima do topo,
+	// remoção abaixo do topo): heights inalterado
 }
 
 @(private)

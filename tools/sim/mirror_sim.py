@@ -13,7 +13,19 @@ coluna vertical contigua de 64 B, reserva/liberacao do ring com disciplina
 pendente/em voo, conclusao vencida por (coord, geracao), export_only sem
 pack, replay de pendencias na materializacao, paridade GPU<->mirror em
 163.840 voxels (5 chunks) com rejeicao reconciliada e API tri-state.
+
+Emenda 2026-11-07 (VS-14): bitmask `solid` e heightmap passam a tratar a
+planta (id 4) como NÃO-sólida — ocupa o voxel (ids preservados, paridade
+GPU intacta) mas não entra no bitmask de sólidos nem move o heights.
 """
+
+PLANT_BLOCK_ID = 4
+
+
+def block_is_solid(block_id):
+    """Espelha block_is_solid (voxel_assets.odin): solidez é do tipo de
+    bloco — planta (id 4) ocupa o voxel sem ser sólida."""
+    return block_id != 0 and block_id != PLANT_BLOCK_ID
 
 import os
 import sys
@@ -85,22 +97,26 @@ class MirrorPage:
         _chunk, local = chunk_and_local(world_voxel)
         idx = mirror_index(local)
         self.ids[idx] = block_id
-        if block_id != 0:
+        if block_is_solid(block_id):
             self.solid[idx >> 5] |= 1 << (idx & 31)
         else:
             self.solid[idx >> 5] &= ~(1 << (idx & 31)) & 0xFFFFFFFF
         self.apply_height(local, block_id)
 
     def apply_height(self, local, block_id):
-        """VS-13 (REQ-MIR-03): journal mantém o heightmap da coluna."""
+        """VS-13 (REQ-MIR-03): journal mantém o heightmap da coluna. Emenda
+        2026-11-07: o topo é SÓLIDO — planta acima da superfície não move o
+        heights (nem ao colocar nem ao remover)."""
         column = local[0] | (local[2] << 5)
         height = self.heights[column]
-        if block_id != 0:
+        if block_is_solid(block_id):
             # colocar sólido acima do topo (ou em coluna vazia) sobe a altura
             if local[1] > height or height == 0xFFFF:
                 self.heights[column] = local[1]
         else:
-            # remover o bloco do topo: rescan da coluna (32 leituras)
+            # remover o bloco do topo: rescan da coluna (32 leituras) — só
+            # acontece quando o topo registrado é este voxel (sólido removido
+            # ou planta que substituiu o topo sólido no mesmo y)
             if height != 0xFFFF and local[1] == height:
                 new_top = 0xFFFF
                 for ly in range(local[1] - 1, -1, -1):
@@ -170,7 +186,7 @@ def mirror_materialize(mirror, page, worldgen_ids, worldgen_heights=None):
     """Copia o export (worldgen) e faz o replay das pendências retidas."""
     for i, block_id in enumerate(worldgen_ids):
         page.ids[i] = block_id
-        if block_id != 0:
+        if block_is_solid(block_id):
             page.solid[i >> 5] |= 1 << (i & 31)
         else:
             page.solid[i >> 5] &= ~(1 << (i & 31)) & 0xFFFFFFFF
@@ -181,7 +197,7 @@ def mirror_materialize(mirror, page, worldgen_ids, worldgen_heights=None):
         for z in range(CHUNK_SIZE):
             for x in range(CHUNK_SIZE):
                 for y in range(CHUNK_SIZE - 1, -1, -1):
-                    if page.ids[y | (z << 5) | (x << 10)] != 0:
+                    if block_is_solid(page.ids[y | (z << 5) | (x << 10)]):
                         worldgen_heights[x | (z << 5)] = y
                         break
     page.heights = list(worldgen_heights)
@@ -209,7 +225,7 @@ def mirror_reconcile_rejections(mirror, page, worldgen_ids, rejected, worldgen_h
     page.applied_log = []
     for i, block_id in enumerate(worldgen_ids):
         page.ids[i] = block_id
-        if block_id != 0:
+        if block_is_solid(block_id):
             page.solid[i >> 5] |= 1 << (i & 31)
         else:
             page.solid[i >> 5] &= ~(1 << (i & 31)) & 0xFFFFFFFF
@@ -219,7 +235,7 @@ def mirror_reconcile_rejections(mirror, page, worldgen_ids, rejected, worldgen_h
         for z in range(CHUNK_SIZE):
             for x in range(CHUNK_SIZE):
                 for y in range(CHUNK_SIZE - 1, -1, -1):
-                    if page.ids[y | (z << 5) | (x << 10)] != 0:
+                    if block_is_solid(page.ids[y | (z << 5) | (x << 10)]):
                         worldgen_heights[x | (z << 5)] = y
                         break
     page.heights = list(worldgen_heights)
@@ -366,8 +382,8 @@ def scenario_materialize_replay():
     (id_b, solid_b), ok_b = voxel_get(mirror, (6, 0, 6))
     check("replay: última escrita vence na materialização", ok_a and id_a == 3 and solid_a)
     check("replay: remoção aplicada sobre worldgen", ok_b and id_b == 0 and not solid_b)
-    check("bitmask consistente com ids",
-          all(((page.solid[i >> 5] >> (i & 31)) & 1) == (1 if page.ids[i] != 0 else 0) for i in range(0, CHUNK_VOXEL_COUNT, 97)))
+    check("bitmask consistente com ids (sólido por registry)",
+          all(((page.solid[i >> 5] >> (i & 31)) & 1) == (1 if block_is_solid(page.ids[i]) else 0) for i in range(0, CHUNK_VOXEL_COUNT, 97)))
     check("edit_seq avança na materialização", page.edit_seq >= 1)
 
 
@@ -481,18 +497,18 @@ def scenario_journal_heightmap():
     ok, h = mirror_height_get(mirror, (0, 1, 0), 3, 3)
     check("chunk de ar + journal: altura = y", ok and h == 20)
 
-    # heightmap consistente com ids em toda página
+    # heightmap consistente com ids em toda página: topo = último SÓLIDO
     consistent = True
     for z in range(CHUNK_SIZE):
         for x in range(CHUNK_SIZE):
             expect = 0xFFFF
             for y in range(CHUNK_SIZE - 1, -1, -1):
-                if page.ids[mirror_index((x, y, z))] != 0:
+                if block_is_solid(page.ids[mirror_index((x, y, z))]):
                     expect = y
                     break
             if page.heights[x | (z << 5)] != expect:
                 consistent = False
-    check("heights == topo derivado de ids (todas as colunas)", consistent)
+    check("heights == topo sólido derivado de ids (todas as colunas)", consistent)
 
 
 def scenario_parity_and_reconciliation():
@@ -550,12 +566,12 @@ def scenario_parity_and_reconciliation():
             break
     check(f"paridade bit a bit GPU==mirror ({total} voxels, 3 flushes x 200 edições)", parity and total == 163840)
 
-    # bitmask solid == (id != 0) em toda página
+    # bitmask solid == sólido por registry (id != 0 e não-planta) em toda página
     solid_ok = all(
-        ((pages[chunk].solid[i >> 5] >> (i & 31)) & 1) == (1 if pages[chunk].ids[i] != 0 else 0)
+        ((pages[chunk].solid[i >> 5] >> (i & 31)) & 1) == (1 if block_is_solid(pages[chunk].ids[i]) else 0)
         for chunk in coords for i in range(0, CHUNK_VOXEL_COUNT, 13)
     )
-    check("bitmask de sólidos paritário", solid_ok)
+    check("bitmask de sólidos paritário (planta excluída)", solid_ok)
 
     # rejeição pela GPU (chunk em overflow): mirror aplica otimista e diverge;
     # reconciliação reexporta e remove as rejeitadas
@@ -590,6 +606,54 @@ def scenario_parity_and_reconciliation():
           all(pair not in pages[victim].applied_log for pair in rejected_pairs))
 
 
+def scenario_plant_nonsolid():
+    print("[cenario] VS-14 emenda: planta nao-solido no mirror (bitmask + heights)")
+    mirror = MirrorManager()
+    page = mirror.page_acquire((0, 0, 0))
+    # terreno: coluna (4,z) com topo sólido em y=10
+    worldgen = [0] * CHUNK_VOXEL_COUNT
+    for z in range(CHUNK_SIZE):
+        for y in range(0, 11):
+            worldgen[mirror_index((4, y, z))] = 2
+    ring_heights = [0xFFFF] * (CHUNK_SIZE * CHUNK_SIZE)
+    for z in range(CHUNK_SIZE):
+        ring_heights[4 | (z << 5)] = 10
+    mirror_materialize(mirror, page, worldgen, ring_heights)
+
+    # colocar planta acima do topo: ids registram, bitmask sólida não, heights não move
+    mirror_journal_apply(mirror, (0, 0, 0), (4, 11, 0), PLANT_BLOCK_ID)
+    (bid, solid), ok = voxel_get(mirror, (4, 11, 0))
+    check("planta aplicada: id registrado", ok and bid == PLANT_BLOCK_ID)
+    check("planta não é sólida na amostra", ok and not solid)
+    check("bitmask sólida exclui a planta",
+          not ((page.solid[mirror_index((4, 11, 0)) >> 5]
+                >> (mirror_index((4, 11, 0)) & 31)) & 1))
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("colocar planta acima do topo: heights inalterado", ok and h == 10)
+
+    # remover a planta: nada muda (heights nem rescan)
+    mirror_journal_apply(mirror, (0, 0, 0), (4, 11, 0), 0)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    (bid, solid), ok_s = voxel_get(mirror, (4, 11, 0))
+    check("remover planta: heights inalterado", ok and h == 10)
+    check("remover planta: voxel vira ar", ok_s and bid == 0 and not solid)
+
+    # planta SUBSTITUINDO o topo sólido no mesmo y: heights rescan para baixo
+    mirror_journal_apply(mirror, (0, 0, 0), (4, 10, 0), PLANT_BLOCK_ID)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("planta no y do topo sólido: heights rescan para y=9", ok and h == 9)
+    # restaurar o topo sólido: heights volta
+    mirror_journal_apply(mirror, (0, 0, 0), (4, 10, 0), 2)
+    ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
+    check("restaurar topo sólido: heights volta a y=10", ok and h == 10)
+
+    # bitmask da coluna com planta == bitmask da coluna só de terra
+    col_solid = [(page.solid[mirror_index((4, y, 0)) >> 5] >> (mirror_index((4, y, 0)) & 31)) & 1
+                 for y in range(CHUNK_SIZE)]
+    check("bitmask sólida da coluna == terra apenas (planta excluída)",
+          col_solid == [1] * 11 + [0] * 21)
+
+
 def main():
     scenario_indexing()
     scenario_ring_discipline()
@@ -597,6 +661,7 @@ def main():
     scenario_tri_state()
     scenario_export_only_no_pack()
     scenario_journal_heightmap()
+    scenario_plant_nonsolid()
     scenario_parity_and_reconciliation()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)

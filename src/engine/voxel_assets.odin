@@ -58,6 +58,8 @@ assets_json_block :: struct {
 	texture:    string `json:"texture"`,
 	// VS-14 (REQ-PLT-01): opcional; tipo errado falha o unmarshal (fatal).
 	transparent: bool `json:"transparent"`,
+	// VS-14 (emenda): opcional, default true; false marca NON_SOLID (planta).
+	solid: Maybe(bool) `json:"solid"`,
 }
 
 asset_tex_dim :: struct {
@@ -105,6 +107,17 @@ assets_load :: proc() {
 		voxel_assets.texture_layers,
 		len(doc.blocks),
 	)
+}
+
+// VS-14 (emenda 2026-11-07): solidez é propriedade do tipo de bloco. Com
+// assets, consulta o registry carregado; sem assets, a regra built-in
+// (ids 1..3 sólidos, 4 = planta não-sólida).
+block_is_solid :: proc "contextless" (block_id: u32) -> bool {
+	if block_id == 0 do return false
+	if voxel_assets.loaded {
+		return voxel_assets.registry[block_id].flags & BLOCK_DEFINITION_FLAG_NON_SOLID == 0
+	}
+	return block_id != 4
 }
 
 @(private)
@@ -360,11 +373,15 @@ assets_build_blocks :: proc(doc: ^assets_json_doc) {
 		if !texture_ok {
 			assets_fatal("{}: textura '{}' não encontrada", ctx, block.texture)
 		}
+		flags: u32 = block.transparent ? BLOCK_DEFINITION_FLAG_TRANSPARENT : 0
+		if block.solid != nil && block.solid.? == false {
+			flags |= BLOCK_DEFINITION_FLAG_NON_SOLID
+		}
 		voxel_assets.registry[block.id] = BlockDefinition {
 			mesh_template_index  = mesh_index_value,
 			albedo_texture_index = u32(texture_index),
 			pbr_texture_index    = 0, // dummy PBR
-			flags                = block.transparent ? BLOCK_DEFINITION_FLAG_TRANSPARENT : 0,
+			flags                = flags,
 		}
 		voxel_assets.block_names[block.id] = strings.clone(block.name, context.allocator)
 	}

@@ -72,7 +72,7 @@ graph TD
 - ADR-U1: VS-11 migra o albedo de triplanar para UVs por vértice dos templates (binding 19 template_uvs, MeshVertex +TEXCOORD0, sentinela (-1,-1) → fallback triplanar); orçamento mesh shader inalterado; REQ-SHADE-03 da VS-02 emendada.
 - ADR-A1: VS-12 carrega blocos/malhas/texturas de um JSON único no startup — malhas reaproveitáveis por nome, PNG única por bloco em camadas de um Texture2DArray (mesma dimensão exigida), saída formatada nos contratos atuais do pipeline (zero mudança de shader); ausente → fallback built-ins + paleta.
 - ADR-G1: VS-13 calcula o heightmap 32×32 uma única vez por chunk (groupshared, threads y-local 0) com estados de ruído 1×/thread-de-coluna (8× menos avaliações — medido; saída bit a bit idêntica) e o exporta ao mirror (binding 20 + campo na ChunkPage, journal do E1 mantém; chão O(1)).
-- ADR-P1: VS-14 fecha o backlog B6 com alpha-test cutout (discard condicional à flag `transparente`, pipeline inalterada, CULL_MODE_NONE permanece) e introduz o bloco planta (id 4, malha em X via assets) com spawn por hash determinístico da coluna (x,z), 10% de probabilidade, heightmap exportando altura+1.
+- ADR-P1: VS-14 fecha o backlog B6 com alpha-test cutout (discard condicional à flag `transparente`, pipeline inalterada, CULL_MODE_NONE permanece) e introduz o bloco planta (id 4, malha em X via assets) com spawn por hash determinístico da coluna (x,z), 10% de probabilidade. Emenda 2026-11-07 (pós-validação): a planta é não-sólida — `NON_SOLID` bit 1 de `BlockDefinition.flags` (JSON `"solid": false`); o heightmap exporta o topo sólido (`altura`) e o bitmask `solid` do mirror exclui plantas.
 
 ## Dependências transversais a registrar nas specs
 

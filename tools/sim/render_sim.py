@@ -333,7 +333,19 @@ def fragment_uses_triplanar(uv):
 # --- VS-14 (REQ-SIM-11): alpha-test cutout no fragment ---
 
 BLOCK_DEFINITION_FLAG_TRANSPARENT = 1  # bit 0 de BlockDefinition.flags
+# VS-14 (emenda 2026-11-07): bit 1 — ocupa o voxel mas não é sólido (planta).
+BLOCK_DEFINITION_FLAG_NON_SOLID = 2
 ALPHA_TEST_THRESHOLD = 0.5  # limiar constante do shader (REQ-PLT-01)
+
+
+def block_is_solid(block_id, registry):
+    """Espelha block_is_solid (common.slang): id 0 nunca é sólido; bloco com
+    bit NON_SOLID (planta) ocupa o voxel sem ser sólido."""
+    if block_id == 0:
+        return False
+    if registry is None:
+        return True  # cenários legados: ocupação == solidez
+    return (registry[block_id].flags & BLOCK_DEFINITION_FLAG_NON_SOLID) == 0
 
 
 def fragment_survives_alpha_test(block_flags, albedo_alpha):
@@ -376,9 +388,10 @@ TEMPLATES = {
 
 
 class BlockDef:
-    def __init__(self, template_index, rotation=0):
+    def __init__(self, template_index, rotation=0, flags=0):
         self.template_index = template_index
         self.rotation = rotation
+        self.flags = flags
 
 
 # --- chunks simulados: slot -> {dense, origin, neighbors} ---
@@ -396,9 +409,10 @@ def is_solid(chunks, slot, coord):
     return chunks[slot]["dense"][dense_index_from_coordinate(coord)] != 0
 
 
-def is_voxel_solid(chunks, slot, coord, neighbor_slots):
+def is_voxel_solid(chunks, slot, coord, neighbor_slots, registry=None):
     if all(0 <= c < CHUNK_SIZE for c in coord):
-        return is_solid(chunks, slot, coord)
+        bid = chunks[slot]["dense"][dense_index_from_coordinate(coord)]
+        return block_is_solid(bid, registry)
     c = list(coord)
     neighbor_slot = NEIGHBOR_SLOT_INVALID
     if c[0] < 0:
@@ -417,17 +431,18 @@ def is_voxel_solid(chunks, slot, coord, neighbor_slots):
         return False
     if not all(0 <= v < CHUNK_SIZE for v in c):
         return False
-    return is_solid(chunks, neighbor_slot, tuple(c))
+    bid = chunks[neighbor_slot]["dense"][dense_index_from_coordinate(tuple(c))]
+    return block_is_solid(bid, registry)
 
 
-def compute_visible_face_mask(chunks, slot, coord, neighbor_slots, camera_position):
+def compute_visible_face_mask(chunks, slot, coord, neighbor_slots, camera_position, registry=None):
     origin = chunks[slot]["origin"]
     voxel_min_world = tuple(origin[i] + coord[i] for i in range(3))
     face_mask = 0
     for face_index in range(6):
         n = FACE_NORMALS[face_index]
         neighbor_coord = tuple(coord[i] + n[i] for i in range(3))
-        if is_voxel_solid(chunks, slot, neighbor_coord, neighbor_slots):
+        if is_voxel_solid(chunks, slot, neighbor_coord, neighbor_slots, registry):
             continue
         axis = face_index >> 1
         is_positive = (face_index & 1) == 0
@@ -510,13 +525,50 @@ def read_brick_occupancy_b2(chunks, slot, brick_coord, neighbor_slots):
 FULL_BRICK = (1 << VOXELS_PER_BRICK) - 1
 
 
-def is_brick_occluded(chunks, slot, brick_coord, neighbor_slots):
-    """Brick cheio com os 6 bricks vizinhos cheios: nenhum voxel tem face
-    exposta (independente da camera), entao o grupo nao emitiria geometria."""
+def brick_voxels_all_solid(chunks, slot, brick_coord, registry=None):
+    """Espelha brick_voxels_all_solid (common.slang): decodifica os 32 ids do
+    brick e exige todos sólidos — planta empilhada por edição preenche o
+    occupancy sem ser sólida."""
+    for bit in range(VOXELS_PER_BRICK):
+        lc = local_coordinate_from_bit_index(bit)
+        coord = (brick_coord[0] * 4 + lc[0], brick_coord[1] * 2 + lc[1], brick_coord[2] * 4 + lc[2])
+        if not block_is_solid(chunks[slot]["dense"][dense_index_from_coordinate(coord)], registry):
+            return False
+    return True
+
+
+def is_brick_occluded(chunks, slot, brick_coord, neighbor_slots, registry=None):
+    """Brick cheio de SÓLIDOS com os 6 bricks vizinhos cheios de sólidos:
+    nenhum voxel tem face exposta (independente da camera), entao o grupo nao
+    emitiria geometria. Vizinho ausente ou com planta => nao culpado."""
+    if not brick_voxels_all_solid(chunks, slot, brick_coord, registry):
+        return False
     for face in range(6):
         n = FACE_NORMALS[face]
         nb = (brick_coord[0] + n[0], brick_coord[1] + n[1], brick_coord[2] + n[2])
-        if read_brick_occupancy_b2(chunks, slot, nb, neighbor_slots) != FULL_BRICK:
+        if all(0 <= nb[i] < BRICKS_PER_CHUNK_AXIS[i] for i in range(3)):
+            n_slot, n_bc = slot, nb
+        else:
+            c = list(nb)
+            neighbor_slot = NEIGHBOR_SLOT_INVALID
+            if c[0] < 0:
+                neighbor_slot = neighbor_slots[1]; c[0] += BRICKS_PER_CHUNK_AXIS[0]
+            elif c[0] >= BRICKS_PER_CHUNK_AXIS[0]:
+                neighbor_slot = neighbor_slots[0]; c[0] -= BRICKS_PER_CHUNK_AXIS[0]
+            elif c[1] < 0:
+                neighbor_slot = neighbor_slots[3]; c[1] += BRICKS_PER_CHUNK_AXIS[1]
+            elif c[1] >= BRICKS_PER_CHUNK_AXIS[1]:
+                neighbor_slot = neighbor_slots[2]; c[1] -= BRICKS_PER_CHUNK_AXIS[1]
+            elif c[2] < 0:
+                neighbor_slot = neighbor_slots[5]; c[2] += BRICKS_PER_CHUNK_AXIS[2]
+            else:
+                neighbor_slot = neighbor_slots[4]; c[2] -= BRICKS_PER_CHUNK_AXIS[2]
+            if neighbor_slot == NEIGHBOR_SLOT_INVALID:
+                return False
+            n_slot, n_bc = neighbor_slot, tuple(c)
+        if brick_occupancy_word(chunks, n_slot, n_bc) != FULL_BRICK:
+            return False
+        if not brick_voxels_all_solid(chunks, n_slot, n_bc, registry):
             return False
     return True
 
@@ -551,7 +603,7 @@ def brick_aabb(origin, brick_idx):
 
 
 def build_work_queue(chunks, visible_slots, frustum_planes=None,
-                     visible_capacity=MAXIMUM_VISIBLE_CHUNKS):
+                     visible_capacity=MAXIMUM_VISIBLE_CHUNKS, registry=None):
     """Espelha o builder: 1 workgroup por chunk visivel; append atomico global
     (a ordem entre chunks e corrida — aqui serializamos na ordem da lista).
     Com frustum_planes (VS-06): early-out de chunk e culling por brick na
@@ -577,9 +629,10 @@ def build_work_queue(chunks, visible_slots, frustum_planes=None,
                 lo, hi = brick_aabb(chunk["origin"], brick_idx)
                 if aabb_outside_frustum(lo, hi, frustum_planes):
                     continue
-            # Culling de brick ocluso: cheio + 6 vizinhos cheios = zero faces.
+            # Culling de brick ocluso: cheio de sólidos + 6 vizinhos cheios de
+            # sólidos = zero faces.
             if occupancy == FULL_BRICK and is_brick_occluded(
-                chunks, slot, brick_coordinate_from_index(brick_idx), chunk["neighbors"]
+                chunks, slot, brick_coordinate_from_index(brick_idx), chunk["neighbors"], registry
             ):
                 continue
             subdivision = chunk["subdivisions"][brick_idx]
@@ -620,7 +673,7 @@ def mesh_group_counts(item, chunks, visible_slots, registry, camera_position):
             continue
         face_mask = 0
         if tmpl.has_flush_faces:
-            face_mask = compute_visible_face_mask(chunks, slot, coord, chunk["neighbors"], camera_position)
+            face_mask = compute_visible_face_mask(chunks, slot, coord, chunk["neighbors"], camera_position, registry)
         t_cnt = sum(1 for tri in tmpl.packed if triangle_survives_culling(tri, definition.rotation, face_mask))
         if t_cnt > 0:
             total_v += tmpl.vertex_count
@@ -1509,6 +1562,63 @@ def scenario_plant_cutout():
           fragment_survives_alpha_test(2, 0.1))
 
 
+def scenario_plant_nonsolid():
+    print("[cenario] VS-14 emenda: planta nao-solido (culling de faces e oclusao)")
+    registry = {1: BlockDef(1), 4: BlockDef(2, flags=BLOCK_DEFINITION_FLAG_NON_SOLID)}
+
+    # bloco solido adjacente a planta emite a face voltada para ela
+    def world(c):
+        if c == (10, 10, 10):
+            return 1  # pedra
+        if c == (11, 10, 10):
+            return 4  # planta
+        return 0
+    chunks = {0: make_chunk((0, 0, 0), world)}
+    pack_subdivisions(chunks[0], registry)
+    # camera em +X: a face +X do solido olha para a planta — nao-solido, emite
+    mask = compute_visible_face_mask(chunks, 0, (10, 10, 10), chunks[0]["neighbors"],
+                                     (1e6, 16, 16), registry)
+    check("solido adjacente a planta: face +X presente", (mask & 1) == 1)
+    # camera em -X: a face -X do solido olha para ar — tambem emite (regressao)
+    mask = compute_visible_face_mask(chunks, 0, (10, 10, 10), chunks[0]["neighbors"],
+                                     (-1e6, 16, 16), registry)
+    check("solido adjacente a ar: face -X presente", (mask & 2) == 2)
+    # com a regra antiga (ocupado == solido) a face +X seria suprimida:
+    mask_old = compute_visible_face_mask(chunks, 0, (10, 10, 10), chunks[0]["neighbors"],
+                                         (1e6, 16, 16))
+    check("regressao antiga teria suprimido a face (ocupado == solido)", (mask_old & 1) == 0)
+
+    # a propria planta continua renderizando (ocupa voxel, template X, tag 7)
+    chunks = {0: make_chunk((0, 0, 0), lambda c: 4 if c == (11, 10, 10) else 0)}
+    pack_subdivisions(chunks[0], registry)
+    plant_brick = brick_index_from_coordinate((11 // 4, 10 // 2, 10 // 4))
+    v, t = mesh_group_counts(pack_work_item(0, plant_brick, 0, 0), chunks, [0], registry, (1e6, 16, 16))
+    check("planta renderiza (ocupa voxel, template X): 8v/4t no grupo", (v, t) == (8, 4))
+
+    # brick CHEIO DE PLANTAS (ocupancy 0xFFFFFFFF) nao e ocluso — nem isolado
+    # nem cercado por bricks cheios de plantas
+    chunks = {0: make_chunk((0, 0, 0), lambda c: 4)}
+    pack_subdivisions(chunks[0], registry)
+    check("brick cheio de plantas isolado: nao ocluso",
+          not is_brick_occluded(chunks, 0, (4, 8, 4), chunks[0]["neighbors"], registry))
+    chunks[1] = make_chunk((32, 0, 0), lambda c: 4)
+    pack_subdivisions(chunks[1], registry)
+    chunks[0]["neighbors"][0] = 1
+    chunks[1]["neighbors"][1] = 0
+    check("brick de plantas com vizinho de plantas: nao ocluso",
+          not is_brick_occluded(chunks, 0, (7, 8, 4), chunks[0]["neighbors"], registry))
+
+    # controle: brick cheio de cubos continua ocluso na mesma geometria
+    registry_cube = {1: BlockDef(1)}
+    chunks = {0: make_chunk((0, 0, 0), lambda c: 1), 1: make_chunk((32, 0, 0), lambda c: 1)}
+    for c in chunks.values():
+        pack_subdivisions(c, registry_cube)
+    chunks[0]["neighbors"][0] = 1
+    chunks[1]["neighbors"][1] = 0
+    check("controle: brick cheio de cubos com vizinho cheio: ocluso",
+          is_brick_occluded(chunks, 0, (7, 8, 4), chunks[0]["neighbors"], registry_cube))
+
+
 def main():
     scenario_budget()
     scenario_selection()
@@ -1524,6 +1634,7 @@ def main():
     scenario_config()
     scenario_uvs()
     scenario_plant_cutout()
+    scenario_plant_nonsolid()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
 

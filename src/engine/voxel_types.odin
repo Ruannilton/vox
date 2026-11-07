@@ -32,6 +32,9 @@ CULL_FACE_NEVER :: 7
 // VS-14 (REQ-PLT-01): bit 0 de BlockDefinition.flags — bloco com recorte
 // alpha (folhagem); o fragment descarta albedo.a < 0.5. Espelha common.slang.
 BLOCK_DEFINITION_FLAG_TRANSPARENT :: 1
+// VS-14 (emenda 2026-11-07): bit 1 — bloco ocupa o voxel mas não é sólido
+// (planta). Espelha common.slang.
+BLOCK_DEFINITION_FLAG_NON_SOLID :: 2
 
 // --- Renderização
 // VS-08: capacidades da fila/visíveis não são constantes de compilação — vêm
@@ -146,7 +149,7 @@ MirrorPageState :: enum u8 {
 // Amostra de consulta tri-state (gameplay).
 VoxelSample :: struct {
 	block_id: u16,
-	solid:    bool, // derivado de id != 0 — mesma regra da ocupação na GPU
+	solid:    bool, // VS-14 emenda: derivado do registry (bit NON_SOLID)
 }
 
 MirrorChunkPage :: struct {
@@ -157,7 +160,7 @@ MirrorChunkPage :: struct {
 	pending:      [dynamic]VoxelEditRequest,
 	applied_log:  [dynamic]VoxelEditRequest,
 	rejected_log: [dynamic]VoxelEditRequest,
-	solid:        [CHUNK_VOXEL_COUNT / 32]u32, // 4 KiB: derivado de id != 0
+	solid:        [CHUNK_VOXEL_COUNT / 32]u32, // 4 KiB: sólido por registry (NON_SOLID exclui planta)
 	ids:          [CHUNK_VOXEL_COUNT]u16, // 64 KiB densos
 	// VS-13 (REQ-MIR-02): heightmap da coluna — índice z-contíguo x|z<<5 (NÃO
 	// é o índice y-contíguo do ids); y do sólido mais alto, 0xFFFF = coluna

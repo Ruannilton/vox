@@ -159,7 +159,7 @@ void build_brick_mesh(
 
         if (tmpl.triangle_count > 0u) {
             if ((tmpl.flags & TEMPLATE_FLAG_HAS_FLUSH_FACES) != 0u) {
-                face_mask = compute_visible_face_mask(slot, voxel_coord,
+                face_mask = compute_visible_face_mask(slot, header, voxel_coord,
                     chunk.chunk_world_origin, push_constants.camera_position,
                     chunk.neighbor_slots);
             }

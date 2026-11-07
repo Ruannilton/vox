@@ -73,6 +73,13 @@ CASES = {
         {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
         {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "transparent": "sim"},
     ]),
+    # VS-14 (emenda 2026-11-07): 'solid' com tipo errado (planta não-sólida)
+    "solid_tipo_errado": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama"},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": "não"},
+    ]),
     "textura_planta_ausente": doc(textures=[
         {"name": "grama", "path": "textures/grama.png"},
         {"name": "terra", "path": "textures/terra.png"},

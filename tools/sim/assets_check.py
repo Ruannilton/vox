@@ -215,6 +215,12 @@ def validate(doc, base_dir):
         transparent = block.get("transparent")
         if transparent is not None and not isinstance(transparent, bool):
             errors.append(f"{where}: campo 'transparent' deve ser booleano (recebido {transparent!r})")
+        # VS-14 (emenda 2026-11-07): 'solid' opcional (default true); false
+        # marca NON_SOLID (planta). Separado de 'transparent' (vidro futuro:
+        # transparente mas sólido).
+        solid = block.get("solid")
+        if solid is not None and not isinstance(solid, bool):
+            errors.append(f"{where}: campo 'solid' deve ser booleano (recebido {solid!r})")
         bid = block.get("id")
         if not isinstance(bid, int) or isinstance(bid, bool):
             errors.append(f"{where}: campo 'id' ausente ou malformado (esperado inteiro)")
