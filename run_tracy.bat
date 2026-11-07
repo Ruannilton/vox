@@ -18,7 +18,7 @@ if exist ".\tools\tracy\tracy-profiler.exe" (
 ) else (
     echo UI Tracy nao encontrada em tools\tracy\tracy-profiler.exe.
     echo Baixe o pacote Windows de https://github.com/wolfpld/tracy/releases/tag/v0.14.1
-    echo e extraia para tools\tracy\ — ou abra a UI manualmente e de Connect.
+    echo e extraia para tools\tracy\ -- ou abra a UI manualmente e de Connect.
     echo.
 )
 
