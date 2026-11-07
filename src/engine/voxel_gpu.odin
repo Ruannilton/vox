@@ -731,11 +731,25 @@ voxel_gpu_destroy :: proc() {
 debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	coord: ChunkCoordinate
 	record: ChunkRecord
+	page: ^MirrorChunkPage
 	found := false
+	// Preferimos um chunk materializado no mirror (página MATERIALIZED): a
+	// checagem de conteúdo compara o readback packed contra o grid denso u16
+	// do mirror (mesmo scratch GPU, mesmo conteúdo — ver bloco abaixo).
 	for c, r in ve.active_chunks {
-		if r.state != .GENERATING && c.y * CHUNK_SIZE <= 1 && (c.y + 1) * CHUNK_SIZE > 0 {
-			coord, record, found = c, r, true
+		p, ok := ve.mirror.pages[c]
+		if r.state != .GENERATING && ok && p.state == .MATERIALIZED && c.y * CHUNK_SIZE <= 1 && (c.y + 1) * CHUNK_SIZE > 0 {
+			coord, record, page, found = c, r, p, true
 			break
+		}
+	}
+	if !found {
+		for c, r in ve.active_chunks {
+			p, ok := ve.mirror.pages[c]
+			if r.state != .GENERATING && ok && p.state == .MATERIALIZED {
+				coord, record, page, found = c, r, p, true
+				break
+			}
 		}
 	}
 	if !found {
@@ -904,44 +918,65 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 
 	errors := 0
 	solid := 0
-	for y in 0 ..< CHUNK_SIZE {
-		for z in 0 ..< CHUNK_SIZE {
-			for x in 0 ..< CHUNK_SIZE {
-				brick_idx := x / 4 + 8 * (z / 4 + 8 * (y / 2))
-				bit_idx := x % 4 + 4 * (z % 4 + 4 * (y % 2))
-				palette_index: u32 = 0
-				for plane in 0 ..< header.plane_count {
-					word := planes[int(plane) * BRICKS_PER_CHUNK + brick_idx]
-					palette_index |= ((word >> uint(bit_idx)) & 1) << plane
-				}
-				clamped := min(palette_index, max(header.palette_size, 1) - 1)
-				decoded := header.palette[clamped]
+	dense_checked := false
+	if page != nil && page.state == .MATERIALIZED {
+		// VS-04: a checagem de conteúdo NÃO compara contra um modelo de mundo
+		// CPU (C2/Etapa 7 — a CPU não reproduz o worldgen GPU bit a bit). Em vez
+		// disso, decodifica o readback packed (ocupação/paleta/planos) e compara
+		// voxel a voxel com o grid denso u16 do mirror, ambos derivados do mesmo
+		// scratch GPU. Esse decode é o mesmo espelhado bit a bit por
+		// tools/sim/pack_sim.py offline.
+		dense_checked = true
+		for y in 0 ..< CHUNK_SIZE {
+			for z in 0 ..< CHUNK_SIZE {
+				for x in 0 ..< CHUNK_SIZE {
+					brick_idx := x / 4 + 8 * (z / 4 + 8 * (y / 2))
+					bit_idx := x % 4 + 4 * (z % 4 + 4 * (y % 2))
+					palette_index: u32 = 0
+					for plane in 0 ..< header.plane_count {
+						word := planes[int(plane) * BRICKS_PER_CHUNK + brick_idx]
+						palette_index |= ((word >> uint(bit_idx)) & 1) << plane
+					}
+					clamped := min(palette_index, max(header.palette_size, 1) - 1)
+					decoded := header.palette[clamped]
+					if decoded != 0 do solid += 1
 
-				world_y := coord.y * CHUNK_SIZE + i32(y)
-				truth: u32 = 0
-				if world_y < 0 do truth = 3
-				else if world_y == 0 do truth = 2
-				else if world_y == 1 do truth = 1
-
-				if decoded != truth {
-					errors += 1
+					mi := u32(y) | (u32(z) << 5) | (u32(x) << 10) // índice y-contíguo do mirror
+					if u32(page.ids[mi]) != decoded {
+						errors += 1
+					} else if mirror_bit_test(page.solid[:], mi) != (decoded != 0) {
+						errors += 1
+					}
 				}
-				if decoded != 0 do solid += 1
 			}
 		}
+	} else {
+		// Sem página MATERIALIZED (chunk fora da bolha de simulação): mantém
+		// apenas os invariantes estruturais abaixo (decode×denso coberto por
+		// tools/sim/pack_sim.py; CPU não reproduz worldgen — C2).
+		log.info("DEBUG READBACK: chunk sem página MATERIALIZED no mirror — checagem denso pulada (invariantes estruturais mantidas)")
 	}
 
 	if header.palette[0] != 0 {
 		errors += 1
 		log.errorf("DEBUG READBACK: palette[0] = {} (invariante AR violada)", header.palette[0])
 	}
-	if errors == 0 {
+	if dense_checked {
+		if errors == 0 {
+			log.infof(
+				"DEBUG READBACK OK: chunk {} slot {} — packed == mirror denso ({} voxels, {} sólidos, paleta {}, planos {}, flags {})",
+				coord, slot, CHUNK_VOXEL_COUNT, solid, header.palette_size, header.plane_count, header.flags,
+			)
+		} else {
+			log.errorf("DEBUG READBACK FALHOU: chunk {} slot {} — {} divergências packed×denso", coord, slot, errors)
+		}
+	} else if errors == 0 {
 		log.infof(
-			"DEBUG READBACK OK: chunk {} slot {} — {} voxels decodificados == worldgen ({} sólidos, paleta {}, planos {}, flags {})",
-			coord, slot, CHUNK_VOXEL_COUNT, solid, header.palette_size, header.plane_count, header.flags,
+			"DEBUG READBACK OK: chunk {} slot {} — invariantes estruturais (paleta {}, planos {}, flags {})",
+			coord, slot, header.palette_size, header.plane_count, header.flags,
 		)
 	} else {
-		log.errorf("DEBUG READBACK FALHOU: chunk {} slot {} — {} divergências", coord, slot, errors)
+		log.errorf("DEBUG READBACK FALHOU: chunk {} slot {} — {} divergências estruturais", coord, slot, errors)
 	}
 }
 
