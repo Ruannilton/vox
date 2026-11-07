@@ -52,6 +52,7 @@ VoxelEngine :: struct {
 	retiring_compute_slots:         [dynamic]RetiringComputeSlot,
 	slot_generations:               []u32,
 	last_camera_chunk:              ChunkCoordinate,
+	update_appended_tasks:          int,   // VS-15: tarefas enfileiradas no último update (plot work_items)
 	slots_starved:                  bool,
 	first_update:                   bool,
 	highest_completed_compute_value: u64,
@@ -262,6 +263,7 @@ voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 
 
 voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 	voxel_engine_service_completions(ve)
+	ve.update_appended_tasks = 0
 
 	camera_chunk := chunk_coordinate_from_world(camera_position)
 	if camera_chunk != ve.last_camera_chunk {
@@ -337,6 +339,7 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 			sync.cond_signal(&ve.queue_condition)
 			sync.mutex_unlock(&ve.queue_mutex)
 		}
+		ve.update_appended_tasks = len(new_tasks)
 	}
 
 	for coord, record in ve.active_chunks {

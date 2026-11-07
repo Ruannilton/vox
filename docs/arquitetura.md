@@ -212,3 +212,12 @@ Estados: PENDING_READBACK → (timeline + memcpy + replay pending) → MATERIALI
 O índice consolidado dos itens futuros (bugs, não-escopos de specs e consequências de ADRs) é mantido em **docs/obsidian/tracking/backlog.md**.
 
 Detalhes de implementação, estruturas de memória e contratos de carga estão no documento companheiro: **Manual Técnico do Motor de Voxels**.
+
+## 11. Observabilidade (telemetria VS-05 + Tracy VS-15)
+
+Duas camadas independentes e complementares, ambas aditivas ao pipeline (nenhuma altera sincronização, ordem de submits ou comportamento):
+
+- **VS-05 (base):** telemetria Vulkan/VMA em `src/engine/telemetry.odin` — labels `EXT_debug_utils` nas passagens das duas filas, timestamps GPU com query pools (leitura assíncrona nunca bloqueante), budgets de VRAM por heap (`VK_EXT_memory_budget`), série temporal CSV (500 ms) e snapshot JSON sob demanda (F9) em `bin/telemetry/`. Destino: arquivos; funciona com ou sem Tracy.
+- **VS-15 (Tracy, opt-in):** zones de CPU por fim de escopo (`frame`, `events_drain`, `engine_update`, `frame_wait`, `render_record`, `present` na thread principal; `worker_iteration`, `batch_assemble`, `batch_submit` no worker), `FrameMark` por frame, nomes de thread, `AppInfo` com a config efetiva e plots (`visible_chunks`, `work_items`, `empty_chunks`) coletados só quando a UI está conectada. Ativado exclusivamente por `-define:TRACY_ENABLE=true` (`run_tracy.bat`); com o define desligado (default do `run.bat`) não há import ativo nem dependência de link (`foreign import` condicional em `vendor/tracy/bindings.odin` — desvio do upstream exigido porque o Odin não permite `import` dentro de `when`). Zonas nunca cruzam threads; sem `TRACY_MANUAL_LIFETIME` (flush automático no exit). Sem GPU zones nesta fatia (BLK-33).
+
+Interface única para os pontos instrumentados: `src/engine/tracing.odin` — somente ele referencia o package `tracy`; com o define desligado toda a API compila para no-op inline.

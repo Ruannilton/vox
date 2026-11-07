@@ -12,6 +12,10 @@ Constantes e layouts: src/assets/shaders/common.slang é a fonte única de verda
 5. Orçamento mesh shader 256v/192t garantido por subdivisão — não assumir culling direcional.
 6. Chunk com CHUNK_FLAG_PALETTE_OVERFLOW é somente-leitura.
 7. Layout do mirror é y-contíguo (y|z<<5|x<<10); o scratch GPU é x-contíguo. Não misturar.
+8. Comentários no código devem ser curtos, descritiveis e apenas quando necessário
+9. Ordem de organização do código: imports primeiros, depois constantes, depois structs, depois funções públicas e por ultimo funções privadas
+10. Funções que não são utilizada em outros móudos devem ser privdas, funções que não serão utilizadas em outro arquivo devem ser privadas ao nível de arquivo
+12. Nomes de variáveis sempre legíveis, nada de abreviações
 
 ## Workflow
 - Decisões de arquitetura e criação de requisitos/specs: executadas pelo agente principal (K3.1, thinking high).

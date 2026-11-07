@@ -2,7 +2,7 @@
 id: backlog
 titulo: Backlog consolidado
 tipo: tracking
-ultima_atualizacao: 2026-11-06
+ultima_atualizacao: 2026-11-07
 ---
 
 # Backlog consolidado
@@ -64,7 +64,7 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 | --- | --- | --- | --- |
 | BLK-23 | `VK_KHR_performance_query` (contadores de hardware) | ADR-T1 Opção B | — |
 | BLK-24 | Nsight Aftermath (crash dumps GPU) | ADR-T1 Opção D | — |
-| BLK-25 | SDK externo (Tracy etc.) sobre os pontos de instrumentação; HUD/GUI de telemetria | ADR-T1 / VS-05 não-escopo | Arquivo continua sendo o destino base |
+| BLK-25 | ~~SDK externo (Tracy etc.) sobre os pontos de instrumentação~~ **FECHADO pela VS-15** (ADR-T3 Opção A): Tracy CPU zones opt-in via `-define:TRACY_ENABLE=true` (`run_tracy.bat`); HUD/GUI de telemetria segue em aberto | ADR-T1 / VS-05 não-escopo | Fechado em 2026-11-07; não-escopos da VS-15 viraram BLK-33..36 |
 | BLK-26 | Contadores da VS-10 (empties ativos, slots economizados) no CSV de telemetria | VS-10 questão aberta | — |
 | BLK-27 | Guard permanente "replay ativo ignora input live" (capturas/smokes automatizados movem a câmera ao focar a janela) | ressalva VS-13 | Hoje é contorno manual por roteiro; afeta qualquer smoke com captura |
 | BLK-28 | Corrida de desligamento intermitente (worker × thread principal no teardown) | ressalva VS-13 | Vista 1× em smokes; intermitente |
@@ -72,6 +72,10 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 | BLK-30 | **Alpha-to-coverage** para suavizar o recorte da folhagem | VS-14 não-escopo | Depende de MSAA na pipeline |
 | BLK-31 | **Probabilidade de spawn da planta configurável** (hoje constante 10% no shader) | VS-14 não-escopo | Via `vox.ini`/push constant; exige caminho de config até o generate |
 | BLK-32 | **Heights do mirror vs denso em chunks abaixo de y=0**: o comparador `int`×`uint` do generate faz esses chunks serem ar no denso, mas o export do heightmap grava `min(altura-base, 31)` — coluna reporta topo 31 onde o denso é ar | ressalva VS-14 (achado na validação) | Artefato pré-existente da VS-13; sem impacto em plantas/ACs; alinhar semântica (export replica o comparador) quando o mirror ganhar consumidor de gameplay |
+| BLK-33 | **GPU zones Tracy** (`TracyVkContext` + calibração por fila) | VS-15 não-escopo | Grande superfície: contexto por queue, timestamps de calibração |
+| BLK-34 | **Memory profiling Tracy** (allocator custom do odin-tracy) | VS-15 não-escopo | Integra ao context/allocator do Odin |
+| BLK-35 | **Lock tracking Tracy** (`LockCtx` nos mutexes do streaming) | VS-15 não-escopo | `queue_mutex` é o candidato principal |
+| BLK-36 | **Call stacks Tracy** (`TRACY_CALLSTACK > 0` nas zones) + sampling | VS-15 não-escopo | Cliente recompilado com a flag; só Windows x64 |
 
 ## Regras
 

@@ -4,6 +4,7 @@ package engine
 // O Config global é carregado/validado ANTES de CreateEngine (sem janela em erro
 // fatal); a validação de máquina (REQ-CFG-04) roda após create_vma_allocator.
 
+import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:strconv"
@@ -44,6 +45,24 @@ Config :: struct {
 
 config: Config
 config_path: string // definido pelo parsing de flags da VS-07 (--config)
+
+// VS-15 (REQ-TRC-04): resumo da config efetiva para o AppInfo do Tracy.
+ConfigSummary :: proc() -> string {
+	return fmt.tprintf(
+		"cfg: visao={} geracao={} descarga={} simulacao={} lote={} lotes_em_voo={} vis_cap={} slots={} scratch={} paginas_mirror={}",
+		config.radius_vision,
+		config.radius_generation,
+		config.radius_unload,
+		config.radius_simulation,
+		config.chunks_per_batch,
+		config.batches_in_flight,
+		config.visible_capacity,
+		config.resident_slots,
+		config.scratch_chunks,
+		config.mirror_pages,
+	)
+}
+
 
 // Carga do INI + defaults + derivações + validação (REQ-CFG-01..03); erros
 // fatais saem sem criar janela.

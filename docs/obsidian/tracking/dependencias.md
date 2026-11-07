@@ -21,6 +21,7 @@ graph TD
     VS12[VS-12 — Assets JSON]
     VS13[VS-13 — Heightmap geração/mirror]
     VS14[VS-14 — Plantas alpha-test/spawn]
+    VS15[VS-15 — Tracy profiler]
 
     VS00 --> VS01
     VS01 --> VS02
@@ -36,6 +37,7 @@ graph TD
     VS11 --> VS12
     VS12 --> VS13
     VS13 --> VS14
+    VS14 --> VS15
 ```
 
 ## Registro normativo
@@ -57,6 +59,7 @@ graph TD
 | [[VS-12-assets-json|VS-12]] | VS-11 | — | — |
 | [[VS-13-heightmap-geracao-mirror|VS-13]] | VS-04 | — | — |
 | [[VS-14-plantas-alpha-test-spawn|VS-14]] | VS-12 | — | — |
+| [[VS-15-tracy-profiler|VS-15]] | VS-05 | — | — |
 
 ## Decisões incorporadas
 
@@ -73,6 +76,7 @@ graph TD
 - ADR-A1: VS-12 carrega blocos/malhas/texturas de um JSON único no startup — malhas reaproveitáveis por nome, PNG única por bloco em camadas de um Texture2DArray (mesma dimensão exigida), saída formatada nos contratos atuais do pipeline (zero mudança de shader); ausente → fallback built-ins + paleta.
 - ADR-G1: VS-13 calcula o heightmap 32×32 uma única vez por chunk (groupshared, threads y-local 0) com estados de ruído 1×/thread-de-coluna (8× menos avaliações — medido; saída bit a bit idêntica) e o exporta ao mirror (binding 20 + campo na ChunkPage, journal do E1 mantém; chão O(1)).
 - ADR-P1: VS-14 fecha o backlog B6 com alpha-test cutout (discard condicional à flag `transparente`, pipeline inalterada, CULL_MODE_NONE permanece) e introduz o bloco planta (id 4, malha em X via assets) com spawn por hash determinístico da coluna (x,z), 10% de probabilidade. Emenda 2026-11-07 (pós-validação): a planta é não-sólida — `NON_SOLID` bit 1 de `BlockDefinition.flags` (JSON `"solid": false`); o heightmap exporta o topo sólido (`altura`) e o bitmask `solid` do mirror exclui plantas.
+- ADR-T3: VS-15 integra Tracy v0.14.1 via odin-tracy como opt-in por define (import condicional contorna o link incondicional das bindings; tracy.lib vendored com script de reprodução); zones de CPU, FrameMark, thread names e plots; telemetria VS-05 inalterada.
 
 ## Dependências transversais a registrar nas specs
 

@@ -138,199 +138,238 @@ main :: proc() {
 	// t0 é fixado no fim da inicialização, antes do primeiro PollEvents
 	engine.events_set_t0()
 
+	engine.SetThreadName("main")
+	engine.AppInfo(engine.ConfigSummary())
+	log.infof("Tracy IsConnected()={}", engine.TracingIsConnected())
+
 	log.info("Starting main loop")
 	for !glfw.WindowShouldClose(engine.app.glfwWindow) {
-		free_all(context.temp_allocator)
-		glfw.PollEvents()
+		{
+			engine.ZoneN("frame")
+			free_all(context.temp_allocator)
+			glfw.PollEvents()
 
-		engine.events_replay_feed(engine.events_time_now())
-		engine.events_drain()
-		if engine.events_should_exit_after_replay() {
-			glfw.SetWindowShouldClose(engine.app.glfwWindow, true)
-		}
-
-		engine.Update()
-		engine.telemetry_service()
-		update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
-
-		engine.voxel_engine_update(voxel_engine, camera.position)
-		// VS-03 (E1): staging do journal de edição quando o intervalo vence
-		engine.edit_update(voxel_engine)
-
-
-		signal_value := engine.WaitTimelineSemaphore()
-		engine.telemetry_collect_graphics(engine.app.frameIndex)
-		view := camera_view(&camera)
-		vp := GL_TO_VK_CLIP * projection * view
-
-		frame_resource := engine.AcquireFrameResource()
-		swapchain_frame, acquired := engine.AcquireNextImage()
-		if !acquired {
-			engine.CancelFrameReservation()
-			continue
-		}
-
-		visible_count := engine.voxel_engine_publish_visible(voxel_engine, engine.app.frameIndex)
-		edit_job_count := engine.edit_ring_write(voxel_engine, engine.app.frameIndex)
-
-		vk_check(vk.ResetCommandPool(engine.app.vkDevice, frame_resource.vkCommandPool, {}))
-
-		begin_command_info := vk.CommandBufferBeginInfo {
-			sType = .COMMAND_BUFFER_BEGIN_INFO,
-			flags = {.ONE_TIME_SUBMIT},
-		}
-		cmd := frame_resource.vkCommandBuffer
-		vk_check(vk.BeginCommandBuffer(cmd, &begin_command_info))
-
-		gfx_pool := engine.telemetry.gfx_pools[engine.app.frameIndex]
-		engine.telemetry_reset_pool(cmd, gfx_pool, engine.TELEMETRY_GFX_QUERY_COUNT)
-		engine.telemetry_timestamp_begin(cmd, gfx_pool, 0)
-
-		transition_rendering_barrier := [2]vk.ImageMemoryBarrier2 {
 			{
+				engine.ZoneN("events_drain")
+				engine.events_replay_feed(engine.events_time_now())
+				engine.events_drain()
+				if engine.events_should_exit_after_replay() {
+					glfw.SetWindowShouldClose(engine.app.glfwWindow, true)
+				}
+			}
+
+			{
+				engine.ZoneN("engine_update")
+				engine.Update()
+				engine.telemetry_service()
+				update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
+
+				engine.voxel_engine_update(voxel_engine, camera.position)
+				// VS-03 (E1): staging do journal de edição quando o intervalo vence
+				engine.edit_update(voxel_engine)
+			}
+
+			signal_value: u64
+			visible_count: u32
+			edit_job_count: u32
+			frame_resource: ^engine.FrameResource
+			swapchain_frame: engine.SwapChainFrameData
+			vp: glm.mat4
+			cmd: vk.CommandBuffer
+			{
+				engine.ZoneN("frame_wait")
+				signal_value = engine.WaitTimelineSemaphore()
+				engine.telemetry_collect_graphics(engine.app.frameIndex)
+				view := camera_view(&camera)
+				vp = GL_TO_VK_CLIP * projection * view
+
+				frame_resource = engine.AcquireFrameResource()
+				acquired: bool
+				swapchain_frame, acquired = engine.AcquireNextImage()
+				if !acquired {
+					engine.CancelFrameReservation()
+					continue
+				}
+
+				visible_count = engine.voxel_engine_publish_visible(voxel_engine, engine.app.frameIndex)
+				edit_job_count = engine.edit_ring_write(voxel_engine, engine.app.frameIndex)
+
+				// VS-15 (REQ-TRC-04): plots por frame, coletados só quando a
+				// UI Tracy está conectada.
+				if engine.TracingIsConnected() {
+					engine.PlotInt("visible_chunks", i64(visible_count))
+					engine.PlotInt("work_items", i64(voxel_engine.update_appended_tasks))
+					engine.PlotInt("empty_chunks", i64(voxel_engine.empty_chunks_active))
+				}
+			}
+
+		{
+			engine.ZoneN("render_record")
+			vk_check(vk.ResetCommandPool(engine.app.vkDevice, frame_resource.vkCommandPool, {}))
+
+			begin_command_info := vk.CommandBufferBeginInfo {
+				sType = .COMMAND_BUFFER_BEGIN_INFO,
+				flags = {.ONE_TIME_SUBMIT},
+			}
+			cmd = frame_resource.vkCommandBuffer
+			vk_check(vk.BeginCommandBuffer(cmd, &begin_command_info))
+
+			gfx_pool := engine.telemetry.gfx_pools[engine.app.frameIndex]
+			engine.telemetry_reset_pool(cmd, gfx_pool, engine.TELEMETRY_GFX_QUERY_COUNT)
+			engine.telemetry_timestamp_begin(cmd, gfx_pool, 0)
+
+			transition_rendering_barrier := [2]vk.ImageMemoryBarrier2 {
+				{
+					sType = .IMAGE_MEMORY_BARRIER_2,
+					image = swapchain_frame.image,
+					subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+					oldLayout = .UNDEFINED,
+					newLayout = .COLOR_ATTACHMENT_OPTIMAL,
+					srcStageMask = {.ALL_COMMANDS},
+					srcAccessMask = {.MEMORY_READ},
+					dstStageMask = {.COLOR_ATTACHMENT_OUTPUT},
+					dstAccessMask = {.COLOR_ATTACHMENT_WRITE},
+				},
+				{
+					sType = .IMAGE_MEMORY_BARRIER_2,
+					image = engine.app.depthBuffer.vkImage,
+					subresourceRange = {aspectMask = {.DEPTH}, levelCount = 1, layerCount = 1},
+					oldLayout = .UNDEFINED,
+					newLayout = .DEPTH_ATTACHMENT_OPTIMAL,
+					srcStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+					srcAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
+					dstStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+					dstAccessMask = {.DEPTH_STENCIL_ATTACHMENT_READ, .DEPTH_STENCIL_ATTACHMENT_WRITE},
+				},
+			}
+			vk.CmdPipelineBarrier2(
+				cmd,
+				&vk.DependencyInfo {
+					sType = .DEPENDENCY_INFO,
+					imageMemoryBarrierCount = len(transition_rendering_barrier),
+					pImageMemoryBarriers = raw_data(&transition_rendering_barrier),
+				},
+			)
+
+			color_attachment := vk.RenderingAttachmentInfo {
+				sType = .RENDERING_ATTACHMENT_INFO,
+				imageView = swapchain_frame.image_view,
+				imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
+				loadOp = .CLEAR,
+				storeOp = .STORE,
+				clearValue = {color = {float32 = {0, 0.2, 0.8, 1}}},
+			}
+			depth_attachment := vk.RenderingAttachmentInfo {
+				sType = .RENDERING_ATTACHMENT_INFO,
+				imageView = engine.app.depthBuffer.vkImageView,
+				imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
+				loadOp = .CLEAR,
+				storeOp = .DONT_CARE,
+				clearValue = {depthStencil = {depth = 1, stencil = 0}},
+			}
+			rendering_info := vk.RenderingInfo {
+				sType = .RENDERING_INFO,
+				renderArea = {
+					offset = {0, 0},
+					extent = {engine.app.presentation.width, engine.app.presentation.height},
+				},
+				layerCount = 1,
+				colorAttachmentCount = 1,
+				pColorAttachments = &color_attachment,
+				pDepthAttachment = &depth_attachment,
+			}
+
+			engine.voxel_render_prepare(
+				cmd,
+				vp,
+				camera.position,
+				visible_count,
+				engine.app.frameIndex,
+				edit_job_count,
+			)
+
+			vk.CmdBeginRendering(cmd, &rendering_info)
+			engine.telemetry_begin_label(cmd, "render_pass")
+
+			engine.voxel_render_record(cmd, vp, camera.position, visible_count, engine.app.frameIndex)
+
+			engine.telemetry_end_label(cmd)
+			vk.CmdEndRendering(cmd)
+
+			transition_present_barrier := vk.ImageMemoryBarrier2 {
 				sType = .IMAGE_MEMORY_BARRIER_2,
 				image = swapchain_frame.image,
 				subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-				oldLayout = .UNDEFINED,
-				newLayout = .COLOR_ATTACHMENT_OPTIMAL,
-				srcStageMask = {.ALL_COMMANDS},
-				srcAccessMask = {.MEMORY_READ},
-				dstStageMask = {.COLOR_ATTACHMENT_OUTPUT},
-				dstAccessMask = {.COLOR_ATTACHMENT_WRITE},
-			},
-			{
-				sType = .IMAGE_MEMORY_BARRIER_2,
-				image = engine.app.depthBuffer.vkImage,
-				subresourceRange = {aspectMask = {.DEPTH}, levelCount = 1, layerCount = 1},
-				oldLayout = .UNDEFINED,
-				newLayout = .DEPTH_ATTACHMENT_OPTIMAL,
-				srcStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-				srcAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
-				dstStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-				dstAccessMask = {.DEPTH_STENCIL_ATTACHMENT_READ, .DEPTH_STENCIL_ATTACHMENT_WRITE},
-			},
-		}
-		vk.CmdPipelineBarrier2(
-			cmd,
-			&vk.DependencyInfo {
-				sType = .DEPENDENCY_INFO,
-				imageMemoryBarrierCount = len(transition_rendering_barrier),
-				pImageMemoryBarriers = raw_data(&transition_rendering_barrier),
-			},
-		)
-
-		color_attachment := vk.RenderingAttachmentInfo {
-			sType = .RENDERING_ATTACHMENT_INFO,
-			imageView = swapchain_frame.image_view,
-			imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
-			loadOp = .CLEAR,
-			storeOp = .STORE,
-			clearValue = {color = {float32 = {0, 0.2, 0.8, 1}}},
-		}
-		depth_attachment := vk.RenderingAttachmentInfo {
-			sType = .RENDERING_ATTACHMENT_INFO,
-			imageView = engine.app.depthBuffer.vkImageView,
-			imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
-			loadOp = .CLEAR,
-			storeOp = .DONT_CARE,
-			clearValue = {depthStencil = {depth = 1, stencil = 0}},
-		}
-		rendering_info := vk.RenderingInfo {
-			sType = .RENDERING_INFO,
-			renderArea = {
-				offset = {0, 0},
-				extent = {engine.app.presentation.width, engine.app.presentation.height},
-			},
-			layerCount = 1,
-			colorAttachmentCount = 1,
-			pColorAttachments = &color_attachment,
-			pDepthAttachment = &depth_attachment,
+				oldLayout = .COLOR_ATTACHMENT_OPTIMAL,
+				newLayout = .PRESENT_SRC_KHR,
+				srcStageMask = {.COLOR_ATTACHMENT_OUTPUT},
+				srcAccessMask = {.COLOR_ATTACHMENT_WRITE},
+				dstStageMask = {},
+				dstAccessMask = {},
+			}
+			vk.CmdPipelineBarrier2(
+				cmd,
+				&vk.DependencyInfo {
+					sType = .DEPENDENCY_INFO,
+					imageMemoryBarrierCount = 1,
+					pImageMemoryBarriers = &transition_present_barrier,
+				},
+			)
+			engine.telemetry_timestamp_end(cmd, gfx_pool, 1)
+			vk_check(vk.EndCommandBuffer(cmd))
 		}
 
-		engine.voxel_render_prepare(
-			cmd,
-			vp,
-			camera.position,
-			visible_count,
-			engine.app.frameIndex,
-			edit_job_count,
-		)
 
-		vk.CmdBeginRendering(cmd, &rendering_info)
-		engine.telemetry_begin_label(cmd, "render_pass")
+			acquire_wait_info := vk.SemaphoreSubmitInfo {
+				sType     = .SEMAPHORE_SUBMIT_INFO,
+				semaphore = frame_resource.vkAcquireSemaphore,
+				stageMask = {.COLOR_ATTACHMENT_OUTPUT},
+			}
 
-		engine.voxel_render_record(cmd, vp, camera.position, visible_count, engine.app.frameIndex)
+			compute_wait_info := vk.SemaphoreSubmitInfo {
+				sType     = .SEMAPHORE_SUBMIT_INFO,
+				semaphore = engine.app.computeTimelineSemaphore,
+				value     = voxel_engine.highest_completed_compute_value,
+				stageMask = {.COMPUTE_SHADER, .MESH_SHADER_EXT},
+			}
+			wait_infos := [2]vk.SemaphoreSubmitInfo{acquire_wait_info, compute_wait_info}
+			wait_count: u32 = voxel_engine.highest_completed_compute_value > 0 ? 2 : 1
+			semaphore_signals := []vk.SemaphoreSubmitInfo {
+				{
+					sType = .SEMAPHORE_SUBMIT_INFO,
+					semaphore = swapchain_frame.vkPresentSemaphore,
+					stageMask = {.ALL_COMMANDS},
+				},
+				{
+					sType = .SEMAPHORE_SUBMIT_INFO,
+					semaphore = engine.app.timelineSemaphore,
+					value = signal_value,
+					stageMask = {.ALL_COMMANDS},
+				},
+			}
+			command_submit_info := vk.CommandBufferSubmitInfo {
+				sType         = .COMMAND_BUFFER_SUBMIT_INFO,
+				commandBuffer = cmd,
+			}
+			submit_info := vk.SubmitInfo2 {
+				sType                    = .SUBMIT_INFO_2,
+				commandBufferInfoCount   = 1,
+				pCommandBufferInfos      = &command_submit_info,
+				waitSemaphoreInfoCount   = wait_count,
+				pWaitSemaphoreInfos      = &wait_infos[0],
+				signalSemaphoreInfoCount = cast(u32)len(semaphore_signals),
+				pSignalSemaphoreInfos    = raw_data(semaphore_signals),
+			}
+			vk_check(vk.QueueSubmit2(engine.app.queues[.Graphics].queue, 1, &submit_info, {}))
+			engine.telemetry.gfx_slot_submitted[engine.app.frameIndex] = true
 
-		engine.telemetry_end_label(cmd)
-		vk.CmdEndRendering(cmd)
-
-		transition_present_barrier := vk.ImageMemoryBarrier2 {
-			sType = .IMAGE_MEMORY_BARRIER_2,
-			image = swapchain_frame.image,
-			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-			oldLayout = .COLOR_ATTACHMENT_OPTIMAL,
-			newLayout = .PRESENT_SRC_KHR,
-			srcStageMask = {.COLOR_ATTACHMENT_OUTPUT},
-			srcAccessMask = {.COLOR_ATTACHMENT_WRITE},
-			dstStageMask = {},
-			dstAccessMask = {},
+			engine.Present()
+		{
+			engine.ZoneN("present")
+			engine.Present()
 		}
-		vk.CmdPipelineBarrier2(
-			cmd,
-			&vk.DependencyInfo {
-				sType = .DEPENDENCY_INFO,
-				imageMemoryBarrierCount = 1,
-				pImageMemoryBarriers = &transition_present_barrier,
-			},
-		)
-		engine.telemetry_timestamp_end(cmd, gfx_pool, 1)
-		vk_check(vk.EndCommandBuffer(cmd))
-
-
-		acquire_wait_info := vk.SemaphoreSubmitInfo {
-			sType     = .SEMAPHORE_SUBMIT_INFO,
-			semaphore = frame_resource.vkAcquireSemaphore,
-			stageMask = {.COLOR_ATTACHMENT_OUTPUT},
-		}
-
-		compute_wait_info := vk.SemaphoreSubmitInfo {
-			sType     = .SEMAPHORE_SUBMIT_INFO,
-			semaphore = engine.app.computeTimelineSemaphore,
-			value     = voxel_engine.highest_completed_compute_value,
-			stageMask = {.COMPUTE_SHADER, .MESH_SHADER_EXT},
-		}
-		wait_infos := [2]vk.SemaphoreSubmitInfo{acquire_wait_info, compute_wait_info}
-		wait_count: u32 = voxel_engine.highest_completed_compute_value > 0 ? 2 : 1
-		semaphore_signals := []vk.SemaphoreSubmitInfo {
-			{
-				sType = .SEMAPHORE_SUBMIT_INFO,
-				semaphore = swapchain_frame.vkPresentSemaphore,
-				stageMask = {.ALL_COMMANDS},
-			},
-			{
-				sType = .SEMAPHORE_SUBMIT_INFO,
-				semaphore = engine.app.timelineSemaphore,
-				value = signal_value,
-				stageMask = {.ALL_COMMANDS},
-			},
-		}
-		command_submit_info := vk.CommandBufferSubmitInfo {
-			sType         = .COMMAND_BUFFER_SUBMIT_INFO,
-			commandBuffer = cmd,
-		}
-		submit_info := vk.SubmitInfo2 {
-			sType                    = .SUBMIT_INFO_2,
-			commandBufferInfoCount   = 1,
-			pCommandBufferInfos      = &command_submit_info,
-			waitSemaphoreInfoCount   = wait_count,
-			pWaitSemaphoreInfos      = &wait_infos[0],
-			signalSemaphoreInfoCount = cast(u32)len(semaphore_signals),
-			pSignalSemaphoreInfos    = raw_data(semaphore_signals),
-		}
-		vk_check(vk.QueueSubmit2(engine.app.queues[.Graphics].queue, 1, &submit_info, {}))
-		engine.telemetry.gfx_slot_submitted[engine.app.frameIndex] = true
-
-		engine.Present()
+		engine.FrameMark()
+	}
 	}
 
 	vk_check(vk.DeviceWaitIdle(engine.app.vkDevice))

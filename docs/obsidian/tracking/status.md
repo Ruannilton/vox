@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 15 |
-| Specs aprovadas | 15 |
+| Specs registradas | 16 |
+| Specs aprovadas | 16 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 15 |
-| Validações verificadas | 15 |
+| Implementações concluídas | 16 |
+| Validações verificadas | 16 |
 
-Quinze especificações registradas e **integralmente concluídas** (VS-00 a VS-14); VS-14 (plantas — alpha-test e spawn determinístico) fechou o backlog B6 em 2026-11-07 (Opção A da ADR-P1). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Dezesseis especificações registradas, 16 integralmente concluídas; VS-15 (Tracy profiler — CPU zones) implementada e validada (build default sem dependência de link, smoke Tracy com `IsConnected()=false`, telemetria VS-05 intacta; AC-02 manual da UI pendente do mantenedor). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -36,6 +36,7 @@ Quinze especificações registradas e **integralmente concluídas** (VS-00 a VS-
 | VS-12 | [[VS-12-assets-json|Assets data-driven via JSON]] | `aprovada` | `concluida` | `verificada` | VS-11 | — |
 | VS-13 | [[VS-13-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aprovada` | `concluida` | `verificada` | VS-04 | — |
 | VS-14 | [[VS-14-plantas-alpha-test-spawn|Plantas — alpha-test e spawn determinístico]] | `aprovada` | `concluida` | `verificada` | VS-12 | — |
+| VS-15 | [[VS-15-tracy-profiler|Tracy profiler (CPU zones)]] | `aprovada` | `concluida` | `verificada` | VS-05 | — |
 
 ## Decisões
 
@@ -66,6 +67,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-A1 | [[ADR-A1-assets-json|Assets data-driven via JSON]] | `aceita` | VS-12 |
 | ADR-G1 | [[ADR-G1-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aceita` | VS-13 |
 | ADR-P1 | [[ADR-P1-plantas-alpha-test-spawn|Plantas — alpha-test e spawn determinístico]] | `aceita` | VS-14 |
+| ADR-T3 | [[ADR-T3-tracy-profiler|Tracy profiler via odin-tracy, opt-in por define]] | `aceita` | VS-15 |
 
 ## Vocabulário de status
 

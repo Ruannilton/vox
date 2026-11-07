@@ -341,3 +341,27 @@ Todo input (teclado/mouse/fechamento) e todo comando (`TeleportTo`, `LookAt`, `A
 | Replay | `--replay <jsonl>` (fatal pré-janela se inválido), cursor ordenado por `t`, `Wait` hold-until, skips contados, `--exit-after-replay` |
 | Flags | `--record <caminho>` / `--no-record` (default grava em `bin/events/`) |
 | Validação | `tools/sim/events_check.py` — schema por tipo, `t` monotônico, exit 0/1 |
+
+## 11. Tracy profiler (CPU zones) — VS-15
+
+Profiling de CPU **opt-in por define de compilação**, via bindings Odin do [oskarnp/odin-tracy](https://github.com/oskarnp/odin-tracy) (v0.14.1) vendored em `vendor/tracy/` com a `tracy.lib` x64. A telemetria VS-05 (CSV/JSON/labels GPU) continua sendo a base, inalterada — Tracy é aditivo.
+
+| Item | Valor |
+|---|---|
+| Define | `TRACY_ENABLE` (`#config`, default `false`); `run.bat` desligado, `run_tracy.bat` ligado |
+| Wrapper | `src/engine/tracing.odin` — único módulo que referencia o package `tracy`; desligado, toda a API é no-op inline e `TracingIsConnected()` é `false` |
+| Link | `bindings.odin` vendored faz `foreign import tracy "tracy.lib"` **só com `TRACY_ENABLE=true`** (desligado usa `system:kernel32`) — o build default não depende da lib |
+| Rebuild da lib | `tools\build_tracy_client.bat` (clone `--recurse-submodules` do odin-tracy, client C++ com `-MD` — o `-MT` do upstream colide com o CRT do VMA) |
+| Zones (main) | `frame`, `events_drain`, `engine_update`, `frame_wait`, `render_record`, `present` |
+| Zones (worker) | `worker_iteration`, `batch_assemble`, `batch_submit` |
+| Extras | `FrameMark` por frame; threads `main`/`voxel_worker`; `AppInfo` com a config efetiva; plots `visible_chunks`, `work_items`, `empty_chunks` (só quando conectado) |
+
+### Como rodar com a UI Tracy (AC-02, manual)
+
+1. Baixe o **Tracy Profiler v0.14.1** (binário `Tracy.exe` do release oficial em https://github.com/wolfpld/tracy/releases — não versionado no repo).
+2. Abra a UI Tracy **antes** de conectar (a descoberta é por broadcast na rede local; o Connect da UI inicia a escuta).
+3. Execute `run_tracy.bat` na raiz do repo (compila shaders + `odin build -define:TRACY_ENABLE=true` + roda `vox.exe`). Se `vendor\tracy\tracy.lib` estiver ausente, o script aponta `tools\build_tracy_client.bat` e sai com erro.
+4. Na UI Tracy, clique em **Connect** (ou aguarde o app aparecer no listen).
+5. Confira: frames no marcador `FrameMark`; zonas `frame`/`engine_update`/`render_record` na thread `main` e `worker_iteration`/`batch_assemble`/`batch_submit` na thread `voxel_worker`; plots `visible_chunks`/`work_items`/`empty_chunks` atualizando por frame.
+
+Sem a UI aberta o client roda desconectado com custo mínimo e o log mostra `Tracy IsConnected()=false`; os plots são pulados (`TracingIsConnected()` guarda a coleta). Não há GPU zones nesta versão (backlog BLK-33); memory profiling/lock tracking/call stacks em BLK-34..36.

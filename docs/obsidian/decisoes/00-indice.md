@@ -28,11 +28,11 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 | ADR-V1 | [[ADR-V1-chunks-vazios-virtuais|Chunks vazios virtuais sem slot]] | `aceita` | VS-10 |
 | ADR-U1 | [[ADR-U1-uvs-templates-malha|UVs nos templates de malha]] | `aceita` | VS-11 |
 | ADR-G1 | [[ADR-G1-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aceita` | VS-13 |
-| ADR-P1 | [[ADR-P1-plantas-alpha-test-spawn|Plantas — alpha-test e spawn determinístico]] | `aceita` | VS-14 |
+| ADR-T3 | [[ADR-T3-tracy-profiler|Tracy profiler via odin-tracy, opt-in por define]] | `aceita` | VS-15 |
 
 ## Resumo
 
-- 24 decisões registradas e aceitas.
+- 25 decisões registradas e aceitas.
 - Nenhuma decisão pendente.
 - Nenhuma decisão representa, por si só, implementação concluída ou validação verificada.
 
