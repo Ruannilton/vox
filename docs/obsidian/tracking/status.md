@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 16 |
-| Specs aprovadas | 16 |
+| Specs registradas | 15 |
+| Specs aprovadas | 15 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
 | Implementações concluídas | 15 |
 | Validações verificadas | 15 |
 
-Dezesseis especificações registradas, 16 integralmente concluídas; VS-14 (plantas — alpha-test e spawn determinístico) fechou o backlog B6 em 2026-11-07 (Opção A da ADR-P1). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Quinze especificações registradas e **integralmente concluídas** (VS-00 a VS-14); VS-14 (plantas — alpha-test e spawn determinístico) fechou o backlog B6 em 2026-11-07 (Opção A da ADR-P1). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
