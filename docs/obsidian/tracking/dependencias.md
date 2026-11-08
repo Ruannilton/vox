@@ -95,7 +95,7 @@ graph TD
 - ADR-T4: VS-16 adiciona zonas GPU (dois contextos TracyVk — fila gráfica e compute — com query pools dedicadas, calibração e coleta nos pontos de espera existentes; VS-05 intacta) e CPU aprofundada (call stacks, lock tracking em dois mutexes, sub-zones); degradação por omissão ao invés de overflow de ring.
 - ADR-W1: VS-18 migra o ownership do mundo para a worker thread — active_chunks, streaming, completions/B1, promote/publish no ring com reuse guardado por timeline gráfica, materialização E1 e mirror service; main fica com input/render/present (~4-5 ms/frame); handoff de frame por atomic+condição com dependências para trás (sem deadlock).
 - ADR-F1 (aceita, implementada pela VS-19): física CPU na main sobre o mirror, `PhysicsDefinition` separada, AABB/sweep em passo fixo e DDA tri-state; heightmap derivado do bitmask na materialização (ring/binding 20 mantido como reserva futura por emenda do mantenedor) e emendas VS-13/VS-00.
-- ADR-G1 de gameplay (aceita): VS-20 usa DDA central por frame, realce no fragment por UBO binding 21 (16 B), cliques via E1 e impulso SPACE de 1,5 bloco somente grounded; spec aprovada de nascença por dispensa do mantenedor.
+- ADR-G2 de gameplay (aceita): VS-20 usa DDA central por frame, realce no fragment por UBO binding 21 (16 B), cliques via E1 e impulso SPACE de 1,5 bloco somente grounded; spec aprovada de nascença por dispensa do mantenedor.
 
 ## Dependências transversais a registrar nas specs
 
