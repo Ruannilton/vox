@@ -1,0 +1,6 @@
+package main
+
+VERSION_MAJOR :: 0
+VERSION_MINOR :: 1
+VERSION_BUILD :: 2
+VERSION_STRING :: "0.1.2"
