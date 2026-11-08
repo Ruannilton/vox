@@ -18,8 +18,10 @@ Constantes e layouts: src/assets/shaders/common.slang é a fonte única de verda
 12. Nomes de variáveis sempre legíveis, nada de abreviações
 
 ## Workflow
-- Decisões de arquitetura e criação de requisitos/specs: executadas pelo agente principal (K3.1, thinking high).
-- Desenvolvimento e depuração: despachar para subagentes `coder` (K2.8, thinking low, via `[secondary_model]`); escalar para K3.1 (parâmetro `model` do Agent) só quando o subagente estiver travado.
+- Criação de ADR e spec: subagente com **K3.1 (thinking low)**; a partir da spec criada, gerar também um **arquivo de TASKS** (`docs/obsidian/especificacoes/VS-XX-<slug>-tasks.md`) com todas as etapas de alteração necessárias para implementar a spec e as validações de cada etapa. O agente principal mantém a orquestração, a aprovação pelo mantenedor e o tracking.
+- Desenvolvimento (implementação): subagente coder **K2.8 (thinking low)**, executando as etapas do arquivo de TASKS da spec.
+- Debug: subagente coder **K2.8 (thinking low)**.
+- Escalar para K3.1 (parâmetro `model` do Agent) quando o subagente estiver travado.
 - Mudança de shader → escrever/estender simulação Python em tools/sim/ antes de integrar.
 - Marcar integrações pendentes com TODO(E1)/TODO(B)/TODO(C2) (convenção existente).
 - Manter documentação do projeto atualizada no formato obsidian dentro do diretorio docs/obsidian/*
