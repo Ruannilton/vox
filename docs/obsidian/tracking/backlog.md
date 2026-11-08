@@ -67,7 +67,7 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 | BLK-25 | ~~SDK externo (Tracy etc.) sobre os pontos de instrumentação~~ **FECHADO pela VS-15** (ADR-T3 Opção A): Tracy CPU zones opt-in via `-define:TRACY_ENABLE=true` (`run_tracy.bat`); HUD/GUI de telemetria segue em aberto | ADR-T1 / VS-05 não-escopo | Fechado em 2026-11-07; não-escopos da VS-15 viraram BLK-33..36 |
 | BLK-26 | Contadores da VS-10 (empties ativos, slots economizados) no CSV de telemetria | VS-10 questão aberta | — |
 | BLK-27 | Guard permanente "replay ativo ignora input live" (capturas/smokes automatizados movem a câmera ao focar a janela) | ressalva VS-13 | Hoje é contorno manual por roteiro; afeta qualquer smoke com captura |
-| BLK-28 | Corrida de desligamento intermitente (worker × thread principal no teardown) | ressalva VS-13 | Vista 1× em smokes; intermitente |
+| BLK-28 | ~~Corrida de desligamento worker × main~~ **FECHADO (2026-11-08)** — stop/join agora precedem queue/device wait idle e qualquer destroy; zero warnings nos replays default/Tracy pós-fix | ressalva VS-13 / VS-01 | Corrigido pela ordem explícita de teardown em `main.odin`/`voxel_engine.odin` |
 | BLK-29 | **Blending/translucidez real** (vidro, água) com ordenação de transparência | VS-14 não-escopo + ADR-P1 Opção B | Pipeline muda (OIT ou ordenação por chunk); hoje só cutout opaco |
 | BLK-30 | **Alpha-to-coverage** para suavizar o recorte da folhagem | VS-14 não-escopo | Depende de MSAA na pipeline |
 | BLK-31 | **Probabilidade de spawn da planta configurável** (hoje constante 10% no shader) | VS-14 não-escopo | Via `vox.ini`/push constant; exige caminho de config até o generate |
@@ -75,7 +75,7 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 | BLK-34 | **Memory profiling Tracy** (allocator custom do odin-tracy) | VS-15/VS-16 não-escopo | Integra ao context/allocator do Odin; GPU zones, locks e call stacks foram concluídos na VS-16 |
 | BLK-37 | ~~Build Tracy trava após `voxel_gpu_init`~~ **FECHADO (2026-11-07)** — fix: lib com `TRACY_MANUAL_LIFETIME` + `TRACY_DELAYED_INIT`, startup manual do profiler após o init Vulkan (`engine.TracingStartup`/`TracingShutdown`); ver histórico da VS-15 | ressalva do fix de sincronização 2026-11-07 | Fechado em 2026-11-07; 8/8 verdes pós-fix vs 5/5 hangs no HEAD |
 | BLK-38 | **THREADING ERROR `vkQueueSubmit2` × `vkDeviceWaitIdle` em threads distintas** durante tempestade de resize/minimize (recreate de swapchain em loop) | ressalva do fix de sincronização 2026-11-07 | Vista 1× sob minimize/restore agressivo repetido; investigar se o recreate drena a fila de outra thread ou se há uso concorrente da fila gráfica |
-| BLK-39 | **`vkDestroyDevice` leva ~60 s no teardown** após replay longo (125 eventos), com e sem Tracy — GPU work acumulado drenando no destroy | ressalva do fix BLK-37 (2026-11-07) | Pré-existente (reproduz no build default); não bloqueia smokes curtos; investigar drenagem explícita (wait idle por etapa) se incomodar |
+| BLK-39 | **`vkDestroyDevice` leva ~31–60 s no teardown** após replay longo, com e sem Tracy | ressalva BLK-37 + investigação 2026-11-08 | Persiste após stop/join e queue/device wait idle, sem submits concorrentes e com validation desabilitada; o tempo está dentro da chamada do driver. Não omitir destroy; requer investigação específica do driver NVIDIA |
 
 ## Regras
 

@@ -133,6 +133,8 @@ voxel_engine_destroy :: proc(ve: ^VoxelEngine) {
 	thread.join(ve.worker)
 	thread.destroy(ve.worker)
 
+	vk_check(vk.QueueWaitIdle(app.queues[.Compute].queue))
+	vk_check(vk.QueueWaitIdle(app.queues[.Graphics].queue))
 	vk_check(vk.DeviceWaitIdle(app.vkDevice))
 	voxel_gpu_destroy()
 

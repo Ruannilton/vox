@@ -41,7 +41,6 @@ main :: proc() {
 	defer engine.TracingShutdown()
 
 	voxel_engine = engine.voxel_engine_init()
-	defer engine.voxel_engine_destroy(voxel_engine)
 
 	camera = camera_create(glm.vec3{32, 75, 60}, glm.vec3{-50, -90, 0}, 45.0)
 	projection := glm.mat4Perspective(
@@ -387,7 +386,6 @@ main :: proc() {
 	}
 	}
 
-	vk_check(vk.DeviceWaitIdle(engine.app.vkDevice))
 	// estado final observável para validação de replay (pose e efeitos E1)
 	log.infof(
 		"FINAL pose: position=[{}, {}, {}] target=[{}, {}, {}]",
@@ -396,6 +394,9 @@ main :: proc() {
 	)
 	engine.edit_log_stats(voxel_engine, "FINAL edits:")
 	log.info("Exiting application")
+	// BLK-28: para e junta a worker antes do DeviceWaitIdle interno;
+	// os defers seguintes fazem a coleta Tracy e destroem o device já ocioso.
+	engine.voxel_engine_destroy(voxel_engine)
 }
 
 @(private)
