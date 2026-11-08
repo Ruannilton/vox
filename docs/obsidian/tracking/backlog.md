@@ -26,7 +26,7 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 | ID | Item | Origem | Notas |
 | --- | --- | --- | --- |
 | BLK-06 | Oclusão por Hi-Z | VS-06 não-escopo | Depende de depth-pyramid; compõe com o frustum culling |
-| BLK-07 | LOD de bricks/chunks | VS-06 não-escopo | Ganha sentido com visões longas (vision ≥ 16) |
+| BLK-07 | LOD de bricks/chunks | VS-06 não-escopo | Ganha sentido com visões longas (vision ≥ 16); fog/LOD também mitigará o flicker distante aceito na VS-18 |
 | BLK-08 | **Rotação yaw × UV** — texturas direcionais (atlas por face) exigem unwraps simétricos à rotação ou templates por rotação | VS-11 questão aberta | Nulo com a paleta atual; desbloqueia mods com grão direcional |
 | BLK-09 | Normais/tangentes por atributo (hoje: derivadas de tela) | VS-11 não-escopo | Pré-requisito de normal mapping |
 

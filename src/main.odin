@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:log"
 import glm "core:math/linalg/glsl"
 import "core:os"
+import "core:sync"
 import "engine"
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -380,6 +381,7 @@ main :: proc() {
 				pSignalSemaphoreInfos    = raw_data(semaphore_signals),
 			}
 			vk_check(vk.QueueSubmit2(engine.app.queues[.Graphics].queue, 1, &submit_info, {}))
+			sync.mutex_unlock(&voxel_engine.frame_mutex)
 			engine.telemetry.gfx_slot_submitted[engine.app.frameIndex] = true
 		{
 			engine.ZoneN("present")

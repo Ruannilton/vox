@@ -19,6 +19,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 	SetThreadName("voxel_worker")
 
 	for {
+		if sync.atomic_load(&ve.worker_stop_requested) == 1 do break
 		worker_service_frame(ve)
 		free_all(context.temp_allocator)
 		if last_batch_frame == ve.requested_frame {
@@ -245,9 +246,9 @@ worker_service_frame :: proc(ve: ^VoxelEngine) {
 		}
 	}
 	if publish_required {
+		sync.mutex_lock(&ve.frame_mutex)
 		ZoneN("publish_world")
 		visible_count := voxel_engine_publish_visible(ve, frame_index)
-		sync.mutex_lock(&ve.frame_mutex)
 		ve.published_frame = frame_value
 		ve.published_frame_index = frame_index
 		ve.published_visible_count = visible_count

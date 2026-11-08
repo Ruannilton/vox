@@ -273,7 +273,6 @@ voxel_engine_request_frame :: proc(ve: ^VoxelEngine, frame_value: u64, frame_ind
 
 voxel_engine_wait_published :: proc(ve: ^VoxelEngine, frame_value: u64, camera_chunk: ChunkCoordinate) -> u32 {
 	sync.mutex_lock(&ve.frame_mutex)
-	defer sync.mutex_unlock(&ve.frame_mutex)
 	if ve.has_published && frame_value > ve.published_frame + 2 {
 		ve.publish_bump += 1
 	}
