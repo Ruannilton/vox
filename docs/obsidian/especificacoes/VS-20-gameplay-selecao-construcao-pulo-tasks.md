@@ -3,13 +3,13 @@ id: VS-20-TASKS
 titulo: Tarefas — seleção, construção e pulo
 tipo: tarefas
 spec: VS-20
-status: em-andamento
+status: concluida
 ultima_atualizacao: 2026-11-08
 ---
 
 # VS-20 — Tarefas de implementação
 
-Spec aprovada de nascença por dispensa do mantenedor. Mudança de shader somente após a sim da etapa 1; nenhuma tarefa possui evidência de conclusão neste documento.
+Spec aprovada de nascença por dispensa do mantenedor. Etapas VS-20-IMPL-01..06 **concluídas em 2026-11-08** (sim verde antes do shader; validações da coluna obrigatória executadas; ver ACs e histórico da spec).
 
 | ID | Etapa e alterações | Requisitos / ACs | Validação obrigatória |
 | --- | --- | --- | --- |

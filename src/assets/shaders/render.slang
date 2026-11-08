@@ -256,5 +256,14 @@ float4 shade_voxel(MeshVertex input) : SV_Target {
     float3 ambient = float3(0.2);
     float3 final_color = albedo.rgb * (ambient + diffuse) + def.emission_color;
 
+    // VS-20 (REQ-GPL-02): realce do voxel-alvo da mira central. floor() do
+    // world_position identifica o voxel; flag 0 (miss/unknown) é bit a bit o
+    // caminho anterior. Fator de clareamento constante 1.4; alpha-test e o
+    // shading restante já foram aplicados acima.
+    if (target_highlight.target_valid != 0u
+        && all(int3(floor(input.world_position)) == target_highlight.target_voxel)) {
+        final_color *= 1.4;
+    }
+
     return float4(final_color, 1.0);
 }

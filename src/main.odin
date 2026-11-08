@@ -18,6 +18,10 @@ voxel_engine: ^engine.VoxelEngine
 // VS-19 (REQ-PHY-10): jogador como corpo AABB do solver; a câmera segue o
 // corpo (olhos na altura PLAYER_EYE_HEIGHT) — input/eventos/render inalterados.
 player_body: engine.PhysicsHandle
+space_pressed:     bool  // dedup de auto-repeat do SPACE (REQ-GPL-06)
+jump_tracking:     bool  // amostragem do ápice do pulo (AC-04)
+jump_base_y:       f32
+jump_apex_y:       f32
 PLAYER_SIZE :: glm.vec3{0.6, 1.8, 0.6}
 PLAYER_HALF_WIDTH :: f32(0.3)
 PLAYER_EYE_HEIGHT :: f32(1.62)
@@ -149,6 +153,7 @@ main :: proc() {
 						body.position = p.v - glm.vec3{PLAYER_HALF_WIDTH, PLAYER_EYE_HEIGHT, PLAYER_HALF_WIDTH}
 						body.velocity = {}
 					}
+					engine.gameplay_clear_target(voxel_engine)
 				} else {
 					camera_look_at(&camera, p.v)
 				}
@@ -196,7 +201,10 @@ main :: proc() {
 				update_camera_movement(frame_dt)
 				// VS-19: passos fixos de física na main; a câmera segue o corpo
 				engine.physics_tick(voxel_engine, frame_dt)
+				player_track_jump_apex()
 				player_sync_camera()
+				// VS-20 (REQ-GPL-01): DDA central 1×/frame após física/câmera
+				engine.gameplay_update_target(voxel_engine, engine.app.frameIndex, camera.position, camera.direction)
 
 				engine.voxel_engine_request_frame(voxel_engine, engine.app.currentTimelineValue, engine.app.frameIndex, engine.chunk_coordinate_from_world(camera.position))
 			}
@@ -464,6 +472,30 @@ update_camera_movement :: proc(delta_time: f32) {
 	body.velocity.z = wish.z * speed
 }
 
+// VS-20 (AC-04): amostra o ápice entre o impulso e o novo pouso.
+@(private)
+player_track_jump_apex :: proc() {
+	body := engine.physics_body_get(voxel_engine, player_body)
+	if body == nil do return
+	if !jump_tracking {
+		if voxel_engine.gameplay.stats_jumps > 0 &&
+		   voxel_engine.gameplay.stats_jumps != voxel_engine.gameplay.stats_jumps_logged &&
+		   !body.grounded {
+			// só abre a janela quando o corpo de fato deixou o chão
+			jump_tracking = true
+			jump_base_y = body.position.y
+			jump_apex_y = body.position.y
+			voxel_engine.gameplay.stats_jumps_logged = voxel_engine.gameplay.stats_jumps
+		}
+		return
+	}
+	jump_apex_y = max(jump_apex_y, body.position.y)
+	if body.grounded {
+		log.infof("VS-20 PULO ápice: base={:.3f} apex={:.3f} delta={:.3f} voxels", jump_base_y, jump_apex_y, jump_apex_y - jump_base_y)
+		jump_tracking = false
+	}
+}
+
 @(private)
 player_sync_camera :: proc() {
 	body := engine.physics_body_get(voxel_engine, player_body)
@@ -490,8 +522,16 @@ key_handler :: proc(e: engine.Event) {
 			// derivado do bitmask.
 			engine.debug_validate_run(voxel_engine)
 			engine.debug_heights_parity(voxel_engine)
+		case glfw.KEY_SPACE:
+			// VS-20 (REQ-GPL-06): um pulo por press — GLFW auto-repeat gera
+			// KeyPress sem KeyRelease entre eles; o dedup ignora.
+			if !space_pressed {
+				space_pressed = true
+				engine.gameplay_jump(voxel_engine, engine.physics_body_get(voxel_engine, player_body))
+			}
 		}
 	case .KeyRelease:
+		if p.key == glfw.KEY_SPACE do space_pressed = false
 	}
 }
 
@@ -504,20 +544,10 @@ mouse_handler :: proc(e: engine.Event) {
 		delta_rotation := glm.vec3{p.dy * sensitivity, p.dx * sensitivity, 0}
 		camera_rotate(&camera, delta_rotation)
 	case engine.MouseButtonPayload:
-		// VS-19 (AC-05): seleção por raycast no clique (hook de consulta)
-		if p.press && p.button == 0 {
-			hit := engine.physics_raycast(voxel_engine, camera.position, camera.direction, 12.0)
-			#partial switch hit.result {
-			case .HIT:
-				log.infof(
-					"VS-19 SELEÇÃO hit: voxel={} id={} dist={:.2f} normal={}",
-					hit.voxel, hit.block_id, hit.distance, hit.normal,
-				)
-			case .MISS:
-				log.info("VS-19 SELEÇÃO miss (nada em 12 u)")
-			case .UNKNOWN:
-				log.infof("VS-19 SELEÇÃO unknown: página {} não materializada", hit.unknown_chunk)
-			}
+		// VS-20 (REQ-GPL-04/05): press esquerdo coloca pedra, direito remove;
+		// release não edita. Consome o snapshot da mira central do frame.
+		if p.press {
+			engine.gameplay_mouse_press(voxel_engine, p.button, engine.physics_body_get(voxel_engine, player_body))
 		}
 	}
 }

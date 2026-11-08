@@ -12,8 +12,8 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Specs aprovadas | 21 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 1 |
-| Implementações concluídas | 20 |
-| Validações verificadas | 18 |
+| Implementações concluídas | 21 |
+| Validações verificadas | 19 |
 
 Vinte e uma especificações registradas e aprovadas; 20 concluídas e **18 integralmente verificadas**. VS-20 nasce aprovada por dispensa do mantenedor e está com implementação em andamento, sem validação iniciada. VS-15 e VS-16 aguardam os ACs manuais da UI Tracy. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
@@ -41,6 +41,7 @@ Vinte e uma especificações registradas e aprovadas; 20 concluídas e **18 inte
 | VS-17 | [[VS-17-streaming-incremental|Streaming incremental]] | `aprovada` | `concluida` | `verificada` | VS-01 | — |
 | VS-18 | [[VS-18-mundo-na-worker|Mundo na worker (world ownership)]] | `aprovada` | `concluida` | `verificada` | VS-17 | — |
 | VS-19 | [[VS-19-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aprovada` | `concluida` | `verificada` | VS-04, VS-13, VS-14, VS-18 | — |
+| VS-20 | [[VS-20-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aprovada` | `concluida` | `verificada` | VS-03, VS-07, VS-19 | — |
 | VS-20 | [[VS-20-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aprovada` | `em-andamento` | `nao-iniciada` | VS-03, VS-07, VS-19 | — |
 
 ## Decisões

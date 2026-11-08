@@ -124,6 +124,8 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 					),
 				)
 
+				// VS-20: o set tem 1 binding dinâmico (21) — offset 0 no compute.
+				dynamic_offset: u32 = 0
 				vk.CmdBindDescriptorSets(
 					cmd,
 					.COMPUTE,
@@ -131,8 +133,8 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 					0,
 					1,
 					&voxel_gpu.descriptor_set,
-					0,
-					nil,
+					1,
+					&dynamic_offset,
 				)
 
 				push_constants := VoxelPushConstants {

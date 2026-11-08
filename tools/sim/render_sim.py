@@ -1634,6 +1634,169 @@ def scenario_plant_nonsolid():
           is_brick_occluded(chunks, 0, (7, 8, 4), chunks[0]["neighbors"], registry_cube))
 
 
+
+
+# ============================================================================
+# VS-20 (REQ-GPL-02/04/05/06) — realce do alvo, regras de construção e pulo
+# ============================================================================
+# Espelha render.slang (tint no fragment por floor(world_position)) e as
+# guardas de gameplay.odin (place/remove/pulo). Fator de clareamento
+# constante documentado: HIGHLIGHT_TINT_FACTOR.
+
+import math
+
+HIGHLIGHT_TINT_FACTOR = 1.4
+
+
+def apply_target_highlight(final_color, world_position, target_voxel, target_valid):
+    """Espelha shade_voxel: flag 0 = saída bit a bit igual ao caminho anterior;
+    flag 1 com floor(wp)==alvo tinge por HIGHLIGHT_TINT_FACTOR."""
+    if target_valid != 0 and all(
+        int(math.floor(world_position[i])) == target_voxel[i] for i in range(3)
+    ):
+        return [c * HIGHLIGHT_TINT_FACTOR for c in final_color]
+    return final_color
+
+
+def gameplay_place_destination(hit_result, hit_voxel, hit_normal):
+    """REQ-GPL-04: destino = voxel + normal; rejeita normal zero/miss/unknown."""
+    if hit_result != "hit":
+        return None
+    if hit_normal == (0, 0, 0):
+        return None  # origem dentro do voxel (normal nula)
+    if sum(1 for n in hit_normal if n != 0) != 1 or abs(sum(hit_normal)) != 1:
+        return None  # normal não unitária válida
+    return tuple(hit_voxel[i] + hit_normal[i] for i in range(3))
+
+
+def aabb_intersects_voxel(body_min, body_size, voxel):
+    """AABB do jogador [min, min+size) vs voxel [v, v+1)."""
+    for i in range(3):
+        if body_min[i] + body_size[i] <= voxel[i] or voxel[i] + 1 <= body_min[i]:
+            return False
+    return True
+
+
+def gameplay_place_allowed(hit_result, hit_voxel, hit_normal, dest_known, dest_blocking,
+                           body_min, body_size):
+    """REQ-GPL-04: só solicita se destino conhecido, não-bloqueante e a pedra
+    não intersectar a AABB do jogador."""
+    dest = gameplay_place_destination(hit_result, hit_voxel, hit_normal)
+    if dest is None:
+        return None
+    if not dest_known or dest_blocking:
+        return None
+    if aabb_intersects_voxel(body_min, body_size, dest):
+        return None
+    return dest
+
+
+def gameplay_remove_target(hit_result, hit_voxel):
+    """REQ-GPL-05: remove exatamente o voxel atingido; miss/unknown no-op."""
+    return tuple(hit_voxel) if hit_result == "hit" else None
+
+
+def gameplay_jump_velocity(grounded, frozen, gravity=-24.0, height=1.5):
+    """REQ-GPL-06: impulso v0 = sqrt(2*|g|*h); None quando no ar/congelado."""
+    if not grounded or frozen:
+        return None
+    return math.sqrt(2.0 * abs(gravity) * height)
+
+
+def scenario_target_highlight():
+    print("[cenario] VS-20: realce do voxel-alvo no fragment")
+    base = [0.5, 0.4, 0.3]
+
+    # flag 0: saída bit a bit idêntica (paridade sem alvo)
+    check("flag 0: paridade bit a bit (cor inalterada)",
+          apply_target_highlight(list(base), (4.5, 2.5, 1.5), (4, 2, 1), 0) == base)
+
+    # flag 1, mesmo voxel: tint
+    tinted = apply_target_highlight(list(base), (4.5, 2.5, 1.5), (4, 2, 1), 1)
+    check("flag 1 no alvo: tint do fator",
+          all(abs(tinted[i] - base[i] * HIGHLIGHT_TINT_FACTOR) < 1e-9 for i in range(3)))
+
+    # flag 1, outro voxel: sem tint (só o alvo é tingido)
+    check("flag 1 fora do alvo: sem tint",
+          apply_target_highlight(list(base), (5.5, 2.5, 1.5), (4, 2, 1), 1) == base)
+
+    # coordenadas negativas: floor(-0.2) = -1 (não trunca para 0)
+    check("negativo: floor(-0.2) == -1 é o alvo",
+          apply_target_highlight(list(base), (-0.2, -1.5, -3.9), (-1, -2, -4), 1)
+          == [c * HIGHLIGHT_TINT_FACTOR for c in base])
+
+    # fronteira exata do voxel: floor(4.0) == 4 pertence ao voxel superior
+    check("fronteira exata: floor(4.0)=4 -> voxel 4",
+          apply_target_highlight(list(base), (4.0, 2.5, 1.5), (4, 2, 1), 1)
+          == [c * HIGHLIGHT_TINT_FACTOR for c in base])
+    check("fronteira exata: (4.0-eps) -> voxel 3, sem tint",
+          apply_target_highlight(list(base), (4.0 - 1e-6, 2.5, 1.5), (4, 2, 1), 1) == base)
+
+    # cantos do voxel: todos os pontos internos do voxel são tingidos
+    corners = [(4.0, 2.0, 1.0), (4.999, 2.999, 1.999), (4.001, 2.0, 1.0)]
+    check("interior inteiro do voxel é tingido",
+          all(apply_target_highlight(list(base), c, (4, 2, 1), 1) != base for c in corners))
+
+
+def scenario_gameplay_rules():
+    print("[cenario] VS-20: guardas de construção/remoção e pulo")
+    body_min, body_size = (10.2, 33.0, 10.2), (0.6, 1.8, 0.6)
+
+    # colocar: seis faces da normal unitária
+    faces = [((1, 0, 0), (5, 2, 1)), ((-1, 0, 0), (3, 2, 1)),
+             ((0, 1, 0), (4, 3, 1)), ((0, -1, 0), (4, 1, 1)),
+             ((0, 0, 1), (4, 2, 2)), ((0, 0, -1), (4, 2, 0))]
+    ok_faces = all(
+        gameplay_place_allowed("hit", (4, 2, 1), n, True, False, body_min, body_size) == d
+        for n, d in faces
+    )
+    check("place: seis faces -> destino voxel+normal", ok_faces)
+
+    # no-ops: miss/unknown, normal zero, destino desconhecido/bloqueante
+    check("place: miss/unknown no-op",
+          gameplay_place_allowed("miss", (4, 2, 1), (1, 0, 0), True, False, body_min, body_size) is None
+          and gameplay_place_allowed("unknown", (4, 2, 1), (1, 0, 0), True, False, body_min, body_size) is None)
+    check("place: normal zero (origem interna) no-op",
+          gameplay_place_allowed("hit", (4, 2, 1), (0, 0, 0), True, False, body_min, body_size) is None)
+    check("place: normal não unitária no-op",
+          gameplay_place_allowed("hit", (4, 2, 1), (1, 1, 0), True, False, body_min, body_size) is None)
+    check("place: destino desconhecido no-op",
+          gameplay_place_allowed("hit", (4, 2, 1), (0, 1, 0), False, False, body_min, body_size) is None)
+    check("place: destino bloqueante no-op",
+          gameplay_place_allowed("hit", (4, 2, 1), (0, 1, 0), True, True, body_min, body_size) is None)
+
+    # interseção com o jogador: pedra adjacente sobre a AABB do corpo
+    check("place: destino sobre o jogador no-op",
+          gameplay_place_allowed("hit", (10, 32, 10), (0, 1, 0), True, False, body_min, body_size) is None)
+    # pedra ao lado (fora da AABB 10.2..10.8) é permitida
+    check("place: destino ao lado do jogador permitido",
+          gameplay_place_allowed("hit", (8, 33, 10), (1, 0, 0), True, False, body_min, body_size) == (9, 33, 10))
+
+    # remover: exatamente o hit; miss/unknown no-op
+    check("remove: voxel atingido exato",
+          gameplay_remove_target("hit", (7, 8, 9)) == (7, 8, 9))
+    check("remove: miss/unknown no-op",
+          gameplay_remove_target("miss", (7, 8, 9)) is None
+          and gameplay_remove_target("unknown", (7, 8, 9)) is None)
+
+    # pulo: v0 fixo, guardas grounded/congelado
+    v0 = gameplay_jump_velocity(True, False)
+    check("pulo: v0 = sqrt(2*24*1.5) ≈ 8.485", abs(v0 - 8.48528137423857) < 1e-9)
+    check("pulo: no ar/congelado rejeita",
+          gameplay_jump_velocity(False, False) is None and gameplay_jump_velocity(True, True) is None)
+
+    # altura balística com o integrador semi-implícito do solver (dt=1/60)
+    dt, g = 1.0 / 60.0, -24.0
+    y, vy, apex, steps = 0.0, v0, 0.0, 0
+    while vy > 0:
+        vy += g * dt
+        y += vy * dt
+        apex = max(apex, y)
+        steps += 1
+    check(f"pulo: ápice {apex:.3f} em {steps} passos (1,5 ± um passo de subida)",
+          1.35 <= apex <= 1.65)
+
+
 def main():
     scenario_budget()
     scenario_selection()
@@ -1650,6 +1813,8 @@ def main():
     scenario_uvs()
     scenario_plant_cutout()
     scenario_plant_nonsolid()
+    scenario_target_highlight()
+    scenario_gameplay_rules()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
 

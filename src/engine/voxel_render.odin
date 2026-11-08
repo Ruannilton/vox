@@ -96,7 +96,8 @@ voxel_render_prepare :: proc(
 		edit_job_offset        = frame_index * MAX_EDIT_JOBS_PER_FLUSH,
 		visible_chunk_capacity = config.visible_capacity,
 	}
-	vk.CmdBindDescriptorSets(cmd, .COMPUTE, app.computePipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 0, nil)
+	dynamic_offset: u32 = 0
+	vk.CmdBindDescriptorSets(cmd, .COMPUTE, app.computePipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 1, &dynamic_offset)
 	vk.CmdPushConstants(cmd, app.computePipelineLayout, {.COMPUTE}, 0, PUSH_CONSTANTS_SIZE, &push_constants)
 
 	if edit_job_count > 0 {
@@ -240,7 +241,9 @@ voxel_render_record :: proc(
 	vk.CmdSetScissor(cmd, 0, 1, &scissor)
 
 	vk.CmdBindPipeline(cmd, .GRAPHICS, voxel_gpu.mesh_pipeline)
-	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, app.graphicsPipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 0, nil)
+	// VS-20: offset dinâmico do UBO do realce = slot do frame corrente.
+	highlight_offset := u32(voxel_gpu.target_highlight_alignment) * frame_index
+	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, app.graphicsPipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 1, &highlight_offset)
 
 	push_constants := VoxelPushConstants {
 		view_projection_matrix = vp,

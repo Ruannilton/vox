@@ -65,6 +65,9 @@ VoxelGpu :: struct {
 	// VS-10 (REQ-VRT-02): flags do pack por slot (binding 18, host-visible).
 	chunk_result_flags:        GpuBuffer,
 	chunk_result_flags_mapped: [^]u32,
+	target_highlight_ubo:        GpuBuffer,
+	target_highlight_ubo_mapped: [^]u8,
+	target_highlight_alignment:  vk.DeviceSize, // stride do slot (>= minUniformBufferOffsetAlignment)
 	dummy_buffer:           GpuBuffer,
 	albedo_palette_image:      vk.Image,
 	albedo_palette_allocation: vma.Allocation,
@@ -229,6 +232,21 @@ voxel_gpu_init :: proc() {
 		{.HOST_ACCESS_RANDOM, .MAPPED}, // CPU lê após a timeline do lote (B1)
 	)
 	voxel_gpu.chunk_result_flags_mapped = cast([^]u32)mapped_result_flags
+	// VS-20 (REQ-GPL-03): UBO do realce — NUM_FRAMES_IN_FLIGHT slots com
+	// stride alinhado a minUniformBufferOffsetAlignment (offset dinâmico no
+	// bind gráfico; sem corrida CPU/GPU por frame).
+	alignment: vk.DeviceSize = 256
+	properties: vk.PhysicalDeviceProperties
+	vk.GetPhysicalDeviceProperties(app.vkPhysicalDevice, &properties)
+	alignment = max(alignment, vk.DeviceSize(properties.limits.minUniformBufferOffsetAlignment))
+	voxel_gpu.target_highlight_alignment = alignment
+	mapped_target: rawptr
+	voxel_gpu.target_highlight_ubo, mapped_target = gpu_buffer_create_host_flags(
+		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT) * alignment,
+		{.UNIFORM_BUFFER},
+		{.HOST_ACCESS_RANDOM, .MAPPED},
+	)
+	voxel_gpu.target_highlight_ubo_mapped = cast([^]u8)mapped_target
 	voxel_gpu.dummy_buffer = gpu_buffer_create(vk.DeviceSize(16), {.STORAGE_BUFFER})
 
 	// VS-12: assets data-driven substituem built-ins quando assets/blocks.json
@@ -352,9 +370,11 @@ voxel_gpu_init :: proc() {
 	)
 	voxel_render_pipeline_create()
 
-	pool_sizes := [2]vk.DescriptorPoolSize {
+	pool_sizes := [3]vk.DescriptorPoolSize {
 		{type = .STORAGE_BUFFER, descriptorCount = DESCRIPTOR_SET_BINDING_COUNT},
 		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = 2},
+		// VS-20 (REQ-GPL-03): UBO dinâmico do realce (binding 21).
+		{type = .UNIFORM_BUFFER_DYNAMIC, descriptorCount = 1},
 	}
 	vk_check(
 		vk.CreateDescriptorPool(
@@ -404,12 +424,14 @@ voxel_gpu_init :: proc() {
 		18 = voxel_gpu.chunk_result_flags.handle,
 		19 = voxel_gpu.template_uvs.handle,
 		20 = voxel_gpu.mirror_heightmap_ring.handle,
+		21 = voxel_gpu.target_highlight_ubo.handle,
 	}
 	buffer_infos: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorBufferInfo
 	writes: [DESCRIPTOR_SET_BINDING_COUNT]vk.WriteDescriptorSet
 	write_count := 0
 	for buffer, i in binding_buffers {
 		if i == 8 || i == 9 do continue // texturas, abaixo
+		if i == 21 do continue // UBO dinâmico, write especial abaixo
 		buffer_infos[i] = {buffer = buffer, offset = 0, range = vk.DeviceSize(vk.WHOLE_SIZE)}
 		writes[write_count] = {
 			sType           = .WRITE_DESCRIPTOR_SET,
@@ -427,6 +449,23 @@ voxel_gpu_init :: proc() {
 		{sampler = voxel_gpu.texture_sampler, imageView = voxel_gpu.albedo_palette_view, imageLayout = .SHADER_READ_ONLY_OPTIMAL},
 		{sampler = voxel_gpu.texture_sampler, imageView = voxel_gpu.pbr_dummy_view, imageLayout = .SHADER_READ_ONLY_OPTIMAL},
 	}
+	// VS-20 (REQ-GPL-03): UBO dinâmico do realce (range inteiro; o offset do
+	// slot vem do bind do command buffer por frame).
+	buffer_infos[21] = {
+		buffer = voxel_gpu.target_highlight_ubo.handle,
+		offset = 0,
+		range  = voxel_gpu.target_highlight_alignment, // stride do slot
+	}
+	writes[write_count] = {
+		sType           = .WRITE_DESCRIPTOR_SET,
+		dstSet          = voxel_gpu.descriptor_set,
+		dstBinding      = 21,
+		dstArrayElement = 0,
+		descriptorType  = .UNIFORM_BUFFER_DYNAMIC,
+		descriptorCount = 1,
+		pBufferInfo     = &buffer_infos[21],
+	}
+	write_count += 1
 	for binding in 8 ..= 9 {
 		writes[write_count] = {
 			sType           = .WRITE_DESCRIPTOR_SET,
@@ -454,6 +493,7 @@ voxel_gpu_init :: proc() {
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.mirror_heightmap_ring.handle, .BUFFER, "mirror_heightmap_ring")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.chunk_result_flags.handle, .BUFFER, "chunk_result_flags")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.template_uvs.handle, .BUFFER, "template_uvs")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.target_highlight_ubo.handle, .BUFFER, "target_highlight_ubo")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.generation_pipeline, .PIPELINE, "pipeline_generate")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.packing_pipeline, .PIPELINE, "pipeline_pack")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_pipeline, .PIPELINE, "pipeline_apply_voxel_edits")
@@ -490,6 +530,7 @@ voxel_gpu_destroy :: proc() {
 	vk.DestroyImageView(app.vkDevice, voxel_gpu.albedo_palette_view, nil)
 	vma.DestroyImage(app.vmaAllocator, voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation)
 
+	gpu_buffer_destroy(&voxel_gpu.target_highlight_ubo)
 	gpu_buffer_destroy(&voxel_gpu.dummy_buffer)
 	gpu_buffer_destroy(&voxel_gpu.chunk_result_flags)
 	gpu_buffer_destroy(&voxel_gpu.mirror_heightmap_ring)

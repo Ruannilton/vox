@@ -409,6 +409,26 @@ O jogador é um corpo AABB (0,6 × 1,8 × 0,6) criado na main; `update_camera_mo
 
 Zones: `physics_tick`, `physics_body_step`, `physics_ground_probe` (com subzone `physics_fastpath_scan`), `physics_freeze`, `physics_raycast`. Plots por frame: `physics_steps`, `physics_bodies`, `physics_contacts`, `physics_voxels`. Hook F7 (debug): `debug_validate_run` (packed×denso) + `debug_heights_parity` (heights × bitmask em todas as páginas) — atenção: esses debugs usam `vkDeviceWaitIdle` com a worker ativa e emitem THREADING warnings conhecidos (padrão pré-existente VS-04/VS-12); não usar em smokes de contagem de VUIDs.
 
+## 14. Gameplay — seleção, construção e pulo (VS-20, ADR-G2)
+
+Interação de gameplay sobre a física da VS-19; módulo único `src/engine/gameplay.odin`, regras espelhadas por `tools/sim/render_sim.py`.
+
+### 14.1 Mira central e realce (REQ-GPL-01/02/03)
+
+Uma vez por frame — após `physics_tick` + `player_sync_camera` — `gameplay_update_target` executa o DDA central (origem `camera.position`, direção `camera.direction`, alcance 12 u) e publica o resultado no UBO `TargetHighlight` (binding 21, **16 B**: `target_voxel` i32×3 + `target_valid` u32, `#assert` espelhado Odin↔Slang). O UBO é `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC` com 2 slots (stride alinhado a `minUniformBufferOffsetAlignment`) — o offset do slot do frame é passado no `vkCmdBindDescriptorSets` gráfico, sem corrida CPU/GPU e sem `UPDATE_AFTER_BIND`. Hit → flag 1; miss/unknown → flag 0 (o fragment é bit a bit o caminho anterior). No fragment, `all(int3(floor(world_position)) == target_voxel)` com flag 1 clareia o albedo final pelo **fator constante 1.4** (alpha-test e shading já aplicados). Teleporte limpa o snapshot até o próximo DDA.
+
+### 14.2 Construção e remoção (REQ-GPL-04/05)
+
+Clique esquerdo (`press`) coloca **pedra id 3** em `hit.voxel + hit.normal`; direito substitui o voxel atingido por ar (id 0). Ambos consomem o snapshot do frame (o mesmo exibido pelo realce) e solicitam via `ve_request_voxel_edit` (E1 — dedup, feedback e ownership da worker inalterados). Guardas de no-op: miss/unknown, normal zero (origem dentro do voxel), normal não unitária, destino desconhecido/bloqueante e pedra intersectando a AABB do jogador. Release não edita; uma ação por press.
+
+### 14.3 Pulo (REQ-GPL-06)
+
+`KeyPress` SPACE com corpo grounded e não congelado define **uma única vez** `velocity.y = sqrt(2·|g|·1,5) = sqrt(72) ≈ 8,485 u/s` (altura balística 1,5 voxel com g=24; integrador semi-implícito atinge ≈1,43). O solver integra gravidade/teto; auto-repeat é dedupado na main (`space_pressed` — GLFW repete KeyPress sem release); press no ar/congelado é contado como rejeitado.
+
+### 14.4 Instrumentação Tracy
+
+Zones: `gameplay_target_update`, `gameplay_place_block`, `gameplay_remove_block`, `gameplay_jump`. Contadores (structs + plots em `GameplayManager`): hit/miss/unknown da mira, edições solicitadas, no-ops das guardas, pulos aceitos/rejeitados. O custo do fragment alterado é avaliável nas GPU zones de render existentes (VS-16) — nenhum contexto Tracy novo.
+
 ## 12. Versionamento e saídas de debug
 
 `src/version.odin` é a fonte única de `VERSION_MAJOR/MINOR/BUILD` e `VERSION_STRING` (formato `0.1.N`). O arquivo é gerado pelo tooling, mas versionado. O hook `tools/git-hooks/pre-commit`, ativado localmente por `git config core.hooksPath tools/git-hooks`, lê o build atual, incrementa N, reescreve as constantes e executa `git add src/version.odin` antes de cada commit. Não cria commits extras; falhas emitem warning e não bloqueiam o commit. O app loga a versão no startup e a inclui no `AppInfo` do Tracy.

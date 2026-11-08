@@ -80,6 +80,7 @@ VoxelEngine :: struct {
 	edit:                           EditManager,
 	mirror:                         MirrorManager,
 	physics:                        PhysicsManager, // VS-19: solver CPU (main)
+	gameplay:                       GameplayManager, // VS-20: mira/construção/pulo
 
 	// --- domínio de queue_mutex (thread principal <-> worker) ---
 	queue_mutex:           sync.Mutex,
@@ -150,6 +151,7 @@ voxel_engine_init :: proc() -> ^VoxelEngine {
 	edit_manager_init(ve)
 	mirror_init(ve)
 	physics_init(ve)
+	gameplay_init(ve)
 	streaming_cursor_init(ve)
 
 	voxel_gpu_init()
@@ -190,6 +192,7 @@ voxel_engine_destroy :: proc(ve: ^VoxelEngine) {
 	edit_manager_destroy(ve)
 	mirror_destroy(ve)
 	physics_destroy(ve)
+	gameplay_destroy(ve)
 	active_ve = nil
 	free(ve)
 }

@@ -9,7 +9,7 @@ import vma "shared:vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-DESCRIPTOR_SET_BINDING_COUNT :: 21 // VS-11: + binding 19 (template_uvs); VS-13: + binding 20 (mirror_heightmap_ring)
+DESCRIPTOR_SET_BINDING_COUNT :: 22 // VS-11: +19 (template_uvs); VS-13: +20 (mirror_heightmap_ring); VS-20: +21 (target_highlight, UBO dinâmico)
 PUSH_CONSTANTS_SIZE :: 92 // VS-08 (REQ-CFG-06): + visible_chunk_capacity
 
 REQUIRED_DEVICE_EXTENSIONS :: []cstring {
@@ -518,6 +518,14 @@ create_descriptor_layouts :: proc() {
 
 	bindings[8].descriptorType = .COMBINED_IMAGE_SAMPLER
 	bindings[9].descriptorType = .COMBINED_IMAGE_SAMPLER
+	// VS-20 (REQ-GPL-03): UBO dinâmico do realce — offset por frame no bind,
+	// visível só ao fragment; demais bindings permanecem STORAGE_BUFFER.
+	bindings[21] = {
+		binding         = 21,
+		descriptorType  = .UNIFORM_BUFFER_DYNAMIC,
+		descriptorCount = 1,
+		stageFlags      = {.FRAGMENT},
+	}
 	set_layout_info := vk.DescriptorSetLayoutCreateInfo {
 		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		bindingCount = len(bindings),

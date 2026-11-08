@@ -204,6 +204,14 @@ struct MeshVertex {
 // z-contíguo x|z<<5; y do sólido mais alto da coluna (0xFFFF = coluna vazia).
 [[vk::binding(20, 0)]] RWStructuredBuffer<uint16_t>          mirror_heightmap_ring;
 
+// VS-20 (REQ-GPL-02): realce do voxel sob o centro da tela — alvo da mira
+// central publicado pela main uma vez por frame. 16 B: i32x3 + u32.
+struct TargetHighlight {
+    int3  target_voxel;
+    uint  target_valid;
+}
+[[vk::binding(21, 0)]] ConstantBuffer<TargetHighlight>       target_highlight;
+
 uint work_queue_base_words() {
     // VS-08: slot do ring = estado + capacidade de visíveis do push constant.
     return (push_constants.visible_chunk_offset / push_constants.visible_chunk_capacity) *
