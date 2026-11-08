@@ -6,20 +6,21 @@
 
 ## 1. Estruturas de memória na GPU (bitmasking)
 
-Para contornar o limite de VRAM e maximizar o cache L1, abandonamos ponteiros (SVDAG) em favor de matrizes densas de bits. Um chunk de 32³ possui 32.768 voxels e vive num slot fixo pré-alocado do pool — desde a VS-08 o pool é dimensionado em runtime (`resident_slots = ⌈|esfera(unload)| × 1,05⌉`, 4.378 com os defaults — emenda 2026-11-06, era `|esfera(generation)|`; antes: 4.096 fixos). A região de ocupação de cada slot tem **1.090 words** (antes 1.026 — a v2.0 adicionou 64 words de subdivisão):
+Para contornar o limite de VRAM e maximizar o cache L1, abandonamos ponteiros (SVDAG) em favor de matrizes densas de bits. Um chunk de 32³ possui 32.768 voxels e vive num slot fixo pré-alocado do pool — desde a VS-08 o pool é dimensionado em runtime (`resident_slots = ⌈|esfera(unload)| × 1,05⌉`, 4.378 com os defaults — emenda 2026-11-06, era `|esfera(generation)|`; antes: 4.096 fixos). A região de ocupação de cada slot tem **2.114 words** (antes 1.090 — a correção de performance da VS-14 adicionou 1.024 words de solidez):
 
 ```
 ┌ Ocupação dos bricks — 1024 words (1 word = 32 voxels, brick 4×2×4)     words [0..1024)
 ├ Coarse — 2 words                                                       words [1024..1026)
 ├ Subdivisão — 64 words (2 bits/brick)                                   words [1026..1090)
+├ Solidez — 1024 words (1 bit/voxel; subset da ocupação)                  words [1090..2114)
 ├ Planos de material — até 8 × 1024 words (bitplane por nível da paleta; palette[0] = AR)
 └ ChunkHeader — 2064 B (era 1040 B na v2.0)
     palette_size, plane_count, special_voxel_count, flags, palette[256], refcount[256] — novo no E1
 ```
 
-*Figura 1 — Layout do slot: ocupação (bricks | coarse | subdivisão), planos e header — na v3.0 o ChunkHeader tem 2064 B, com o refcount[256] do E1.*
+*Figura 1 — Layout do slot: ocupação (bricks | coarse | subdivisão | solidez), planos e header — na v3.0 o ChunkHeader tem 2064 B, com o refcount[256] do E1.*
 
-A máscara de ocupação agrupa voxels em bricks de 4×2×4 (32 voxels = 32 bits = 1 word). A célula grossa agrupa 8³ voxels num único bit — se zero, o task shader ignora 512 voxels de uma vez. Os 2 bits de subdivisão por brick (Caminho B) dizem ao task shader em quantos mesh groups o brick deve ser fatiado (1, 2 ou 4), conforme o custo geométrico pior-caso computado pelo pack (Seção 3.2).
+A máscara de ocupação agrupa voxels em bricks de 4×2×4 (32 voxels = 32 bits = 1 word). A máscara de solidez usa o mesmo bit index e exclui `NON_SOLID`; pack fase A e E1 a mantêm, permitindo culling de vizinhos e oclusão sem decodificar paleta/registry. A célula grossa agrupa 8³ voxels num único bit — se zero, o task shader ignora 512 voxels de uma vez. Os 2 bits de subdivisão por brick (Caminho B) dizem ao task shader em quantos mesh groups o brick deve ser fatiado (1, 2 ou 4), conforme o custo geométrico pior-caso computado pelo pack (Seção 3.2).
 
 ### 1.1 Decodificação do dicionário (data-driven)
 
@@ -311,7 +312,7 @@ O export (Seção 3.3) é condicionado à bolha de simulação — chunks fora d
 | Voxels por chunk | 32³ = 32.768 |
 | Brick | 4×2×4 = 32 voxels = 1 word |
 | Coarse cell | 8³ voxels = 1 bit (descarte de 512 voxels) |
-| Occupancy words por chunk | 1.090 (1024 + 2 coarse + 64 subdivisão) |
+| Occupancy words por chunk | 2.114 (1024 ocupação + 2 coarse + 64 subdivisão + 1024 solidez) |
 | ChunkHeader | 2.064 B (com refcount[256]) |
 | Paleta | 8 planos × 256 entradas; **slot 0 = AR**; overflow → flag + SpecialVoxelRecord |
 | Task payload | 2.048 entradas ≈ 8,2 KB (< 16 KB) |

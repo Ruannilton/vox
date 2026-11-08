@@ -142,6 +142,7 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
         int3 brick_coord = brick_coordinate_from_index(brick_idx);
 
         uint occupancy = 0;
+        uint solidity = 0;
         uint part_verts[4] = { 0u, 0u, 0u, 0u };
         uint part_tris[4]  = { 0u, 0u, 0u, 0u };
 
@@ -155,6 +156,7 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
                 InterlockedOr(shared_block_presence[block_id >> 5u], 1u << (block_id & 31u));
 
                 BlockDefinition def = global_block_registry[block_id];
+                if ((def.flags & BLOCK_DEFINITION_FLAG_NON_SOLID) == 0u) solidity |= 1u << bit_idx;
                 MeshTemplate tmpl = mesh_templates[def.mesh_template_index];
                 if (tmpl.triangle_count > 0u) {
                     uint part = bit_idx >> 3u;
@@ -165,6 +167,7 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
         }
 
         occupancy_pool[occupancy_base + brick_idx] = occupancy;
+        occupancy_pool[occupancy_base + SOLID_WORD_BASE + brick_idx] = solidity;
 
         uint half_verts  = max(part_verts[0] + part_verts[1], part_verts[2] + part_verts[3]);
         uint half_tris   = max(part_tris[0] + part_tris[1], part_tris[2] + part_tris[3]);

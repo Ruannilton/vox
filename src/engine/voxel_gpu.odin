@@ -735,6 +735,10 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 						// VS-14 emenda: solid do mirror exclui planta (NON_SOLID)
 						errors += 1
 					}
+					solid_word := occupancy[SOLID_WORD_BASE + brick_idx]
+					if ((solid_word >> uint(bit_idx)) & 1 != 0) != block_is_solid(decoded) {
+						errors += 1
+					}
 				}
 			}
 		}
@@ -839,7 +843,6 @@ debug_readback_decode_voxels :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordin
 		)
 	}
 }
-
 
 
 @(private)

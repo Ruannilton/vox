@@ -409,10 +409,15 @@ def is_solid(chunks, slot, coord):
     return chunks[slot]["dense"][dense_index_from_coordinate(coord)] != 0
 
 
+def voxel_solid_word_bit(chunks, slot, coord, registry=None):
+    brick_coord = (coord[0] // 4, coord[1] // 2, coord[2] // 4)
+    bit = bit_index_from_local_coordinate((coord[0] % 4, coord[1] % 2, coord[2] % 4))
+    return (brick_solid_word(chunks, slot, brick_coord, registry) & (1 << bit)) != 0
+
+
 def is_voxel_solid(chunks, slot, coord, neighbor_slots, registry=None):
     if all(0 <= c < CHUNK_SIZE for c in coord):
-        bid = chunks[slot]["dense"][dense_index_from_coordinate(coord)]
-        return block_is_solid(bid, registry)
+        return voxel_solid_word_bit(chunks, slot, coord, registry)
     c = list(coord)
     neighbor_slot = NEIGHBOR_SLOT_INVALID
     if c[0] < 0:
@@ -431,8 +436,7 @@ def is_voxel_solid(chunks, slot, coord, neighbor_slots, registry=None):
         return False
     if not all(0 <= v < CHUNK_SIZE for v in c):
         return False
-    bid = chunks[neighbor_slot]["dense"][dense_index_from_coordinate(tuple(c))]
-    return block_is_solid(bid, registry)
+    return voxel_solid_word_bit(chunks, neighbor_slot, tuple(c), registry)
 
 
 def compute_visible_face_mask(chunks, slot, coord, neighbor_slots, camera_position, registry=None):
@@ -498,6 +502,18 @@ def brick_occupancy_word(chunks, slot, brick_coord):
     return mask
 
 
+def brick_solid_word(chunks, slot, brick_coord, registry=None):
+    """Solid word produzida pela fase A do pack; leitura de um word no mesh."""
+    mask = 0
+    for bit in range(VOXELS_PER_BRICK):
+        lc = local_coordinate_from_bit_index(bit)
+        coord = (brick_coord[0] * 4 + lc[0], brick_coord[1] * 2 + lc[1], brick_coord[2] * 4 + lc[2])
+        block_id = chunks[slot]["dense"][dense_index_from_coordinate(coord)]
+        if block_is_solid(block_id, registry):
+            mask |= 1 << bit
+    return mask
+
+
 def read_brick_occupancy_b2(chunks, slot, brick_coord, neighbor_slots):
     """Ocupacao de um brick vizinho com redirecionamento B2 entre chunks.
     Vizinho invalido => 0 (conservador: nao-chevio, nunca culpa)."""
@@ -526,15 +542,8 @@ FULL_BRICK = (1 << VOXELS_PER_BRICK) - 1
 
 
 def brick_voxels_all_solid(chunks, slot, brick_coord, registry=None):
-    """Espelha brick_voxels_all_solid (common.slang): decodifica os 32 ids do
-    brick e exige todos sólidos — planta empilhada por edição preenche o
-    occupancy sem ser sólida."""
-    for bit in range(VOXELS_PER_BRICK):
-        lc = local_coordinate_from_bit_index(bit)
-        coord = (brick_coord[0] * 4 + lc[0], brick_coord[1] * 2 + lc[1], brick_coord[2] * 4 + lc[2])
-        if not block_is_solid(chunks[slot]["dense"][dense_index_from_coordinate(coord)], registry):
-            return False
-    return True
+    """Interior sólido em O(1): compara a solid word com 0xFFFFFFFF."""
+    return brick_solid_word(chunks, slot, brick_coord, registry) == FULL_BRICK
 
 
 def is_brick_occluded(chunks, slot, brick_coord, neighbor_slots, registry=None):
@@ -566,8 +575,6 @@ def is_brick_occluded(chunks, slot, brick_coord, neighbor_slots, registry=None):
             if neighbor_slot == NEIGHBOR_SLOT_INVALID:
                 return False
             n_slot, n_bc = neighbor_slot, tuple(c)
-        if brick_occupancy_word(chunks, n_slot, n_bc) != FULL_BRICK:
-            return False
         if not brick_voxels_all_solid(chunks, n_slot, n_bc, registry):
             return False
     return True
@@ -1578,7 +1585,11 @@ def scenario_plant_nonsolid():
     # camera em +X: a face +X do solido olha para a planta — nao-solido, emite
     mask = compute_visible_face_mask(chunks, 0, (10, 10, 10), chunks[0]["neighbors"],
                                      (1e6, 16, 16), registry)
-    check("solido adjacente a planta: face +X presente", (mask & 1) == 1)
+    check("solido adjacente a planta: face +X presente via solid word", (mask & 1) == 1)
+    check("solid word: bit da planta desligado",
+          not voxel_solid_word_bit(chunks, 0, (11, 10, 10), registry))
+    check("solid word: bit da grama ligado",
+          voxel_solid_word_bit(chunks, 0, (10, 10, 10), registry))
     # camera em -X: a face -X do solido olha para ar — tambem emite (regressao)
     mask = compute_visible_face_mask(chunks, 0, (10, 10, 10), chunks[0]["neighbors"],
                                      (-1e6, 16, 16), registry)
@@ -1599,6 +1610,8 @@ def scenario_plant_nonsolid():
     # nem cercado por bricks cheios de plantas
     chunks = {0: make_chunk((0, 0, 0), lambda c: 4)}
     pack_subdivisions(chunks[0], registry)
+    check("brick cheio de plantas: solid word zero, sem decode",
+          brick_solid_word(chunks, 0, (4, 8, 4), registry) == 0)
     check("brick cheio de plantas isolado: nao ocluso",
           not is_brick_occluded(chunks, 0, (4, 8, 4), chunks[0]["neighbors"], registry))
     chunks[1] = make_chunk((32, 0, 0), lambda c: 4)
@@ -1615,6 +1628,8 @@ def scenario_plant_nonsolid():
         pack_subdivisions(c, registry_cube)
     chunks[0]["neighbors"][0] = 1
     chunks[1]["neighbors"][1] = 0
+    check("interior solido O(1): solid word cheia",
+          brick_voxels_all_solid(chunks, 0, (7, 8, 4), registry_cube))
     check("controle: brick cheio de cubos com vizinho cheio: ocluso",
           is_brick_occluded(chunks, 0, (7, 8, 4), chunks[0]["neighbors"], registry_cube))
 

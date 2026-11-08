@@ -21,8 +21,10 @@ BRICKS_PER_CHUNK = 1024
 VOXELS_PER_BRICK = 32
 COARSE_WORDS_PER_CHUNK = 2
 SUBDIVISION_WORDS_PER_CHUNK = 64
-OCCUPANCY_WORDS_PER_CHUNK = BRICKS_PER_CHUNK + COARSE_WORDS_PER_CHUNK + SUBDIVISION_WORDS_PER_CHUNK
+SOLID_WORD_BASE = BRICKS_PER_CHUNK + COARSE_WORDS_PER_CHUNK + SUBDIVISION_WORDS_PER_CHUNK
+OCCUPANCY_WORDS_PER_CHUNK = SOLID_WORD_BASE + BRICKS_PER_CHUNK
 SUBDIVISION_WORD_BASE = BRICKS_PER_CHUNK + COARSE_WORDS_PER_CHUNK
+BLOCK_DEFINITION_FLAG_NON_SOLID = 2
 MATERIAL_PLANE_COUNT_MAXIMUM = 8
 PALETTE_SIZE_MAXIMUM = 256
 SPECIAL_RECORDS_PER_CHUNK = 256
@@ -82,15 +84,17 @@ class PackResult:
     pass
 
 
-def pack_chunk(dense, block_templates):
+def pack_chunk(dense, block_templates, block_flags=None):
     """Simulacao bit-a-bit das 4 fases do pack_chunk."""
     occupancy = [0] * OCCUPANCY_WORDS_PER_CHUNK
     presence = [0] * 2048
+    block_flags = block_flags or {}
 
-    # Fase A: ocupacao + presenca + custo por brick + subdivisao
+    # Fase A: ocupacao + solidez + presenca + custo por brick + subdivisao
     for brick_idx in range(BRICKS_PER_CHUNK):
         bc = brick_coordinate_from_index(brick_idx)
         word = 0
+        solid_word = 0
         part_verts = [0, 0, 0, 0]
         part_tris = [0, 0, 0, 0]
         for bit_idx in range(VOXELS_PER_BRICK):
@@ -98,7 +102,10 @@ def pack_chunk(dense, block_templates):
             coord = (bc[0] * BRICK_SIZE[0] + lc[0], bc[1] * BRICK_SIZE[1] + lc[1], bc[2] * BRICK_SIZE[2] + lc[2])
             block_id = dense[dense_index_from_coordinate(coord)]
             if block_id != 0:
-                word |= 1 << bit_idx
+                bit = 1 << bit_idx
+                word |= bit
+                if (block_flags.get(block_id, 0) & BLOCK_DEFINITION_FLAG_NON_SOLID) == 0:
+                    solid_word |= bit
                 presence[block_id >> 5] |= 1 << (block_id & 31)
                 verts, tris = TEMPLATES[block_templates[block_id]]
                 if tris > 0:
@@ -106,6 +113,7 @@ def pack_chunk(dense, block_templates):
                     part_verts[part] += verts
                     part_tris[part] += tris
         occupancy[brick_idx] = word
+        occupancy[SOLID_WORD_BASE + brick_idx] = solid_word
 
         half_verts = max(part_verts[0] + part_verts[1], part_verts[2] + part_verts[3])
         half_tris = max(part_tris[0] + part_tris[1], part_tris[2] + part_tris[3])
@@ -225,9 +233,9 @@ def check(name, condition):
         print(f"  FAIL: {name}")
 
 
-def validate(name, dense, block_templates):
+def validate(name, dense, block_templates, block_flags=None):
     print(f"[cenario] {name}")
-    r = pack_chunk(dense, block_templates)
+    r = pack_chunk(dense, block_templates, block_flags)
 
     check("slot 0 = AR", r.palette[0] == 0)
     check("paleta sem duplicatas", len(set(r.palette)) == len(r.palette))
@@ -419,7 +427,16 @@ def main():
     subd = (r.occupancy[SUBDIVISION_WORD_BASE] >> 0) & 3
     check("brick 0 sem subdivisao", subd == 0)
 
-    # 9. VS-10: flags por slot + transicoes EMPTY (com/sem pendencias)
+    # 9. VS-14: solid words na fase A; planta ocupa sem ser solida
+    r = validate("solid words (cubos e plantas)", dense_fill(lambda c: 4 if c[0] < 4 and c[1] < 2 and c[2] < 4 else 1),
+                 {1: 1, 4: 2}, {4: BLOCK_DEFINITION_FLAG_NON_SOLID})
+    check("brick de plantas: occupancy cheio, solid vazio",
+          r.occupancy[0] == 0xFFFFFFFF and r.occupancy[SOLID_WORD_BASE] == 0)
+    check("brick de cubos: solid == occupancy", r.occupancy[SOLID_WORD_BASE + 1] == r.occupancy[1])
+    check("solid subset occupancy em todos os bricks",
+          all((r.occupancy[SOLID_WORD_BASE + i] & ~r.occupancy[i]) == 0 for i in range(BRICKS_PER_CHUNK)))
+
+    # 10. VS-10: flags por slot + transicoes EMPTY (com/sem pendencias)
     scenario_empty_transitions()
 
     print(f"\n{PASS} passaram, {FAIL} falharam")

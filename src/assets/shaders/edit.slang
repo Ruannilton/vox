@@ -236,6 +236,9 @@ void apply_voxel_edits(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThr
         uint occupancy_addr = occupancy_base + brick_idx;
         if (new_block != 0u) { InterlockedOr(occupancy_pool[occupancy_addr], mask); }
         else { InterlockedAnd(occupancy_pool[occupancy_addr], ~mask); }
+        uint solidity_addr = occupancy_base + SOLID_WORD_BASE + brick_idx;
+        if (block_is_solid(new_block)) { InterlockedOr(occupancy_pool[solidity_addr], mask); }
+        else { InterlockedAnd(occupancy_pool[solidity_addr], ~mask); }
         InterlockedOr(shared_edit_dirty_bricks[brick_idx >> 5u], 1u << (brick_idx & 31u));
 
         if (!counted) { InterlockedAdd(shared_edit_refcount[new_index], 1u); }
