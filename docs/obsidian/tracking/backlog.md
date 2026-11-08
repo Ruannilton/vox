@@ -76,6 +76,7 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 | BLK-37 | ~~Build Tracy trava após `voxel_gpu_init`~~ **FECHADO (2026-11-07)** — fix: lib com `TRACY_MANUAL_LIFETIME` + `TRACY_DELAYED_INIT`, startup manual do profiler após o init Vulkan (`engine.TracingStartup`/`TracingShutdown`); ver histórico da VS-15 | ressalva do fix de sincronização 2026-11-07 | Fechado em 2026-11-07; 8/8 verdes pós-fix vs 5/5 hangs no HEAD |
 | BLK-38 | **THREADING ERROR `vkQueueSubmit2` × `vkDeviceWaitIdle` em threads distintas** durante tempestade de resize/minimize (recreate de swapchain em loop) | ressalva do fix de sincronização 2026-11-07 | Vista 1× sob minimize/restore agressivo repetido; investigar se o recreate drena a fila de outra thread ou se há uso concorrente da fila gráfica |
 | BLK-39 | ~~**`vkDestroyDevice` leva ~31–60 s no teardown**~~ **FECHADO por decisão do mantenedor (2026-11-08): fast-exit default + `--full-teardown`** | ressalva BLK-37 + VS-15 | Defeito do driver NVIDIA permanece documentado; fast-exit faz flush Tracy CPU e SO reclaim. Smokes/CI usam teardown completo para cobrir VUIDs nos destroys |
+| BLK-40 | **VS-18 planejada — migração do ownership do mundo para a worker thread**: streaming + promote/publish + mirror service + completions na worker; publish pipelined por frame (ring 2 slots, reescrita após timeline gráfica); main fica com input/render/present (~7 ms/frame migram da main) | análise `tracy_view_22.tracy` + decisão do mantenedor 2026-11-07 | Spec própria após a VS-17 |
 
 ## Regras
 

@@ -23,6 +23,7 @@ graph TD
     VS14[VS-14 — Plantas alpha-test/spawn]
     VS15[VS-15 — Tracy profiler]
     VS16[VS-16 — Instrumentação detalhada]
+    VS17[VS-17 — Streaming incremental]
 
     VS00 --> VS01
     VS01 --> VS02
@@ -40,6 +41,7 @@ graph TD
     VS13 --> VS14
     VS14 --> VS15
     VS15 --> VS16
+    VS16 --> VS17
 ```
 
 ## Registro normativo
@@ -63,6 +65,7 @@ graph TD
 | [[VS-14-plantas-alpha-test-spawn|VS-14]] | VS-12 | — | — |
 | [[VS-15-tracy-profiler|VS-15]] | VS-05 | — | — |
 | [[VS-16-instrumentacao-detalhada|VS-16]] | VS-15 | — | — |
+| [[VS-17-streaming-incremental|VS-17]] | VS-01 | — | — |
 
 ## Decisões incorporadas
 

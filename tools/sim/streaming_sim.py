@@ -158,6 +158,90 @@ class Sim:
         return True
 
 
+class StreamingCursor:
+    """Modelo da espiral VS-17: offsets ordenados e fatias por orçamento."""
+    def __init__(self, generation=1, unload=2):
+        self.generation = generation
+        self.unload = unload
+        self.offsets = [(x, y, z) for x in range(-unload, unload + 1)
+                        for y in range(-unload, unload + 1) for z in range(-unload, unload + 1)]
+        self.offsets.sort(key=lambda c: (c[0] ** 2 + c[1] ** 2 + c[2] ** 2, c))
+        self.center = (0, 0, 0)
+        self.position = 0
+        self.pending_unload = []
+        self.cycles = 0
+
+    def advance(self, sim, center, budget):
+        processed = 0
+        while self.pending_unload and processed < budget:
+            sim.unload(self.pending_unload.pop())
+            processed += 1
+        while not self.pending_unload and self.position < len(self.offsets) and processed < budget:
+            offset = self.offsets[self.position]
+            self.position += 1
+            processed += 1
+            coord = tuple(self.center[i] + offset[i] for i in range(3))
+            distance2 = sum(v * v for v in offset)
+            if distance2 <= self.generation ** 2 and coord not in sim.active:
+                sim.request(coord)
+            elif distance2 > self.unload ** 2 and coord in sim.active:
+                sim.unload(coord)
+        if not self.pending_unload and self.position == len(self.offsets):
+            for coord in list(sim.active):
+                distance2 = sum((coord[i] - center[i]) ** 2 for i in range(3))
+                if distance2 > self.unload ** 2:
+                    self.pending_unload.append(coord)
+            self.center = center
+            self.position = 0
+            self.cycles += 1
+        return processed
+
+
+def scen_cursor_order_and_budget():
+    s = Sim(slot_count=64)
+    cursor = StreamingCursor(generation=1, unload=1)
+    processed = cursor.advance(s, (0, 0, 0), 5)
+    assert processed == 5 and cursor.position == 5
+    assert list(s.active)[:3] == [(0, 0, 0), (-1, 0, 0), (0, -1, 0)] and len(s.active) == 5
+    assert cursor.advance(s, (0, 0, 0), 5) == 5
+    while cursor.cycles == 0:
+        cursor.advance(s, (0, 0, 0), 5)
+    assert len(s.active) == 7 and cursor.position == 0
+    assert all(c in s.active for c in [(0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)])
+
+
+def scen_cursor_stationary_and_reanchor():
+    s = Sim(slot_count=64)
+    cursor = StreamingCursor(generation=0, unload=0)
+    cursor.advance(s, (0, 0, 0), 100)
+    assert list(s.active) == [(0, 0, 0)] and cursor.cycles == 1
+    cursor.advance(s, (4, 0, 0), 100)
+    assert cursor.center == (4, 0, 0)
+    cursor.advance(s, (4, 0, 0), 100)
+    assert list(s.active) == [(4, 0, 0)] and cursor.cycles == 3
+
+
+def scen_cursor_teleport_unload():
+    s = Sim(slot_count=64)
+    cursor = StreamingCursor(generation=0, unload=0)
+    cursor.advance(s, (0, 0, 0), 100)
+    cursor.advance(s, (5, 0, 0), 100)
+    cursor.advance(s, (5, 0, 0), 100)
+    assert list(s.active) == [(5, 0, 0)]
+    assert len(s.active) == 1 and len(s.free_slots) == 63, "descarga nao seguiu caminho B1/cancelamento"
+
+
+def scen_cursor_pool_exhausted_retry():
+    s = Sim(slot_count=1)
+    cursor = StreamingCursor(generation=1, unload=1)
+    while cursor.cycles == 0:
+        cursor.advance(s, (0, 0, 0), 8)
+    assert len(s.active) == 1 and len(s.pending) == 1
+    while cursor.cycles == 1:
+        cursor.advance(s, (0, 0, 0), 8)
+    assert len(s.active) == 1, "cursor nao pode duplicar tarefas com pool esgotado"
+
+
 def scenario(name, fn):
     print(f"[cenario] {name}")
     before = len(FAILURES)
@@ -263,6 +347,10 @@ def main():
     scenario("conclusao vencida (ABA)", scen_stale_completion_aba)
     scenario("lote de 16 com cancelamento parcial", scen_batch16_partial_cancel)
     scenario("interleavings aleatorios (seed 20261104, 20k passos)", scen_random_interleavings)
+    scenario("VS-17: espiral ordenada e fatias por orcamento", scen_cursor_order_and_budget)
+    scenario("VS-17: camera parada e reancoragem", scen_cursor_stationary_and_reanchor)
+    scenario("VS-17: teleporte descarrega com aposentadoria B1", scen_cursor_teleport_unload)
+    scenario("VS-17: pool esgotado passa adiante sem duplicar", scen_cursor_pool_exhausted_retry)
 
     print(f"\n{'FALHOU' if FAILURES else 'PASSOU'}: {len(FAILURES)} falhas")
     sys.exit(1 if FAILURES else 0)

@@ -35,11 +35,11 @@ ring host-visible → ChunkPages             flush do journal a 100 ms, no comma
 
 **O que mudou na v3.0:** dois novos fluxos cruzam o pipeline. O journal de edições da thread principal é flushado em lotes e aplicado por um compute shader no command buffer do frame, antes do render pass (E1) — a edição aparece na malha no mesmo frame. E o compute de geração ganhou uma saída secundária: o grid denso de IDs que alimenta, por readback assíncrono, o mirror do mundo em RAM (C2). Permanecem da v2.0: a worker thread submete lotes reais de até 16 chunks por `vkQueueSubmit2` (B4) e o ciclo de vida dos slots é blindado contra corridas (B1, detalhado na Etapa 2).
 
-## 2. Etapa 1: Chunk streaming (histerese)
+## 2. Etapa 1: Chunk streaming incremental (histerese + cursor VS-17)
 
 O jogador movimenta a câmera e o mundo precisa carregar. Para evitar que blocos apareçam e desapareçam na borda da visão (efeito sanfona), aplicamos histerese com três zonas de raio: **Visão (8)** — o que é desenhado; **Geração (9)** — o que existe em memória; **Descarga (10)** — o que é devolvido ao pool. Desde a VS-08 esses raios (e os lotes do worker) vêm de `vox.ini` com provisionamento runtime — ver o Manual Técnico §10.
 
-**O pulo do gato (fila de prioridade):** todos os chunks na zona de geração entram numa fila. A worker thread sempre puxa os lotes mais próximos da câmera — o chão sob os pés do jogador é gerado imediatamente; o horizonte, aos poucos. Cada lote carrega até 16 chunks ordenados por distância.
+**Fila de prioridade + orçamento incremental:** a VS-17 substitui a varredura síncrona a cada chunk cruzado por um cursor persistente sobre offsets ordenados por distância. Cada frame consome no máximo ~6 ms (tick a cada 64 coordenadas), enfileirando geração ausente e descarregando pelo caminho B1; no fim do ciclo reancora no centro atual e fatia a descarga pendente. A worker sempre puxa os lotes mais próximos — o chão sob os pés vem primeiro; cada lote carrega até 16 chunks. Visibilidade e publicação no ring ocorrem numa única passada por `active_chunks`.
 
 **Novo na v3.0 — duas bolhas independentes:** à bolha de render acima soma-se a bolha de simulação do mirror CPU (Etapa 7), centrada nos agentes ativos e com raio próprio. Um chunk pode existir na VRAM sem existir na RAM (horizonte distante) e vice-versa (uma sala atrás da câmera onde um NPC está).
 

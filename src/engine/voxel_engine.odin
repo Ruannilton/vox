@@ -2,11 +2,15 @@ package engine
 
 import "core:log"
 import "core:math"
+import "core:slice"
 import "core:sync"
 import "core:thread"
 import "core:time"
 import vma "shared:vma"
 import vk "vendor:vulkan"
+
+STREAMING_SLICE_BUDGET_MS :: 6.0
+STREAMING_TICK_INTERVAL :: 64
 
 ChunkState :: enum {
 	GENERATING,
@@ -44,6 +48,14 @@ RetiringComputeSlot :: struct {
 	release_timeline_value: u64,
 }
 
+StreamingCursor :: struct {
+	center:             ChunkCoordinate,
+	offsets:            [dynamic]ChunkCoordinate,
+	position:           int,
+	pending_unload:     [dynamic]ChunkCoordinate,
+	center_initialized: bool,
+}
+
 VoxelEngine :: struct {
 	// --- domínio exclusivo da thread principal ---
 	active_chunks:                  map[ChunkCoordinate]ChunkRecord,
@@ -52,6 +64,7 @@ VoxelEngine :: struct {
 	retiring_compute_slots:         [dynamic]RetiringComputeSlot,
 	slot_generations:               []u32,
 	last_camera_chunk:              ChunkCoordinate,
+	streaming_cursor:               StreamingCursor,
 	update_appended_tasks:          int,   // VS-15: tarefas enfileiradas no último update (plot work_items)
 	slots_starved:                  bool,
 	first_update:                   bool,
@@ -114,6 +127,7 @@ voxel_engine_init :: proc() -> ^VoxelEngine {
 	}
 	edit_manager_init(ve)
 	mirror_init(ve)
+	streaming_cursor_init(ve)
 
 	voxel_gpu_init()
 
@@ -146,6 +160,8 @@ voxel_engine_destroy :: proc(ve: ^VoxelEngine) {
 	delete(ve.pending_tasks)
 	delete(ve.pending_export_tasks)
 	delete(ve.submitted_batches)
+	delete(ve.streaming_cursor.offsets)
+	delete(ve.streaming_cursor.pending_unload)
 	edit_manager_destroy(ve)
 	mirror_destroy(ve)
 	active_ve = nil
@@ -232,8 +248,20 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	offset := int(frame_index) * int(config.visible_capacity)
 	count: u32 = 0
+	vision_radius2 := i64(config.radius_vision) * i64(config.radius_vision)
 	for coord, record in ve.active_chunks {
-		if record.state != .RENDERABLE do continue
+		is_visible := calculate_squared_distance(ve.last_camera_chunk, coord) <= vision_radius2
+		current_state := record.state
+		if current_state == .CACHED && is_visible {
+			current_state = .RENDERABLE
+		} else if current_state == .RENDERABLE && !is_visible {
+			current_state = .CACHED
+		}
+		if current_state != record.state {
+			chunk_record := &ve.active_chunks[coord]
+			chunk_record.state = current_state
+		}
+		if current_state != .RENDERABLE do continue
 		if count >= config.visible_capacity do break
 
 		entry := VisibleChunk {
@@ -271,95 +299,13 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 	ve.update_appended_tasks = 0
 
 	camera_chunk := chunk_coordinate_from_world(camera_position)
-	if camera_chunk != ve.last_camera_chunk {
-		ZoneN("streaming_update")
-		ve.last_camera_chunk = camera_chunk
-
-		tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
-		ve.priority_camera_chunk = camera_chunk
-		tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
-
-		to_unload := make([dynamic]ChunkCoordinate, context.temp_allocator)
-		for coord in ve.active_chunks {
-			if calculate_squared_distance(camera_chunk, coord) > i64(config.radius_unload) * i64(config.radius_unload) {
-				append(&to_unload, coord)
-			}
-		}
-		for coord in to_unload {
-			record := ve.active_chunks[coord]
-			mirror_forget_chunk(ve, coord, record)
-			if record.state == .EMPTY {
-				// VS-10 (REQ-VRT-01): registro virtual — sem aposentadoria
-				// (nada GPU-side); apenas deleta do map. O contador de
-				// ativos é recontado no log periódico.
-				delete_key(&ve.active_chunks, coord)
-				continue
-			}
-			if record.state == .GENERATING {
-				retire_generating_slot(ve, coord, record)
-			} else {
-				append(&ve.retiring_slots, RetiringSlot{record.storage_slot_index, app.currentTimelineValue})
-			}
-			delete_key(&ve.active_chunks, coord)
-		}
-
-		new_tasks := make([dynamic]GenerationTask, context.temp_allocator)
-		slots_exhausted := false
-		generation_radius := i32(config.radius_generation)
-		generation_radius2 := i64(config.radius_generation) * i64(config.radius_generation)
-		for x in -generation_radius ..= generation_radius {
-			for y in -generation_radius ..= generation_radius {
-				for z in -generation_radius ..= generation_radius {
-					coord := camera_chunk + ChunkCoordinate{x, y, z}
-					if calculate_squared_distance(camera_chunk, coord) > generation_radius2 do continue
-					if coord in ve.active_chunks do continue
-
-					if len(ve.free_storage_slots) == 0 {
-						slots_exhausted = true
-						continue
-					}
-					slot := pop(&ve.free_storage_slots)
-					ve.slot_generations[slot] += 1
-					generation := ve.slot_generations[slot]
-					ve.active_chunks[coord] = ChunkRecord{.GENERATING, slot, generation}
-					append(&new_tasks, GenerationTask{
-						coordinate         = coord,
-						storage_slot_index = slot,
-						generation         = generation,
-						mirror_ring_slot   = -1,
-					})
-				}
-			}
-		}
-		if slots_exhausted && !ve.slots_starved {
-			// um warn por episódio de fome (transição no passo de geração)
-			log.warn("Pool de slots de chunk esgotado; novas requisições aguardam reciclagem")
-			ve.slots_starved = true
-		}
-		if !slots_exhausted {
-			ve.slots_starved = false
-		}
-		if len(new_tasks) > 0 {
-			tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
-			append(&ve.pending_tasks, ..new_tasks[:])
-			sync.cond_signal(&ve.queue_condition)
-			tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
-		}
-		ve.update_appended_tasks = len(new_tasks)
-	}
-
+	ve.last_camera_chunk = camera_chunk
+	tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
+	ve.priority_camera_chunk = camera_chunk
+	tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
 	{
-		ZoneN("promote_visibility")
-		for coord, record in ve.active_chunks {
-			is_visible := calculate_squared_distance(camera_chunk, coord) <= i64(config.radius_vision) * i64(config.radius_vision)
-			if record.state == .CACHED && is_visible {
-				chunk_record := &ve.active_chunks[coord]
-				chunk_record.state = .RENDERABLE
-			} else if record.state == .RENDERABLE && !is_visible {
-				chunk_record := &ve.active_chunks[coord]
-				chunk_record.state = .CACHED
-			}
-		}
+		ZoneN("streaming_slice")
+		streaming_cursor_advance(ve, camera_chunk)
 	}
 
 	{
@@ -376,6 +322,109 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 	if time.duration_seconds(time.tick_since(ve.last_empty_log_time)) >= 5.0 {
 		ve_log_empty_stats(ve)
 	}
+}
+
+@(private)
+streaming_cursor_init :: proc(ve: ^VoxelEngine) {
+	radius := i32(config.radius_unload)
+	for x in -radius ..= radius {
+		for y in -radius ..= radius {
+			for z in -radius ..= radius {
+				append(&ve.streaming_cursor.offsets, ChunkCoordinate{x, y, z})
+			}
+		}
+	}
+	slice.sort_by(ve.streaming_cursor.offsets[:], proc(a, b: ChunkCoordinate) -> bool {
+		distance_a := calculate_squared_distance({}, a)
+		distance_b := calculate_squared_distance({}, b)
+		if distance_a != distance_b do return distance_a < distance_b
+		if a.x != b.x do return a.x < b.x
+		if a.y != b.y do return a.y < b.y
+		return a.z < b.z
+	})
+}
+
+@(private)
+streaming_cursor_advance :: proc(ve: ^VoxelEngine, camera_chunk: ChunkCoordinate) {
+	cursor := &ve.streaming_cursor
+	if !cursor.center_initialized {
+		cursor.center = camera_chunk
+		cursor.center_initialized = true
+	}
+	start := time.tick_now()
+	new_tasks := make([dynamic]GenerationTask, context.temp_allocator)
+	slots_exhausted := false
+	generation_radius2 := i64(config.radius_generation) * i64(config.radius_generation)
+	unload_radius2 := i64(config.radius_unload) * i64(config.radius_unload)
+
+	unload_count := 0
+	for len(cursor.pending_unload) > 0 {
+		coord := pop(&cursor.pending_unload)
+		streaming_unload_chunk(ve, coord)
+		unload_count += 1
+		if unload_count % STREAMING_TICK_INTERVAL == 0 &&
+		   time.duration_milliseconds(time.tick_since(start)) >= STREAMING_SLICE_BUDGET_MS {
+			break
+		}
+	}
+
+	for len(cursor.pending_unload) == 0 && cursor.position < len(cursor.offsets) {
+		offset := cursor.offsets[cursor.position]
+		cursor.position += 1
+		coord := cursor.center + offset
+		distance2 := calculate_squared_distance({}, offset)
+		if distance2 <= generation_radius2 && coord not_in ve.active_chunks {
+			if len(ve.free_storage_slots) == 0 {
+				slots_exhausted = true
+			} else {
+				slot := pop(&ve.free_storage_slots)
+				ve.slot_generations[slot] += 1
+				generation := ve.slot_generations[slot]
+				ve.active_chunks[coord] = ChunkRecord{.GENERATING, slot, generation}
+				append(&new_tasks, GenerationTask{coord, slot, generation, -1, false})
+			}
+		} else if distance2 > unload_radius2 && coord in ve.active_chunks {
+			streaming_unload_chunk(ve, coord)
+		}
+		if cursor.position % STREAMING_TICK_INTERVAL == 0 &&
+		   time.duration_milliseconds(time.tick_since(start)) >= STREAMING_SLICE_BUDGET_MS {
+			break
+		}
+	}
+
+	if len(cursor.pending_unload) == 0 && cursor.position == len(cursor.offsets) {
+		for coord in ve.active_chunks {
+			if calculate_squared_distance(camera_chunk, coord) > unload_radius2 {
+				append(&cursor.pending_unload, coord)
+			}
+		}
+		cursor.center = camera_chunk
+		cursor.position = 0
+	}
+
+	if slots_exhausted && !ve.slots_starved {
+		log.warn("Pool de slots de chunk esgotado; novas requisições aguardam reciclagem")
+	}
+	ve.slots_starved = slots_exhausted
+	if len(new_tasks) > 0 {
+		tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
+		append(&ve.pending_tasks, ..new_tasks[:])
+		sync.cond_signal(&ve.queue_condition)
+		tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
+	}
+	ve.update_appended_tasks = len(new_tasks)
+}
+
+@(private)
+streaming_unload_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
+	record := ve.active_chunks[coord]
+	mirror_forget_chunk(ve, coord, record)
+	if record.state == .GENERATING {
+		retire_generating_slot(ve, coord, record)
+	} else if record.state != .EMPTY {
+		append(&ve.retiring_slots, RetiringSlot{record.storage_slot_index, app.currentTimelineValue})
+	}
+	delete_key(&ve.active_chunks, coord)
 }
 
 @(private)

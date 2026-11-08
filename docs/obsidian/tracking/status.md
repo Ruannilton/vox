@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 17 |
-| Specs aprovadas | 17 |
+| Specs registradas | 18 |
+| Specs aprovadas | 18 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 17 |
-| Validações verificadas | 15 |
+| Implementações concluídas | 18 |
+| Validações verificadas | 16 |
 
-Dezessete especificações registradas, aprovadas e implementadas; 15 integralmente verificadas. VS-15 aguarda o AC-02 manual da UI Tracy; VS-16 tem AC-01 verificado e aguarda o AC-02 manual da timeline híbrida/locks/call stacks. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Dezoito especificações registradas, aprovadas e implementadas; 16 integralmente verificadas. VS-15 e VS-16 aguardam os ACs manuais da UI Tracy; VS-17 (streaming incremental) concluída e verificada. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -38,6 +38,7 @@ Dezessete especificações registradas, aprovadas e implementadas; 15 integralme
 | VS-14 | [[VS-14-plantas-alpha-test-spawn|Plantas — alpha-test e spawn determinístico]] | `aprovada` | `concluida` | `verificada` | VS-12 | — |
 | VS-15 | [[VS-15-tracy-profiler|Tracy profiler (CPU zones)]] | `aprovada` | `concluida` | `em-validacao` | VS-05 | AC-02 manual da UI Tracy (passo a passo no manual técnico §11) |
 | VS-16 | [[VS-16-instrumentacao-detalhada|Instrumentação detalhada (CPU + GPU)]] | `aprovada` | `concluida` | `em-validacao` | VS-15 | AC-02 manual da UI Tracy (manual técnico §11) |
+| VS-17 | [[VS-17-streaming-incremental|Streaming incremental]] | `aprovada` | `concluida` | `verificada` | VS-01 | — |
 
 ## Decisões
 
