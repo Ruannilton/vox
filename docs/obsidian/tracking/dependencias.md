@@ -26,6 +26,7 @@ graph TD
     VS17[VS-17 — Streaming incremental]
     VS18[VS-18 — Mundo na worker]
     VS19[VS-19 — Física solver/mirror]
+    VS20[VS-20 — Gameplay seleção/construção/pulo]
 
     VS00 --> VS01
     VS01 --> VS02
@@ -46,6 +47,7 @@ graph TD
     VS16 --> VS17
     VS17 --> VS18
     VS18 --> VS19
+    VS19 --> VS20
 ```
 
 ## Registro normativo
@@ -71,7 +73,8 @@ graph TD
 | [[VS-16-instrumentacao-detalhada|VS-16]] | VS-15 | — | — |
 | [[VS-17-streaming-incremental|VS-17]] | VS-01 | — | — |
 | [[VS-18-mundo-na-worker|VS-18]] | VS-17 | — | VS-19 |
-| [[VS-19-fisica-solver-mirror|VS-19]] | VS-04, VS-13, VS-14, VS-18 | ADR-F1 | — |
+| [[VS-19-fisica-solver-mirror|VS-19]] | VS-04, VS-13, VS-14, VS-18 | — | VS-20 |
+| [[VS-20-gameplay-selecao-construcao-pulo|VS-20]] | VS-03, VS-07, VS-19 | — | — |
 
 ## Decisões incorporadas
 
@@ -92,6 +95,7 @@ graph TD
 - ADR-T4: VS-16 adiciona zonas GPU (dois contextos TracyVk — fila gráfica e compute — com query pools dedicadas, calibração e coleta nos pontos de espera existentes; VS-05 intacta) e CPU aprofundada (call stacks, lock tracking em dois mutexes, sub-zones); degradação por omissão ao invés de overflow de ring.
 - ADR-W1: VS-18 migra o ownership do mundo para a worker thread — active_chunks, streaming, completions/B1, promote/publish no ring com reuse guardado por timeline gráfica, materialização E1 e mirror service; main fica com input/render/present (~4-5 ms/frame); handoff de frame por atomic+condição com dependências para trás (sem deadlock).
 - ADR-F1 (aceita, implementada pela VS-19): física CPU na main sobre o mirror, `PhysicsDefinition` separada, AABB/sweep em passo fixo e DDA tri-state; heightmap derivado do bitmask na materialização (ring/binding 20 mantido como reserva futura por emenda do mantenedor) e emendas VS-13/VS-00.
+- ADR-G1 de gameplay (aceita): VS-20 usa DDA central por frame, realce no fragment por UBO binding 21 (16 B), cliques via E1 e impulso SPACE de 1,5 bloco somente grounded; spec aprovada de nascença por dispensa do mantenedor.
 
 ## Dependências transversais a registrar nas specs
 

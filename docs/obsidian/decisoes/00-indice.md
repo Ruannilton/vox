@@ -33,16 +33,17 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 | ADR-T3 | [[ADR-T3-tracy-profiler|Tracy profiler via odin-tracy, opt-in por define]] | `aceita` | VS-15 |
 | ADR-T4 | [[ADR-T4-instrumentacao-detalhada|Instrumentação detalhada — GPU zones e CPU aprofundada]] | `aceita` | VS-16 |
 | ADR-W1 | [[ADR-W1-ownership-mundo-worker|Ownership do mundo na worker thread]] | `aceita` | VS-18 |
-| ADR-F1 | [[ADR-F1-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `pendente` | VS-00, VS-13, VS-19 |
+| ADR-F1 | [[ADR-F1-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aceita` | VS-00, VS-13, VS-19 |
+| ADR-G1 | [[ADR-G1-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aceita` | VS-00, VS-20 |
 
 ## Resumo
 
-- 28 decisões registradas: 27 aceitas e 1 pendente.
-- ADR-F1 aguarda ratificação do mantenedor.
+- 29 decisões registradas e aceitas (o ID ADR-G1 é compartilhado por duas decisões, com links desambiguados pelo nome do arquivo).
+- Nenhuma decisão pendente.
 - Nenhuma decisão representa, por si só, implementação concluída ou validação verificada.
 
 ## Bloqueios
 
-ADR-F1 bloqueia a aprovação da VS-19. As demais escolhas foram incorporadas às suas specs.
+Não há bloqueios de aprovação por ADR. A VS-20 foi aprovada de nascença por dispensa expressa do mantenedor.
 
 Novas decisões devem usar [[modelo-decisao|o modelo de ADR]], receber um ID único e ser adicionadas a este índice, ao painel de status e ao grafo quando bloquearem uma spec.

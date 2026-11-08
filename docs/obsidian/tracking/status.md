@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 20 |
-| Specs aprovadas | 19 |
-| Specs em elaboração ou revisão | 1 |
-| Implementações em andamento | 0 |
+| Specs registradas | 21 |
+| Specs aprovadas | 21 |
+| Specs em elaboração ou revisão | 0 |
+| Implementações em andamento | 1 |
 | Implementações concluídas | 20 |
 | Validações verificadas | 18 |
 
-Vinte especificações registradas, 19 aprovadas e implementadas (**18 integralmente verificadas**), **VS-19 (física — solver CPU sobre o mirror) concluída e verificada**. VS-15 e VS-16 aguardam os ACs manuais da UI Tracy; VS-18 concluída e verificada. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Vinte e uma especificações registradas e aprovadas; 20 concluídas e **18 integralmente verificadas**. VS-20 nasce aprovada por dispensa do mantenedor e está com implementação em andamento, sem validação iniciada. VS-15 e VS-16 aguardam os ACs manuais da UI Tracy. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -41,6 +41,7 @@ Vinte especificações registradas, 19 aprovadas e implementadas (**18 integralm
 | VS-17 | [[VS-17-streaming-incremental|Streaming incremental]] | `aprovada` | `concluida` | `verificada` | VS-01 | — |
 | VS-18 | [[VS-18-mundo-na-worker|Mundo na worker (world ownership)]] | `aprovada` | `concluida` | `verificada` | VS-17 | — |
 | VS-19 | [[VS-19-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aprovada` | `concluida` | `verificada` | VS-04, VS-13, VS-14, VS-18 | — |
+| VS-20 | [[VS-20-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aprovada` | `em-andamento` | `nao-iniciada` | VS-03, VS-07, VS-19 | — |
 
 ## Decisões
 
@@ -75,6 +76,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-T4 | [[ADR-T4-instrumentacao-detalhada|Instrumentação detalhada — GPU zones e CPU aprofundada]] | `aceita` | VS-16 |
 | ADR-W1 | [[ADR-W1-ownership-mundo-worker|Ownership do mundo na worker thread]] | `aceita` | VS-18 |
 | ADR-F1 | [[ADR-F1-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aceita` | VS-00, VS-13, VS-19 |
+| ADR-G1 | [[ADR-G1-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aceita` | VS-00, VS-20 |
 
 ## Vocabulário de status
 
