@@ -39,7 +39,7 @@ ring host-visible → ChunkPages             flush do journal a 100 ms, no comma
 
 O jogador movimenta a câmera e o mundo precisa carregar. Para evitar que blocos apareçam e desapareçam na borda da visão (efeito sanfona), aplicamos histerese com três zonas de raio: **Visão (8)** — o que é desenhado; **Geração (9)** — o que existe em memória; **Descarga (10)** — o que é devolvido ao pool. Desde a VS-08 esses raios (e os lotes do worker) vêm de `vox.ini` com provisionamento runtime — ver o Manual Técnico §10.
 
-**Fila de prioridade + orçamento incremental:** a VS-17 substitui a varredura síncrona a cada chunk cruzado por um cursor persistente sobre offsets ordenados por distância. Cada frame consome no máximo ~6 ms (tick a cada 64 coordenadas), enfileirando geração ausente e descarregando pelo caminho B1; no fim do ciclo reancora no centro atual e fatia a descarga pendente. A worker sempre puxa os lotes mais próximos — o chão sob os pés vem primeiro; cada lote carrega até 16 chunks. Visibilidade e publicação no ring ocorrem numa única passada por `active_chunks`.
+**Fila de prioridade + orçamento incremental + ownership worker:** a VS-17 substitui a varredura síncrona por um cursor persistente com fatias de ~6 ms. Na VS-18 a worker é a única dona de `active_chunks`: streaming, completions/B1, mirror, E1 e visibilidade rodam nela. O publish ocorre sob demanda por cruzamento, revisão de mundo ou bump de keepalive; entre mudanças a main reutiliza o último publish compatível sem esperar. O handoff carrega centro, contagem e snapshot de compute, com staleness de dois frames e reuse do ring guardado pela timeline gráfica.
 
 **Novo na v3.0 — duas bolhas independentes:** à bolha de render acima soma-se a bolha de simulação do mirror CPU (Etapa 7), centrada nos agentes ativos e com raio próprio. Um chunk pode existir na VRAM sem existir na RAM (horizonte distante) e vice-versa (uma sala atrás da câmera onde um NPC está).
 
@@ -49,7 +49,7 @@ O jogador movimenta a câmera e o mundo precisa carregar. Para evitar que blocos
 
 ## 3. Etapa 2: A ponte (Vulkan 1.4 Sync)
 
-A submissão de trabalho usa **timeline semaphores** e o `vkQueueSubmit2`. Em vez de bloquear a CPU esperando a placa, usamos frames em voo num sistema de anel: lotes de compute são despachados e incrementam um valor na linha do tempo; a thread principal lê esse valor para saber quando um chunk pode sair de GENERATING para CACHED. Na fila gráfica, a GPU só lê blocos cuja fabricação já foi sinalizada — zero defeitos visuais por corrida de dados.
+A submissão de trabalho usa **timeline semaphores** e o `vkQueueSubmit2`. Em vez de bloquear a CPU esperando a placa, usamos frames em voo num sistema de anel: lotes de compute são despachados e incrementam um valor na linha do tempo; a worker lê esse valor para saber quando um chunk pode sair de GENERATING para CACHED. Na fila gráfica, a GPU só lê blocos cuja fabricação já foi sinalizada. No handoff VS-18, o submit usa o `published_compute_value` do publish consumido, não um valor global mais novo, e a reescrita do ring só ocorre após `vkGetSemaphoreCounterValue` confirmar o uso de duas frames atrás.
 
 ### 3.1 Correção B1 — ciclo de vida dos slots
 

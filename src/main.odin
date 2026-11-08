@@ -169,14 +169,13 @@ main :: proc() {
 				engine.telemetry_service()
 				update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
 
-				engine.voxel_engine_update(voxel_engine, camera.position)
-				// VS-03 (E1): staging do journal de edição quando o intervalo vence
-				engine.edit_update(voxel_engine)
+				engine.voxel_engine_request_frame(voxel_engine, engine.app.currentTimelineValue, engine.app.frameIndex, engine.chunk_coordinate_from_world(camera.position))
 			}
 
 			signal_value: u64
 			visible_count: u32
 			edit_job_count: u32
+			compute_wait_value: u64
 			frame_resource: ^engine.FrameResource
 			swapchain_frame: engine.SwapChainFrameData
 			vp: glm.mat4
@@ -203,7 +202,8 @@ main :: proc() {
 				// VS-16 (REQ-CPU-01)
 				{
 					engine.ZoneN("publish_visible")
-					visible_count = engine.voxel_engine_publish_visible(voxel_engine, engine.app.frameIndex)
+					visible_count = engine.voxel_engine_wait_published(voxel_engine, signal_value, engine.chunk_coordinate_from_world(camera.position))
+					compute_wait_value = voxel_engine.published_compute_value
 				}
 				{
 					engine.ZoneN("edit_flush")
@@ -345,11 +345,11 @@ main :: proc() {
 			compute_wait_info := vk.SemaphoreSubmitInfo {
 				sType     = .SEMAPHORE_SUBMIT_INFO,
 				semaphore = engine.app.computeTimelineSemaphore,
-				value     = voxel_engine.highest_completed_compute_value,
+				value     = compute_wait_value,
 				stageMask = {.COMPUTE_SHADER, .MESH_SHADER_EXT},
 			}
 			wait_infos := [2]vk.SemaphoreSubmitInfo{acquire_wait_info, compute_wait_info}
-			wait_count: u32 = voxel_engine.highest_completed_compute_value > 0 ? 2 : 1
+			wait_count: u32 = compute_wait_value > 0 ? 2 : 1
 			semaphore_signals := []vk.SemaphoreSubmitInfo {
 				{
 					sType = .SEMAPHORE_SUBMIT_INFO,

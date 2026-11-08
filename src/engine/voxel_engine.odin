@@ -86,6 +86,22 @@ VoxelEngine :: struct {
 	worker_stop_requested: u32,
 
 	worker: ^thread.Thread,
+
+	frame_mutex:             sync.Mutex,
+	frame_condition:         sync.Cond,
+	requested_frame:         u64,
+	published_frame:         u64,
+	requested_frame_index:   u32,
+	requested_camera_chunk:  ChunkCoordinate,
+	published_frame_index:   u32,
+	published_visible_count: u32,
+	published_compute_value: u64,
+	published_camera_chunk: ChunkCoordinate,
+	world_revision:         u64,
+	published_revision:     u64,
+	has_published:          bool,
+	publish_bump:           u64,
+	consumed_publish_bump:  u64,
 }
 
 active_ve: ^VoxelEngine
@@ -226,6 +242,7 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 		delete(b.tasks)
 	}
 	remove_range(&ve.submitted_batches, 0, completed_count)
+	if completed_count > 0 do ve.world_revision += 1
 	tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
 
 	for i := len(ve.retiring_compute_slots) - 1; i >= 0; i -= 1 {
@@ -243,6 +260,32 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 			unordered_remove(&ve.retiring_slots, i)
 		}
 	}
+}
+
+voxel_engine_request_frame :: proc(ve: ^VoxelEngine, frame_value: u64, frame_index: u32, camera_chunk: ChunkCoordinate) {
+	sync.mutex_lock(&ve.frame_mutex)
+	ve.requested_frame = frame_value + 1
+	ve.requested_frame_index = frame_index
+	ve.requested_camera_chunk = camera_chunk
+	sync.cond_signal(&ve.frame_condition)
+	sync.mutex_unlock(&ve.frame_mutex)
+}
+
+voxel_engine_wait_published :: proc(ve: ^VoxelEngine, frame_value: u64, camera_chunk: ChunkCoordinate) -> u32 {
+	sync.mutex_lock(&ve.frame_mutex)
+	defer sync.mutex_unlock(&ve.frame_mutex)
+	if ve.has_published && frame_value > ve.published_frame + 2 {
+		ve.publish_bump += 1
+	}
+	for {
+		publish_compatible := ve.has_published && ve.published_camera_chunk == camera_chunk
+		publish_fresh := frame_value <= ve.published_frame + 2
+		if publish_compatible && publish_fresh do break
+		if !sync.cond_wait_with_timeout(&ve.frame_condition, &ve.frame_mutex, 250 * time.Millisecond) {
+			log.warnf("VS-18: publish excedeu 250 ms (frame={}, publicado={}, centro={}/{}, revisão={}/{})", frame_value, ve.published_frame, camera_chunk, ve.published_camera_chunk, ve.world_revision, ve.published_revision)
+		}
+	}
+	return ve.published_visible_count
 }
 
 voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
@@ -314,10 +357,6 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 		mirror_service_retries(ve)
 	}
 
-	// VS-10 (REQ-VRT-04): edições em chunk EMPTY com pool esgotado ficam na
-	// fila; a materialização é retentada a cada update (sem erro, sem perda).
-	ve_retry_empty_edits(ve)
-
 	// VS-10 (REQ-VRT-05): log periódico dos contadores de chunks vazios.
 	if time.duration_seconds(time.tick_since(ve.last_empty_log_time)) >= 5.0 {
 		ve_log_empty_stats(ve)
@@ -381,7 +420,12 @@ streaming_cursor_advance :: proc(ve: ^VoxelEngine, camera_chunk: ChunkCoordinate
 				ve.slot_generations[slot] += 1
 				generation := ve.slot_generations[slot]
 				ve.active_chunks[coord] = ChunkRecord{.GENERATING, slot, generation}
-				append(&new_tasks, GenerationTask{coord, slot, generation, -1, false})
+				append(&new_tasks, GenerationTask{
+					coordinate         = coord,
+					storage_slot_index = slot,
+					generation         = generation,
+					mirror_ring_slot   = -1,
+				})
 			}
 		} else if distance2 > unload_radius2 && coord in ve.active_chunks {
 			streaming_unload_chunk(ve, coord)
@@ -422,12 +466,13 @@ streaming_unload_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
 	if record.state == .GENERATING {
 		retire_generating_slot(ve, coord, record)
 	} else if record.state != .EMPTY {
-		append(&ve.retiring_slots, RetiringSlot{record.storage_slot_index, app.currentTimelineValue})
+		completed_graphics: u64
+		vk_check(vk.GetSemaphoreCounterValue(app.vkDevice, app.timelineSemaphore, &completed_graphics))
+		append(&ve.retiring_slots, RetiringSlot{record.storage_slot_index, completed_graphics})
 	}
 	delete_key(&ve.active_chunks, coord)
 }
 
-@(private)
 chunk_coordinate_from_world :: proc "contextless" (position: [3]f32) -> ChunkCoordinate {
 	return {
 		floor_div_i32(i32(math.floor(position.x)), CHUNK_SIZE),

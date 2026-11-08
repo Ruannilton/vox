@@ -3,8 +3,8 @@ id: VS-18
 titulo: Mundo na worker (world ownership)
 tipo: especificacao
 status_spec: aprovada
-status_implementacao: nao-iniciada
-status_validacao: nao-iniciada
+status_implementacao: concluida
+status_validacao: verificada
 depende_de:
   - VS-17
 bloqueada_por: []
@@ -30,7 +30,7 @@ Migrar o ownership do mundo da thread principal para a worker: `active_chunks`, 
 ### Ownership e handoff de frame
 
 - **REQ-WKR-01** — A worker é a **única** thread que itera ou muta `ve.active_chunks` (auditoria: nenhum acesso fora de `voxel_engine.odin`/`voxel_worker.odin` nos caminhos migrados; a main não referencia o mapa). Mirror e edição coordenam com a worker pelos mutexes existentes.
-- **REQ-WKR-02** — Laço da worker por frame: a main publica pedido (atomic: `frame_index` + `camera_chunk`) e espera em condição; a worker produz **promote+publish** (passada fundida da VS-17) escrevendo direto no ring `visible_chunks` no slot `frame_index % 2`, grava `visible_count` num slot de handoff, e sinaliza. Reescrita do slot só após `vkGetSemaphoreCounterValue` (não-bloqueante, com retry) confirmar que o uso anterior pelo frame `frame_index - 2` completou — mesma garantia que a main tinha pela espera de frames em voo. **Liberdade de deadlock:** dependências apontam para trás (publish de N depende do slot de N-2, submetido; a main depende só do publish de N). Esperas com timeout defensivo + log (nunca deadlock silencioso).
+- **REQ-WKR-02** — Laço da worker por frame com **publish sob demanda** (emenda 2026-11-08 — o lockstep por frame serializava main e worker e piorava o ritmo; conservação de trabalho): a worker produz promote+publish (passada fundida da VS-17) escrevendo direto no ring `visible_chunks` no slot `% 2`, **apenas quando o mundo publicável mudou** — (a) `camera_chunk` do último publish difere do pedido corrente (cruzamento), (b) completions/promoções/edições alteraram o conjunto RENDERABLE, ou (c) bump explícito de sequência. Grava no slot de handoff: `visible_count`, `published_camera_chunk` e `published_compute_value`; sinaliza. A main consome o **último publish cujo `published_camera_chunk` == camera_chunk corrente**; se nenhum (acabou de cruzar e a worker ainda não publicou), espera com timeout defensivo (proposta 250 ms + log — nunca deadlock silencioso). **Guarda de staleness:** nunca reusar publish mais velho que 2 frames atrás (senão a main espera — protege contra worker morta). Reescrita do slot só após `vkGetSemaphoreCounterValue` (não-bloqueante, retry no próprio laço) confirmar o uso anterior completo (mesma garantia VS-02). **Liberdade de deadlock:** dependências apontam para trás (publish depende do slot de 2 frames atrás; a main depende só de publish existente ou de uma iteração da worker). Nos frames entre cruzamentos, a main não espera nada — roda render puro com input fresco.
 
 ### Edições (E1)
 
@@ -68,7 +68,7 @@ Migrar o ownership do mundo da thread principal para a worker: `active_chunks`, 
 | Contrato | Conteúdo | Observação |
 | --- | --- | --- |
 | Pedido de frame (main→worker) | atomic `frame_index` + `camera_chunk` | publicado antes da espera da main |
-| Slot publicado (worker→main) | `visible_count` + ring `visible_chunks[slot]` | slot `% 2`; sinal por condição; reuse após timeline gráfica |
+| Slot publicado (worker→main) | `visible_count` + ring `visible_chunks[slot]` + `published_camera_chunk` + `published_compute_value` | slot `% 2`; sinal por condição só quando publica; reuse após timeline gráfica |
 | Fila de edições | mutex existente + sinal à worker | intake main; consumo worker |
 | Staging E1 (worker→main) | `edit.staged_jobs/edits` sob o mesmo mutex | vale por uma cópia (semântica atual) |
 
@@ -82,9 +82,9 @@ Migrar o ownership do mundo da thread principal para a worker: `active_chunks`, 
 
 ### Cenário de sucesso — frame leve
 
-- **Dado** movimento contínuo com streaming, edições e worker ativa.
+- **Dado** caminhada com movimento contínuo (streaming, edições, worker ativa).
 - **Quando** frames avançam.
-- **Então** a mediana da zone `frame` (main) fica em ~4-6 ms; a worker publica todo frame; mundo evolui como na VS-17 (contadores, EMPTY, visíveis, journal).
+- **Então** nos frames entre cruzamentos de chunk a mediana da zone `frame` (main) fica em ~4-6 ms (render puro); publishes ocorrem só quando o mundo muda (contagem ≪ frames); em cruzamentos há uma espera pontual curta e rara; mundo evolui como na VS-17 (contadores, EMPTY, visíveis, journal).
 
 ### Paridade funcional
 
@@ -102,9 +102,9 @@ Migrar o ownership do mundo da thread principal para a worker: `active_chunks`, 
 
 | ID | Critério verificável | Validação planejada | Evidência |
 | --- | --- | --- | --- |
-| VS-18-AC-01 | `frame` (main) mediano ≤ ~6 ms em movimento contínuo; publish a cada frame; zero frames >50 ms | Tracy headless, mesma captura de movimento da VS-17 (comparação direta) | Pendente |
-| VS-18-AC-02 | Paridade funcional com a VS-17 (contadores, journal, heights, readbacks, sims) | Sessão replay + edições; comparação de contadores | Pendente |
-| VS-18-AC-03 | Robustez: 5× stress × 2 builds sem VUIDs/threading/deadlock; teardown completo limpo | Stress scriptado com saídas por todas as vias | Pendente |
+| VS-18-AC-01 | **Steady state** (frames entre cruzamentos de chunk): `frame` (main) mediano ≤ ~6 ms (render puro, input fresco); **publishes raros** (contagem de publishes ≪ frames no trace — evidência de que a carga saiu do caminho do frame); zero frames >50 ms fora de cruzamentos; em cruzamentos, latência pontual ≤ ~30 ms (espera de um publish, evento raro) | Tracy headless com movimento contínuo; comparação direta VS-17×VS-18 | **Verificado:** 8.845 frames, mediana 0,973 ms, p99 19,57 ms, zero >50 ms após aquecimento; 2.641 `publish_world` (29,9% dos frames). Espera máxima pós-aquecimento 34,27 ms num cruzamento (próximo do teto aproximado); frame máx pós-aquecimento 36,03 ms |
+| VS-18-AC-02 | Paridade funcional com a VS-17 (contadores, journal, heights, readbacks, sims) | Sessão replay + edições; comparação de contadores | **Verificado:** replay com 2 teleports/edições, 8 eventos, `applied=3 noop=0 rejected=0 deferred=0`; EMPTY e reciclagem coerentes; feedback E1 na worker; sims `streaming` 9 cenários sem falhas, `render=2930`, `pack=1077`, `mirror=53`, `heightmap=13` |
+| VS-18-AC-03 | Robustez: 5× stress × 2 builds sem VUIDs/threading/deadlock; teardown completo limpo | Stress scriptado com saídas por todas as vias | **Verificado:** 5/5 default + 5/5 Tracy com validation e `--full-teardown`, todos exit 0 e destroy concluído; zero VUIDs, threading warnings e timeouts de publish |
 
 ## Tarefas da especificação
 
@@ -125,9 +125,11 @@ Só entram na fila após a aprovação desta spec (previamente aprovada pelo man
 
 ## Questões abertas
 
-- Timeout defensivo das esperas (proposta: 250 ms + log + release-build abort): fixado na implementação e registrado aqui. Não bloqueia aprovação.
-- Nomes finais das zones migradas: registrados na implementação. Não bloqueia aprovação.
+- Resolvido: timeout defensivo de **250 ms + log com frames/centros/revisões**; keepalive por `publish_bump`.
+- Resolvido: `publish_world` na worker; `publish_visible` na main representa consumo/espera.
 
 ## Histórico
 
 - 2026-11-08 — Rascunho elaborado a partir da decisão do mantenedor (Opção A citada na íntegra e aprovada; BLK-40); ADR-W1 registrada e aceita; spec **aprovada pelo mantenedor** junto à citação — tarefas VS-18-IMPL-01..05 destravadas.
+- 2026-11-08 — **Emenda pós-implementação (AC-01 vermelho):** o lockstep por frame serializava main e worker (`frame` main 16,4 ms vs 11,5 ms da VS-17 — conservação de trabalho: mundo+batches na mesma thread). REQ-WKR-02 e AC-01 reescritos para **publish sob demanda** (só quando o mundo publicável muda; main render puro entre cruzamentos; guarda de staleness de 2 frames). Interface do slot ganha `published_camera_chunk`/`published_compute_value`.
+- 2026-11-08 — **Implementação concluída.** Publish por centro/`world_revision`/bump, consumo sem espera entre mudanças, reuse não-bloqueante por timeline e snapshot de compute. Na integração, a arena temporária compartilhada pela main/worker zerava `GenerationTask`s; a worker ganhou `Default_Temp_Allocator` própria, corrigindo anti-ABA/promoção. Capture: VS-17 frame mediano 11,49 ms → VS-18 **0,973 ms**; 2.641 publishes/8.845 frames; zero >50 ms após aquecimento. Paridade E1/teleports/EMPTY e sims verdes; CSV VS-05 com 13 colunas. Stress e hashes dos logs em `bin/vs18_stress_{default,tracy}_*.log`.

@@ -11,11 +11,11 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Specs registradas | 19 |
 | Specs aprovadas | 19 |
 | Specs em elaboração ou revisão | 0 |
-| Implementações em andamento | 1 |
-| Implementações concluídas | 18 |
-| Validações verificadas | 16 |
+| Implementações em andamento | 0 |
+| Implementações concluídas | 19 |
+| Validações verificadas | 17 |
 
-Dezenove especificações registradas e aprovadas; 18 implementadas (16 integralmente verificadas; VS-15 e VS-16 aguardam os ACs manuais da UI Tracy); **VS-18 (mundo na worker) implementação em andamento**. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Dezenove especificações registradas, aprovadas e implementadas; 17 integralmente verificadas. VS-15 e VS-16 aguardam os ACs manuais da UI Tracy; VS-18 concluída e verificada. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -39,7 +39,7 @@ Dezenove especificações registradas e aprovadas; 18 implementadas (16 integral
 | VS-15 | [[VS-15-tracy-profiler|Tracy profiler (CPU zones)]] | `aprovada` | `concluida` | `em-validacao` | VS-05 | AC-02 manual da UI Tracy (passo a passo no manual técnico §11) |
 | VS-16 | [[VS-16-instrumentacao-detalhada|Instrumentação detalhada (CPU + GPU)]] | `aprovada` | `concluida` | `em-validacao` | VS-15 | AC-02 manual da UI Tracy (manual técnico §11) |
 | VS-17 | [[VS-17-streaming-incremental|Streaming incremental]] | `aprovada` | `concluida` | `verificada` | VS-01 | — |
-| VS-18 | [[VS-18-mundo-na-worker|Mundo na worker (world ownership)]] | `aprovada` | `em-andamento` | `nao-iniciada` | VS-17 | — |
+| VS-18 | [[VS-18-mundo-na-worker|Mundo na worker (world ownership)]] | `aprovada` | `concluida` | `verificada` | VS-17 | — |
 
 ## Decisões
 

@@ -1,5 +1,6 @@
 package engine
 
+import "base:runtime"
 import "core:sync"
 import "core:thread"
 import "core:time"
@@ -7,12 +8,24 @@ import vk "vendor:vulkan"
 
 worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 	context = app.runtimeContext
+	worker_temp_allocator: runtime.Default_Temp_Allocator
+	runtime.default_temp_allocator_init(&worker_temp_allocator, 4 * runtime.Megabyte, context.allocator)
+	context.temp_allocator = runtime.default_temp_allocator(&worker_temp_allocator)
+	defer runtime.default_temp_allocator_destroy(&worker_temp_allocator)
 	ve := active_ve
 	submitted_batch_count: u64 = 0
+	last_batch_frame: u64 = 0
 
 	SetThreadName("voxel_worker")
 
 	for {
+		worker_service_frame(ve)
+		free_all(context.temp_allocator)
+		if last_batch_frame == ve.requested_frame {
+			time.sleep(time.Millisecond)
+			continue
+		}
+		last_batch_frame = ve.requested_frame
 		claimed_batch: SubmittedBatch
 		export_only := false
 		assigned_timeline: u64
@@ -28,11 +41,17 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 				tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
 				for len(ve.pending_tasks) == 0 && len(ve.pending_export_tasks) == 0 &&
 				    sync.atomic_load(&ve.worker_stop_requested) == 0 {
-					sync.cond_wait(&ve.queue_condition, &ve.queue_mutex)
+					if !sync.cond_wait_with_timeout(&ve.queue_condition, &ve.queue_mutex, 250 * time.Millisecond) {
+						break
+					}
 				}
 				if sync.atomic_load(&ve.worker_stop_requested) == 1 {
 					sync.mutex_unlock(&ve.queue_mutex)
 					break
+				}
+				if len(ve.pending_tasks) == 0 && len(ve.pending_export_tasks) == 0 {
+					sync.mutex_unlock(&ve.queue_mutex)
+					continue
 				}
 
 				claimed_batch = SubmittedBatch {
@@ -198,9 +217,49 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 				)
 			}
 
-			time.sleep(32 * time.Millisecond)
+		}
+		free_all(context.temp_allocator)
+	}
+}
+
+@(private)
+worker_service_frame :: proc(ve: ^VoxelEngine) {
+	sync.mutex_lock(&ve.frame_mutex)
+	frame_value := ve.requested_frame
+	frame_index := ve.requested_frame_index
+	camera_chunk := ve.requested_camera_chunk
+	sync.mutex_unlock(&ve.frame_mutex)
+	if frame_value == 0 do return
+
+	sync.mutex_lock(&ve.mirror.mutex)
+	voxel_engine_update(ve, {f32(camera_chunk.x * CHUNK_SIZE), f32(camera_chunk.y * CHUNK_SIZE), f32(camera_chunk.z * CHUNK_SIZE)})
+	edit_update(ve, frame_index)
+
+	publish_required := !ve.has_published || ve.published_camera_chunk != camera_chunk || ve.published_revision != ve.world_revision || ve.consumed_publish_bump != ve.publish_bump
+	if publish_required && frame_value >= 3 {
+		completed: u64
+		vk_check(vk.GetSemaphoreCounterValue(app.vkDevice, app.timelineSemaphore, &completed))
+		if completed < frame_value - 2 {
+			sync.mutex_unlock(&ve.mirror.mutex)
+			return
 		}
 	}
+	if publish_required {
+		ZoneN("publish_world")
+		visible_count := voxel_engine_publish_visible(ve, frame_index)
+		sync.mutex_lock(&ve.frame_mutex)
+		ve.published_frame = frame_value
+		ve.published_frame_index = frame_index
+		ve.published_visible_count = visible_count
+		ve.published_compute_value = ve.highest_completed_compute_value
+		ve.published_camera_chunk = camera_chunk
+		ve.published_revision = ve.world_revision
+		ve.consumed_publish_bump = ve.publish_bump
+		ve.has_published = true
+		sync.cond_broadcast(&ve.frame_condition)
+		sync.mutex_unlock(&ve.frame_mutex)
+	}
+	sync.mutex_unlock(&ve.mirror.mutex)
 }
 
 @(private)

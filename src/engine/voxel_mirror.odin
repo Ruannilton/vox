@@ -6,6 +6,7 @@ import vma "shared:vma"
 import vk "vendor:vulkan"
 
 MirrorManager :: struct {
+	mutex: sync.Mutex,
 	// Pool fixo de páginas (endereços estáveis — o hash guarda ponteiros).
 	pool:       []MirrorChunkPage,
 	free_pages: [dynamic]u32,
@@ -165,6 +166,8 @@ mirror_reconcile_rejection :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, rej
 }
 
 voxel_get :: proc(ve: ^VoxelEngine, world_voxel: [3]i32) -> (sample: VoxelSample, ok: bool) {
+	sync.mutex_lock(&ve.mirror.mutex)
+	defer sync.mutex_unlock(&ve.mirror.mutex)
 	chunk, local := mirror_chunk_and_local(world_voxel)
 	page, found := ve.mirror.pages[chunk]
 	if !found || page.state != .MATERIALIZED { return {}, false }
@@ -178,6 +181,8 @@ voxel_is_solid :: proc(ve: ^VoxelEngine, world_voxel: [3]i32) -> (solid: bool, o
 }
 
 mirror_column_ground :: proc(ve: ^VoxelEngine, world_x, world_z, y_from: i32) -> (ground_y: i32, ok: bool) {
+	sync.mutex_lock(&ve.mirror.mutex)
+	defer sync.mutex_unlock(&ve.mirror.mutex)
 	y := y_from
 	for {
 		chunk := ChunkCoordinate{
@@ -204,6 +209,8 @@ mirror_column_ground :: proc(ve: ^VoxelEngine, world_x, world_z, y_from: i32) ->
 // ok = false se a página está ausente/em readback (tri-state preservado);
 // height = 0xFFFF significa coluna sem sólido.
 mirror_height_get :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate, x, z: u32) -> (ok: bool, height: u16) {
+	sync.mutex_lock(&ve.mirror.mutex)
+	defer sync.mutex_unlock(&ve.mirror.mutex)
 	page, found := ve.mirror.pages[chunk_coord]
 	if !found || page.state != .MATERIALIZED {
 		return false, 0

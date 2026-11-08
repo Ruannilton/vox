@@ -17,6 +17,7 @@ EditRingCounts :: struct {
 }
 
 EditManager :: struct {
+	mutex:             sync.Mutex,
 	queue:             [dynamic]VoxelEditRequest,
 	lookup:            map[[3]i32]int,
 	pending:           map[ChunkCoordinate][dynamic]VoxelEditRequest,
@@ -36,26 +37,10 @@ EditManager :: struct {
 
 ve_request_voxel_edit :: proc(ve: ^VoxelEngine, world_voxel: [3]i32, block_id: u32) {
 	if block_id > 65535 do return // fora do domínio de 16 bits do registro do lote
-	// VS-10 (REQ-VRT-04): edição em chunk EMPTY. Ar-em-ar é no-op puro;
-	// bloco sólido materializa o chunk (geração + pendência do E1).
-	chunk, _ := voxel_chunk_and_index(world_voxel)
-	if record, found := ve.active_chunks[chunk]; found && record.state == .EMPTY {
-		if block_id == 0 {
-			log.debugf("VS-10: edição de ar-em-ar em chunk EMPTY {} descartada (no-op)", chunk)
-			return
-		}
-		if !ve_try_materialize_empty(ve, chunk) {
-			// pool esgotado: a edição permanece na fila e a materialização
-			// é retentada a cada update (ve_retry_empty_edits).
-			log.debugf("VS-10: pool de slots esgotado; edição em {} aguarda materialização", chunk)
-		}
-	}
-	if index, found := ve.edit.lookup[world_voxel]; found {
-		ve.edit.queue[index].block_id = block_id // última escrita vence
-		return
-	}
-	append(&ve.edit.queue, VoxelEditRequest{world_voxel, block_id})
-	ve.edit.lookup[world_voxel] = len(ve.edit.queue) - 1
+	sync.mutex_lock(&ve.edit.mutex)
+	edit_enqueue(ve, VoxelEditRequest{world_voxel, block_id})
+	sync.mutex_unlock(&ve.edit.mutex)
+	sync.cond_signal(&ve.frame_condition)
 }
 
 // VS-10 (REQ-VRT-04): materializa um chunk EMPTY — aloca slot, enfileira a
@@ -88,6 +73,15 @@ ve_retry_empty_edits :: proc(ve: ^VoxelEngine) {
 	}
 }
 
+edit_enqueue :: proc(ve: ^VoxelEngine, request: VoxelEditRequest) {
+	if index, found := ve.edit.lookup[request.world_voxel]; found {
+		ve.edit.queue[index].block_id = request.block_id
+		return
+	}
+	append(&ve.edit.queue, request)
+	ve.edit.lookup[request.world_voxel] = len(ve.edit.queue) - 1
+}
+
 ve_request_voxel_edits_in_box :: proc(ve: ^VoxelEngine, min_corner, max_corner: [3]i32, block_id: u32) {
 	for x in min_corner.x ..= max_corner.x {
 		for y in min_corner.y ..= max_corner.y {
@@ -102,6 +96,29 @@ ve_request_voxel_edits_in_box :: proc(ve: ^VoxelEngine, min_corner, max_corner: 
 
 
 edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
+	sync.mutex_lock(&ve.edit.mutex)
+	defer sync.mutex_unlock(&ve.edit.mutex)
+	frame_idx := int(frame_index % NUM_FRAMES_IN_FLIGHT)
+	job_count := u32(len(ve.edit.staged_jobs))
+	edit_count := u32(len(ve.edit.staged_edits))
+	for job, i in ve.edit.staged_jobs {
+		global_job := job
+		global_job.first_edit += u32(frame_idx * MAX_EDITS_PER_FLUSH)
+		voxel_gpu.edit_jobs_mapped[frame_idx * MAX_EDIT_JOBS_PER_FLUSH + i] = global_job
+	}
+	for packed_edit, i in ve.edit.staged_edits {
+		voxel_gpu.voxel_edits_mapped[frame_idx * MAX_EDITS_PER_FLUSH + i] = packed_edit
+	}
+	ve.edit.ring_counts[frame_idx] = EditRingCounts{job_count, edit_count}
+	clear(&ve.edit.staged_jobs)
+	clear(&ve.edit.staged_edits)
+	return job_count
+}
+
+@(private)
+edit_ring_write_legacy :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
+	sync.mutex_lock(&ve.edit.mutex)
+	defer sync.mutex_unlock(&ve.edit.mutex)
 	frame_idx := int(frame_index % NUM_FRAMES_IN_FLIGHT)
 
 	// Feedback do flush que usou este slot há NUM_FRAMES_IN_FLIGHT frames.
@@ -183,11 +200,39 @@ edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	return job_count
 }
 
-edit_update :: proc(ve: ^VoxelEngine) {
+@(private)
+edit_collect_feedback :: proc(ve: ^VoxelEngine, frame_idx: int) {
+	previous := ve.edit.ring_counts[frame_idx]
+	if previous.edit_count == 0 do return
+	vk_check(vma.InvalidateAllocation(app.vmaAllocator, voxel_gpu.edit_results.allocation, 0, vk.DeviceSize(voxel_gpu.edit_results.size)))
+	applied, noop, rejected: u32
+	for i in 0 ..< previous.edit_count {
+		code := voxel_gpu.edit_results_mapped[frame_idx * MAX_EDITS_PER_FLUSH + int(i)]
+		switch code {
+		case EDIT_RESULT_APPLIED: applied += 1
+		case EDIT_RESULT_NOOP: noop += 1
+		case:
+			rejected += 1
+			mirror_reconcile_ring_position(ve, frame_idx, previous, i)
+		}
+	}
+	log.infof("DEBUG EDIT feedback: {} edições ({} jobs) — applied={} noop={} rejected={}", previous.edit_count, previous.job_count, applied, noop, rejected)
+	ve.edit.stats_applied += u64(applied)
+	ve.edit.stats_noop += u64(noop)
+	ve.edit.stats_rejected += u64(rejected)
+}
+
+edit_update :: proc(ve: ^VoxelEngine, frame_index: u32) {
+	sync.mutex_lock(&ve.edit.mutex)
+	defer sync.mutex_unlock(&ve.edit.mutex)
+	edit_collect_feedback(ve, int(frame_index % NUM_FRAMES_IN_FLIGHT))
+	ve_retry_empty_edits(ve)
 	if edit_flush_due(ve) do flush_voxel_edits(ve)
 }
 
 edit_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
+	sync.mutex_lock(&ve.edit.mutex)
+	defer sync.mutex_unlock(&ve.edit.mutex)
 	log.infof(
 		"{} applied={} noop={} rejected={} deferred={} (fila={}, pendências={})",
 		prefix,
@@ -296,7 +341,7 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 	for coord in ready {
 		list := ve.edit.pending[coord]
 		for request in list {
-			ve_request_voxel_edit(ve, request.world_voxel, request.block_id) // dedup cuida de duplicatas
+			edit_enqueue(ve, request)
 		}
 		delete(list)
 		delete_key(&ve.edit.pending, coord)
@@ -359,6 +404,7 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 	}
 
 	if len(ve.edit.staged_edits) > 0 {
+		ve.world_revision += 1
 		log.infof(
 			"DEBUG EDIT flush: {} jobs, {} edições staged",
 			len(ve.edit.staged_jobs),
