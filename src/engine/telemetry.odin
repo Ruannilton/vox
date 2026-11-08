@@ -11,7 +11,6 @@ import vk "vendor:vulkan"
 
 TELEMETRY_DEFAULT_ENABLED :: true
 TELEMETRY_CSV_INTERVAL_MS :: 500.0 // intervalo da série temporal (0 = desligada)
-TELEMETRY_DIR :: "telemetry" // relativo ao cwd (bin/)
 TELEMETRY_GFX_QUERY_COUNT :: 16 // 5 operações + frame total (pares) = 12 ≤ 16
 TELEMETRY_COMPUTE_QUERY_COUNT :: 8 // generate + pack (pares) = 4 ≤ 8
 TELEMETRY_OPERATION_COUNT :: 7
@@ -303,8 +302,8 @@ telemetry_snapshot :: proc() {
 	fmt.sbprintf(&sb, "  \"vma_detailed_map\": %s\n", stats_string)
 	strings.write_string(&sb, "}\n")
 
-	os.make_directory(TELEMETRY_DIR)
-	path := fmt.tprintf("%s/telemetry_%s_snapshot.json", TELEMETRY_DIR, telemetry_timestamp_string())
+	os.make_directory(telemetry_output_directory)
+	path := fmt.tprintf("%s/telemetry_%s_snapshot.json", telemetry_output_directory, telemetry_timestamp_string())
 	handle, err := os.open(path, os.O_CREATE | os.O_WRONLY | os.O_TRUNC)
 	if err != nil {
 		log.warnf("VS-05: não foi possível abrir o snapshot em {}: {}", path, err)
@@ -341,8 +340,8 @@ telemetry_collect_vram :: proc() {
 @(private)
 telemetry_csv_open :: proc() {
 	if TELEMETRY_CSV_INTERVAL_MS <= 0 do return
-	os.make_directory(TELEMETRY_DIR)
-	path := fmt.tprintf("%s/telemetry_%s.csv", TELEMETRY_DIR, telemetry_timestamp_string())
+	os.make_directory(telemetry_output_directory)
+	path := fmt.tprintf("%s/telemetry_%s.csv", telemetry_output_directory, telemetry_timestamp_string())
 	handle, err := os.open(path, os.O_CREATE | os.O_WRONLY | os.O_APPEND)
 	if err != nil {
 		log.warnf("VS-05: não foi possível abrir o CSV de telemetria em {}: {}", path, err)

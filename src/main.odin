@@ -1,6 +1,7 @@
 package main
 
 import "base:runtime"
+import "core:fmt"
 import "core:log"
 import glm "core:math/linalg/glsl"
 import "core:os"
@@ -14,7 +15,8 @@ camera: Camera
 voxel_engine: ^engine.VoxelEngine
 
 main :: proc() {
-	file_logger, err := os.create("log.txt")
+	engine.debug_paths_init(VERSION_STRING)
+	file_logger, err := os.create(engine.debug_log_path)
 	defer os.close(file_logger)
 	if err != nil {
 		log.error("Failed to create log file: {}", err)
@@ -22,6 +24,7 @@ main :: proc() {
 	}
 	file_log := log.create_file_logger(file_logger)
 	context.logger = log.create_multi_logger(log.create_console_logger(), file_log)
+	log.infof("Vox Engine {}", VERSION_STRING)
 
 	// parsing de flags + validação fatal do replay/config antes de criar a janela
 	engine.events_init()
@@ -144,7 +147,7 @@ main :: proc() {
 	engine.events_set_t0()
 
 	engine.SetThreadName("main")
-	engine.AppInfo(engine.ConfigSummary())
+	engine.AppInfo(fmt.tprintf("version={} | {}", VERSION_STRING, engine.ConfigSummary()))
 	log.infof("Tracy IsConnected()={}", engine.TracingIsConnected())
 
 	log.info("Starting main loop")

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+file="src/version.odin"
+warn() {
+    echo "pre-commit: versionamento nao atualizado: $1" >&2
+    exit 0
+}
+
+[ -f "$file" ] || warn "arquivo ausente"
+build=$(sed -n -E 's/.*VERSION_BUILD :: ([0-9]+).*/\1/p' "$file" | head -n 1)
+case "$build" in
+    ''|*[!0-9]*) warn "VERSION_BUILD invalido" ;;
+esac
+next=$((build + 1)) || warn "falha ao calcular proximo build"
+temporary="$file.tmp"
+sed -E "s/VERSION_BUILD :: [0-9]+/VERSION_BUILD :: $next/; s/VERSION_STRING :: \"[0-9]+\.[0-9]+\.[0-9]+\"/VERSION_STRING :: \"0.1.$next\"/" "$file" > "$temporary" || warn "falha ao gerar arquivo"
+mv "$temporary" "$file" || warn "falha ao substituir arquivo"
+git add -- "$file" || warn "falha no git add"

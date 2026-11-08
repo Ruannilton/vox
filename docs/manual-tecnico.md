@@ -371,6 +371,12 @@ Sem a UI aberta o client roda desconectado com custo mínimo e o log mostra `Tra
 
 `src/engine/tracing_gpu.odin` mantém uma query pool dedicada por fila, com ring de 4.096 timestamps. Cada zona consome dois IDs distintos (begin/end); coleta gráfica ocorre após `WaitTimelineSemaphore` e compute após a espera do lote. Apenas faixas coletadas são resetadas; pressão no ring omite zonas com warning único, sem overflow. Calibração inicial usa timestamp GPU + `GpuNewContext(period=timestampPeriod)`; re-sync ocorre a cada 60 coletas sem sobrescrever sync pendente. Os emits seguem `TracyVulkan.hpp` e usam a fila serial com lock interno. As pools da telemetria VS-05 são independentes e permanecem inalteradas.
 
-**Captura sem UI:** `tools\tracy\tracy-capture.exe -o sessao.tracy` conecta headless ao app e grava o trace. Para listar cada zona GPU: `tools\tracy\tracy-csvexport.exe -g -u sessao.tracy > gpu.csv`.
+**Captura sem UI:** `tools\tracy\tracy-capture.exe -o sessao.tracy` conecta headless ao app e grava o trace. Para listar cada zona GPU: `tools\tracy\tracy-csvexport.exe -g -u sessao.tracy > gpu.csv`. Salve capturas e exports de análise em `bin/debug/<VERSION_STRING>/tracy/`.
+
+## 12. Versionamento e saídas de debug
+
+`src/version.odin` é a fonte única de `VERSION_MAJOR/MINOR/BUILD` e `VERSION_STRING` (formato `0.1.N`). O arquivo é gerado pelo tooling, mas versionado. O hook `tools/git-hooks/pre-commit`, ativado localmente por `git config core.hooksPath tools/git-hooks`, lê o build atual, incrementa N, reescreve as constantes e executa `git add src/version.odin` antes de cada commit. Não cria commits extras; falhas emitem warning e não bloqueiam o commit. O app loga a versão no startup e a inclui no `AppInfo` do Tracy.
+
+Com cwd em `bin/`, `debug_paths_init` cria `debug/<VERSION_STRING>/` e suas subpastas. Log, telemetria e eventos ficam respectivamente em `log.txt`, `telemetry/` (CSV/JSON) e `events/` (JSONL); captures Tracy ficam em `tracy/`. Futuros smokes/ACs devem procurar esses caminhos versionados em vez dos antigos `bin/telemetry/` e `bin/events/` (históricos antigos permanecem como registrados). `tools/sim/` permanece reservado a ferramentas, não a saídas de runtime.
 
 **Saída (BLK-39):** fast-exit é o padrão porque `vkDestroyDevice` no driver NVIDIA pode bloquear 30–60 s mesmo com as filas ociosas. O app executa `TracingShutdown(false)` — flush CPU do trace, sem coleta final GPU nem APIs Vulkan — e `os.exit(0)`, deixando worker/GLFW/Vulkan para reclaim do SO. `--full-teardown` mantém stop/join, waits, coleta GPU final e todos os destroys; smokes de VUIDs e CI devem usar essa flag para cobrir inclusive o fim do log. O trace fast-exit preserva as zonas até o fim da sessão pelo flush do client.

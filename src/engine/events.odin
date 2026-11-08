@@ -13,7 +13,6 @@ import "core:time"
 import "vendor:glfw"
 
 EVENT_QUEUE_CAPACITY :: 4096
-EVENTS_DIR :: "events" // relativo ao cwd (bin/)
 
 full_teardown: bool
 
@@ -514,10 +513,10 @@ events_record_line :: proc(e: Event) {
 events_recorder_open :: proc() {
 	path := events.record_path
 	if path == "" {
-		if !os.is_dir(EVENTS_DIR) {
-			os.make_directory(EVENTS_DIR)
+		if !os.is_dir(events_output_directory) {
+			os.make_directory(events_output_directory)
 		}
-		path = fmt.tprintf("%s/events_%s.jsonl", EVENTS_DIR, events_timestamp_string())
+		path = fmt.tprintf("%s/events_%s.jsonl", events_output_directory, events_timestamp_string())
 	}
 	f := events_try_open(path)
 	if f == nil {
