@@ -2,7 +2,7 @@
 id: ADR-F1
 titulo: Física de gameplay — solver CPU sobre o mirror
 tipo: decisao
-status: pendente
+status: aceita
 specs_afetadas: [VS-00, VS-13, VS-19]
 ultima_atualizacao: 2026-11-08
 ---

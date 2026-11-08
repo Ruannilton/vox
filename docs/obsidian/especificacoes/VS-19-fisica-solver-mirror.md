@@ -2,11 +2,11 @@
 id: VS-19
 titulo: Física de gameplay — solver CPU sobre o mirror
 tipo: especificacao
-status_spec: em-revisao
+status_spec: aprovada
 status_implementacao: nao-iniciada
 status_validacao: nao-iniciada
 depende_de: [VS-04, VS-13, VS-14, VS-18]
-bloqueada_por: [ADR-F1]
+bloqueada_por: []
 requisitos: [REQ-PHY-01, REQ-PHY-02, REQ-PHY-03, REQ-PHY-04, REQ-PHY-05, REQ-PHY-06, REQ-PHY-07, REQ-PHY-08, REQ-PHY-09, REQ-PHY-10]
 ultima_atualizacao: 2026-11-08
 ---
@@ -150,3 +150,5 @@ Ver [[VS-19-fisica-solver-mirror-tasks]]. Nenhuma etapa pode iniciar antes da ap
 ## Histórico
 
 - 2026-11-08 — Conteúdo completo submetido à revisão; ADR-F1 pendente. Arquivo de tarefas criado; nenhuma implementação iniciada.
+- 2026-11-08 — Rascunho criado pelo subagente K3.1 (ADR-F1 + spec + TASKS) a partir de `analise-fisica-arquitetura.md` e das escolhas do mantenedor; submetida à revisão.
+- 2026-11-08 — **ADR-F1 ratificada e spec aprovada** pelo mantenedor; tarefas destravadas para implementação K2.8 pelo arquivo de TASKS.

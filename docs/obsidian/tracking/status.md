@@ -11,11 +11,11 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Specs registradas | 20 |
 | Specs aprovadas | 19 |
 | Specs em elaboração ou revisão | 1 |
-| Implementações em andamento | 0 |
+| Implementações em andamento | 1 |
 | Implementações concluídas | 19 |
 | Validações verificadas | 17 |
 
-Vinte especificações registradas; 19 aprovadas e implementadas, 17 integralmente verificadas. VS-19 está em revisão, bloqueada pela ADR-F1, sem implementação iniciada. VS-15 e VS-16 aguardam os ACs manuais da UI Tracy; VS-18 concluída e verificada. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Vinte especificações registradas, 19 aprovadas e implementadas (17 integralmente verificadas), **VS-19 (física — solver CPU sobre o mirror) implementação em andamento**. VS-15 e VS-16 aguardam os ACs manuais da UI Tracy; VS-18 concluída e verificada. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -40,7 +40,7 @@ Vinte especificações registradas; 19 aprovadas e implementadas, 17 integralmen
 | VS-16 | [[VS-16-instrumentacao-detalhada|Instrumentação detalhada (CPU + GPU)]] | `aprovada` | `concluida` | `em-validacao` | VS-15 | AC-02 manual da UI Tracy (manual técnico §11) |
 | VS-17 | [[VS-17-streaming-incremental|Streaming incremental]] | `aprovada` | `concluida` | `verificada` | VS-01 | — |
 | VS-18 | [[VS-18-mundo-na-worker|Mundo na worker (world ownership)]] | `aprovada` | `concluida` | `verificada` | VS-17 | — |
-| VS-19 | [[VS-19-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `em-revisao` | `nao-iniciada` | `nao-iniciada` | VS-04, VS-13, VS-14, VS-18 | ADR-F1 pendente |
+| VS-19 | [[VS-19-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aprovada` | `em-andamento` | `nao-iniciada` | VS-04, VS-13, VS-14, VS-18 | — |
 
 ## Decisões
 
@@ -74,7 +74,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-T3 | [[ADR-T3-tracy-profiler|Tracy profiler via odin-tracy, opt-in por define]] | `aceita` | VS-15 |
 | ADR-T4 | [[ADR-T4-instrumentacao-detalhada|Instrumentação detalhada — GPU zones e CPU aprofundada]] | `aceita` | VS-16 |
 | ADR-W1 | [[ADR-W1-ownership-mundo-worker|Ownership do mundo na worker thread]] | `aceita` | VS-18 |
-| ADR-F1 | [[ADR-F1-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `pendente` | VS-00, VS-13, VS-19 |
+| ADR-F1 | [[ADR-F1-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aceita` | VS-00, VS-13, VS-19 |
 
 ## Vocabulário de status
 
