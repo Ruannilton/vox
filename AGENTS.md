@@ -29,6 +29,8 @@ Constantes e layouts: src/assets/shaders/common.slang é a fonte única de verda
 - Manter o frontmatter da spec, docs/obsidian/tracking/status.md e docs/obsidian/tracking/dependencias.md sincronizados a cada mudança.
 - Só iniciar implementação com spec aprovada e dependências concluídas; só marcar validação verificada com evidência reproduzível.
 - Ao fim de uma specificação realizar o commit passando o nome da especificação na mensagem
+- Toda especificação implementada deve ser instrumentada: zones Tracy (CPU e, quando aplicável, GPU) nos caminhos novos ou alterados, com nomes ligados ao domínio da spec.
+- Ao finalizar cada implementação: executar o projeto com Tracy ativado (`run_tracy.bat`, captura via `tracy-capture`), salvar os dados com o código da especificação no nome do arquivo (ex.: `bin/tracy_analysis/VS-XX_<descricao>.tracy`) e despachar um subagente coder (K2.8, thinking low) para comparar a performance com a versão anterior; o relatório da comparação entra nas evidências dos ACs da spec.
 
 ## Odin
 - Documentação em docs/Odin-Documentation
