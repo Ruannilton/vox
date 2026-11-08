@@ -98,8 +98,8 @@ TracingIsConnected :: #force_inline proc() -> bool {
 // Só chamar com TRACY_ENABLE ligado e fora do intervalo nenhuma API Tracy
 // pode ser usada (GetProfiler asserta com o profiler não iniciado).
 // VS-16: o startup também sobe os contextos GPU (tracing_gpu_init) e
-// anuncia os locks rastreados; o shutdown coleta o restante das zonas GPU
-// antes de descer o profiler.
+// anuncia os locks rastreados; só o teardown completo coleta as zonas GPU
+// restantes antes de descer o profiler.
 TracingStartup :: #force_inline proc() {
 	when TRACY_ENABLE {
 		tracy.StartupProfiler()
@@ -108,9 +108,9 @@ TracingStartup :: #force_inline proc() {
 	}
 }
 
-TracingShutdown :: #force_inline proc() {
+TracingShutdown :: #force_inline proc(full_teardown := true) {
 	when TRACY_ENABLE {
-		tracing_gpu_shutdown()
+		if full_teardown do tracing_gpu_shutdown()
 		tracy.ShutdownProfiler()
 	}
 }

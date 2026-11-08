@@ -75,7 +75,7 @@ Legenda de origem: `VS-xx não-escopo` · `ADR-xx consequência` · `arquitetura
 | BLK-34 | **Memory profiling Tracy** (allocator custom do odin-tracy) | VS-15/VS-16 não-escopo | Integra ao context/allocator do Odin; GPU zones, locks e call stacks foram concluídos na VS-16 |
 | BLK-37 | ~~Build Tracy trava após `voxel_gpu_init`~~ **FECHADO (2026-11-07)** — fix: lib com `TRACY_MANUAL_LIFETIME` + `TRACY_DELAYED_INIT`, startup manual do profiler após o init Vulkan (`engine.TracingStartup`/`TracingShutdown`); ver histórico da VS-15 | ressalva do fix de sincronização 2026-11-07 | Fechado em 2026-11-07; 8/8 verdes pós-fix vs 5/5 hangs no HEAD |
 | BLK-38 | **THREADING ERROR `vkQueueSubmit2` × `vkDeviceWaitIdle` em threads distintas** durante tempestade de resize/minimize (recreate de swapchain em loop) | ressalva do fix de sincronização 2026-11-07 | Vista 1× sob minimize/restore agressivo repetido; investigar se o recreate drena a fila de outra thread ou se há uso concorrente da fila gráfica |
-| BLK-39 | **`vkDestroyDevice` leva ~31–60 s no teardown** após replay longo, com e sem Tracy | ressalva BLK-37 + investigação 2026-11-08 | Persiste após stop/join e queue/device wait idle, sem submits concorrentes e com validation desabilitada; o tempo está dentro da chamada do driver. Não omitir destroy; requer investigação específica do driver NVIDIA |
+| BLK-39 | ~~**`vkDestroyDevice` leva ~31–60 s no teardown**~~ **FECHADO por decisão do mantenedor (2026-11-08): fast-exit default + `--full-teardown`** | ressalva BLK-37 + VS-15 | Defeito do driver NVIDIA permanece documentado; fast-exit faz flush Tracy CPU e SO reclaim. Smokes/CI usam teardown completo para cobrir VUIDs nos destroys |
 
 ## Regras
 

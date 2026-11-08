@@ -394,6 +394,11 @@ main :: proc() {
 	)
 	engine.edit_log_stats(voxel_engine, "FINAL edits:")
 	log.info("Exiting application")
+	if !engine.full_teardown {
+		engine.TracingShutdown(false)
+		log.info("fast-exit: teardown Vulkan pulado (SO reclaim; use --full-teardown para teardown completo)")
+		os.exit(0)
+	}
 	// BLK-28: para e junta a worker antes do DeviceWaitIdle interno;
 	// os defers seguintes fazem a coleta Tracy e destroem o device já ocioso.
 	engine.voxel_engine_destroy(voxel_engine)

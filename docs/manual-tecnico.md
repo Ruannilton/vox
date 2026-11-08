@@ -339,7 +339,7 @@ Todo input (teclado/mouse/fechamento) e todo comando (`TeleportTo`, `LookAt`, `A
 | Fila | 4.096 eventos (anel); overflow descarta com contador + warning único |
 | Timestamp | `t = glfw.GetTime() − t0` (t0 no fim da init); dreno compartilha o `t` |
 | Replay | `--replay <jsonl>` (fatal pré-janela se inválido), cursor ordenado por `t`, `Wait` hold-until, skips contados, `--exit-after-replay` |
-| Flags | `--record <caminho>` / `--no-record` (default grava em `bin/events/`) |
+| Flags | `--record <caminho>` / `--no-record` (default grava em `bin/events/`); `--full-teardown` força teardown Vulkan completo |
 | Validação | `tools/sim/events_check.py` — schema por tipo, `t` monotônico, exit 0/1 |
 
 ## 11. Tracy profiler (CPU zones) — VS-15
@@ -371,3 +371,5 @@ Sem a UI aberta o client roda desconectado com custo mínimo e o log mostra `Tra
 `src/engine/tracing_gpu.odin` mantém uma query pool dedicada por fila, com ring de 4.096 timestamps. Cada zona consome dois IDs distintos (begin/end); coleta gráfica ocorre após `WaitTimelineSemaphore` e compute após a espera do lote. Apenas faixas coletadas são resetadas; pressão no ring omite zonas com warning único, sem overflow. Calibração inicial usa timestamp GPU + `GpuNewContext(period=timestampPeriod)`; re-sync ocorre a cada 60 coletas sem sobrescrever sync pendente. Os emits seguem `TracyVulkan.hpp` e usam a fila serial com lock interno. As pools da telemetria VS-05 são independentes e permanecem inalteradas.
 
 **Captura sem UI:** `tools\tracy\tracy-capture.exe -o sessao.tracy` conecta headless ao app e grava o trace. Para listar cada zona GPU: `tools\tracy\tracy-csvexport.exe -g -u sessao.tracy > gpu.csv`.
+
+**Saída (BLK-39):** fast-exit é o padrão porque `vkDestroyDevice` no driver NVIDIA pode bloquear 30–60 s mesmo com as filas ociosas. O app executa `TracingShutdown(false)` — flush CPU do trace, sem coleta final GPU nem APIs Vulkan — e `os.exit(0)`, deixando worker/GLFW/Vulkan para reclaim do SO. `--full-teardown` mantém stop/join, waits, coleta GPU final e todos os destroys; smokes de VUIDs e CI devem usar essa flag para cobrir inclusive o fim do log. O trace fast-exit preserva as zonas até o fim da sessão pelo flush do client.

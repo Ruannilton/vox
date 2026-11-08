@@ -15,6 +15,8 @@ import "vendor:glfw"
 EVENT_QUEUE_CAPACITY :: 4096
 EVENTS_DIR :: "events" // relativo ao cwd (bin/)
 
+full_teardown: bool
+
 EventType :: enum {
 	KeyPress,
 	KeyRelease,
@@ -154,6 +156,8 @@ events_init :: proc() {
 			}
 		case "--exit-after-replay":
 			events.exit_after_replay = true
+		case "--full-teardown":
+			full_teardown = true
 		case "--config":
 			if i + 1 < len(args) {
 				config_path = args[i + 1]
