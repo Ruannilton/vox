@@ -34,11 +34,11 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 | ADR-T4 | [[ADR-T4-instrumentacao-detalhada|Instrumentação detalhada — GPU zones e CPU aprofundada]] | `aceita` | VS-16 |
 | ADR-W1 | [[ADR-W1-ownership-mundo-worker|Ownership do mundo na worker thread]] | `aceita` | VS-18 |
 | ADR-F1 | [[ADR-F1-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aceita` | VS-00, VS-13, VS-19 |
-| ADR-G1 | [[ADR-G1-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aceita` | VS-00, VS-20 |
+| ADR-G2 | [[ADR-G2-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aceita` | VS-00, VS-20 |
 
 ## Resumo
 
-- 29 decisões registradas e aceitas (o ID ADR-G1 é compartilhado por duas decisões, com links desambiguados pelo nome do arquivo).
+- 29 decisões registradas e aceitas.
 - Nenhuma decisão pendente.
 - Nenhuma decisão representa, por si só, implementação concluída ou validação verificada.
 

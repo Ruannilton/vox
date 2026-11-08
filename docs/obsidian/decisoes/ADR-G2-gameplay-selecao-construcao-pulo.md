@@ -1,5 +1,5 @@
 ---
-id: ADR-G1
+id: ADR-G2
 titulo: Gameplay — seleção, construção e pulo
 tipo: decisao
 status: aceita

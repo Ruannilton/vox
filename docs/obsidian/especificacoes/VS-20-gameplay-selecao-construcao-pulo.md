@@ -20,7 +20,7 @@ Mostrar em todo frame o voxel sob o centro da tela, permitir colocar pedra na fa
 ## Rastreabilidade
 
 - GOAL: pedido e dispensa de aprovação do mantenedor em 2026-11-08.
-- Decisão: [[ADR-G1-gameplay-selecao-construcao-pulo|ADR-G1 — gameplay]], aceita.
+- Decisão: [[ADR-G2-gameplay-selecao-construcao-pulo|ADR-G2 — gameplay]], aceita.
 - Fundação: [[VS-19-fisica-solver-mirror|VS-19]] (DDA, AABB, gravidade, grounded), [[VS-07-eventos-input-replay|VS-07]] (bus/replay), [[VS-03-edicao-e1|VS-03]] (E1).
 - Referências: `main.odin`, `camera.odin`, `physics.odin`, `render.slang`, `common.slang`; push constants de 92 B e binding 21 livre.
 
@@ -52,7 +52,7 @@ Mostrar em todo frame o voxel sob o centro da tela, permitir colocar pedra na fa
 ## Dependências
 
 - VS-03, VS-07 e VS-19 concluídas e verificadas.
-- ADR-G1 de gameplay aceita; aprovação adicional da spec dispensada pelo mantenedor.
+- ADR-G2 de gameplay aceita; aprovação adicional da spec dispensada pelo mantenedor.
 
 ## Interfaces e recursos
 
@@ -122,4 +122,4 @@ Ver [[VS-20-gameplay-selecao-construcao-pulo-tasks]]. A spec nasce aprovada por 
 
 ## Histórico
 
-- 2026-11-08 — Spec criada e **aprovada de nascença** por dispensa expressa do mantenedor: “não espere minha aprovação, pode prosseguir”. ADR-G1 de gameplay aceita; TASKS derivadas; nenhuma evidência de validação produzida.
+- 2026-11-08 — Spec criada e **aprovada de nascença** por dispensa expressa do mantenedor: “não espere minha aprovação, pode prosseguir”. ADR-G2 de gameplay aceita; TASKS derivadas; nenhuma evidência de validação produzida.
