@@ -25,6 +25,7 @@ graph TD
     VS16[VS-16 — Instrumentação detalhada]
     VS17[VS-17 — Streaming incremental]
     VS18[VS-18 — Mundo na worker]
+    VS19[VS-19 — Física solver/mirror]
 
     VS00 --> VS01
     VS01 --> VS02
@@ -44,6 +45,7 @@ graph TD
     VS15 --> VS16
     VS16 --> VS17
     VS17 --> VS18
+    VS18 --> VS19
 ```
 
 ## Registro normativo
@@ -68,7 +70,8 @@ graph TD
 | [[VS-15-tracy-profiler|VS-15]] | VS-05 | — | — |
 | [[VS-16-instrumentacao-detalhada|VS-16]] | VS-15 | — | — |
 | [[VS-17-streaming-incremental|VS-17]] | VS-01 | — | — |
-| [[VS-18-mundo-na-worker|VS-18]] | VS-17 | — | — |
+| [[VS-18-mundo-na-worker|VS-18]] | VS-17 | — | VS-19 |
+| [[VS-19-fisica-solver-mirror|VS-19]] | VS-04, VS-13, VS-14, VS-18 | ADR-F1 | — |
 
 ## Decisões incorporadas
 
@@ -88,6 +91,7 @@ graph TD
 - ADR-T3: VS-15 integra Tracy v0.14.1 via odin-tracy como opt-in por define (import condicional contorna o link incondicional das bindings; tracy.lib vendored com script de reprodução); zones de CPU, FrameMark, thread names e plots; telemetria VS-05 inalterada.
 - ADR-T4: VS-16 adiciona zonas GPU (dois contextos TracyVk — fila gráfica e compute — com query pools dedicadas, calibração e coleta nos pontos de espera existentes; VS-05 intacta) e CPU aprofundada (call stacks, lock tracking em dois mutexes, sub-zones); degradação por omissão ao invés de overflow de ring.
 - ADR-W1: VS-18 migra o ownership do mundo para a worker thread — active_chunks, streaming, completions/B1, promote/publish no ring com reuse guardado por timeline gráfica, materialização E1 e mirror service; main fica com input/render/present (~4-5 ms/frame); handoff de frame por atomic+condição com dependências para trás (sem deadlock).
+- ADR-F1 (pendente): VS-19 propõe física CPU na main sobre o mirror, `PhysicsDefinition` separada, AABB/sweep em passo fixo e DDA tri-state; heightmap derivado do bitmask na materialização, com remoção planejada do ring/binding 20 e emendas VS-13/VS-00.
 
 ## Dependências transversais a registrar nas specs
 
