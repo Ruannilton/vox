@@ -91,7 +91,7 @@ graph TD
 - ADR-T3: VS-15 integra Tracy v0.14.1 via odin-tracy como opt-in por define (import condicional contorna o link incondicional das bindings; tracy.lib vendored com script de reprodução); zones de CPU, FrameMark, thread names e plots; telemetria VS-05 inalterada.
 - ADR-T4: VS-16 adiciona zonas GPU (dois contextos TracyVk — fila gráfica e compute — com query pools dedicadas, calibração e coleta nos pontos de espera existentes; VS-05 intacta) e CPU aprofundada (call stacks, lock tracking em dois mutexes, sub-zones); degradação por omissão ao invés de overflow de ring.
 - ADR-W1: VS-18 migra o ownership do mundo para a worker thread — active_chunks, streaming, completions/B1, promote/publish no ring com reuse guardado por timeline gráfica, materialização E1 e mirror service; main fica com input/render/present (~4-5 ms/frame); handoff de frame por atomic+condição com dependências para trás (sem deadlock).
-- ADR-F1 (pendente): VS-19 propõe física CPU na main sobre o mirror, `PhysicsDefinition` separada, AABB/sweep em passo fixo e DDA tri-state; heightmap derivado do bitmask na materialização, com remoção planejada do ring/binding 20 e emendas VS-13/VS-00.
+- ADR-F1 (aceita, implementada pela VS-19): física CPU na main sobre o mirror, `PhysicsDefinition` separada, AABB/sweep em passo fixo e DDA tri-state; heightmap derivado do bitmask na materialização (ring/binding 20 mantido como reserva futura por emenda do mantenedor) e emendas VS-13/VS-00.
 
 ## Dependências transversais a registrar nas specs
 

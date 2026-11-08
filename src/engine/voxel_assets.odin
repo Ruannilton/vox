@@ -21,6 +21,24 @@ TRIANGLE_POOL_CAPACITY :: 1024
 UV_POOL_CAPACITY       :: 1024
 MAX_ASSET_TEXTURE_DIM  :: 256
 
+// VS-19 (REQ-PHY-01): tabela física exclusivamente CPU-side — o std430 de
+// BlockDefinition (48 B) NÃO muda e nenhuma propriedade física vai ao shader.
+PHYSICS_FLAG_BLOCKING  :: 1
+PHYSICS_FLAG_HITTABLE  :: 2
+PHYSICS_FLAG_CLIMBABLE :: 4 // reservado (líquidos/escaláveis fora de escopo)
+PHYSICS_FLAG_LIQUID    :: 8 // reservado
+
+// Defaults documentados (REQ-PHY-01): blocking deriva da solidez do tipo;
+// hittable = true para qualquer bloco não-ar; fricção/restituição neutras.
+PHYSICS_DEFAULT_FRICTION     :: 0.6
+PHYSICS_DEFAULT_RESTITUTION  :: 0.0
+
+PhysicsDefinition :: struct {
+	flags:       u32,
+	friction:    f32,
+	restitution: f32,
+}
+
 VoxelAssets :: struct {
 	loaded:      bool,
 	templates:   []MeshTemplate, // inclui slot 0 (AR) na posição 0
@@ -35,6 +53,9 @@ VoxelAssets :: struct {
 	texture_layers: u32,
 	layer_of:       map[string]int, // nome de textura → camada (privado ao build)
 }
+
+// VS-19 (REQ-PHY-01): tabela física por id, paralela ao registry std430.
+voxel_physics: [BLOCK_REGISTRY_CAPACITY]PhysicsDefinition
 
 voxel_assets: VoxelAssets
 
@@ -60,6 +81,9 @@ assets_json_block :: struct {
 	transparent: bool `json:"transparent"`,
 	// VS-14 (emenda): opcional, default true; false marca NON_SOLID (planta).
 	solid: Maybe(bool) `json:"solid"`,
+	// VS-19 (REQ-PHY-01): opcional; objeto validado campo a campo em
+	// assets_parse_physics (tipos/flags/materiais citam o bloco).
+	physics: json.Value `json:"physics"`,
 }
 
 asset_tex_dim :: struct {
@@ -83,6 +107,7 @@ assets_load :: proc() {
 			"{} não encontrado; usando built-ins (templates cubo/planta, registry ids 1..3, paleta procedural)",
 			path,
 		)
+		physics_init_builtin()
 		return
 	}
 
@@ -118,6 +143,34 @@ block_is_solid :: proc "contextless" (block_id: u32) -> bool {
 		return voxel_assets.registry[block_id].flags & BLOCK_DEFINITION_FLAG_NON_SOLID == 0
 	}
 	return block_id != 4
+}
+
+// VS-19 (REQ-PHY-01): o bitmask `solid` filtra candidatos; a semântica de
+// bloqueio vem da tabela física (planta ocupa o voxel sem bloquear).
+block_is_blocking :: proc "contextless" (block_id: u32) -> bool {
+	return voxel_physics[block_id].flags & PHYSICS_FLAG_BLOCKING != 0
+}
+
+block_is_hittable :: proc "contextless" (block_id: u32) -> bool {
+	return voxel_physics[block_id].flags & PHYSICS_FLAG_HITTABLE != 0
+}
+
+// Fallback built-in (REQ-PHY-01): paridade semântica com o caminho do JSON —
+// ids 1..3 bloqueantes e atingíveis, planta (4) não-bloqueante e atingível,
+// fricção/restituição nos defaults documentados.
+physics_init_builtin :: proc "contextless" () {
+	for id in 1 ..= 3 {
+		voxel_physics[id] = PhysicsDefinition{
+			flags = PHYSICS_FLAG_BLOCKING | PHYSICS_FLAG_HITTABLE,
+			friction = PHYSICS_DEFAULT_FRICTION,
+			restitution = PHYSICS_DEFAULT_RESTITUTION,
+		}
+	}
+	voxel_physics[4] = PhysicsDefinition{
+		flags = PHYSICS_FLAG_HITTABLE,
+		friction = PHYSICS_DEFAULT_FRICTION,
+		restitution = PHYSICS_DEFAULT_RESTITUTION,
+	}
 }
 
 @(private)
@@ -384,6 +437,13 @@ assets_build_blocks :: proc(doc: ^assets_json_doc) {
 			flags                = flags,
 		}
 		voxel_assets.block_names[block.id] = strings.clone(block.name, context.allocator)
+		// VS-19 (REQ-PHY-01): defaults do tipo (blocking = solidez, hittable =
+		// true) + objeto opcional por bloco, validado citando o bloco.
+		physics_default: u32 = PHYSICS_FLAG_HITTABLE
+		if block.solid == nil || block.solid.? {
+			physics_default |= PHYSICS_FLAG_BLOCKING
+		}
+		voxel_physics[block.id] = assets_parse_physics(ctx, block.physics, physics_default)
 	}
 
 	// VS-14 (REQ-PLT-05): contrato do worldgen exige ids 1..4 (planta = 4).
@@ -396,6 +456,87 @@ assets_build_blocks :: proc(doc: ^assets_json_doc) {
 	if len(missing) > 0 {
 		assets_fatal("blocos obrigatórios do worldgen ausentes: ids {}", strings.join(missing[:], ", ", context.temp_allocator))
 	}
+
+	// VS-19 (REQ-PHY-01): invariantes da tabela física — ar (id 0) nunca
+	// bloqueia nem é atingível; a planta padrão (4, NON_SOLID) é
+	// não-bloqueante e atingível. BlockDefinition/std430 inalterado (48 B,
+	// #assert em voxel_types.odin).
+	log.assert(voxel_physics[0].flags == 0, "tabela física: id 0 (AR) deve ser não-bloqueante e não-atingível")
+	if voxel_assets.registry[4].flags & BLOCK_DEFINITION_FLAG_NON_SOLID != 0 {
+		log.assert(
+			!block_is_blocking(4) && block_is_hittable(4),
+			"tabela física: planta (id 4) deve ser não-bloqueante e atingível",
+		)
+	}
+}
+
+@(private)
+assets_parse_physics :: proc(ctx: string, value: json.Value, default_flags: u32) -> PhysicsDefinition {
+	definition := PhysicsDefinition {
+		flags       = default_flags,
+		friction    = PHYSICS_DEFAULT_FRICTION,
+		restitution = PHYSICS_DEFAULT_RESTITUTION,
+	}
+	if value == nil do return definition
+	object, is_object := value.(json.Object)
+	if !is_object {
+		assets_fatal("{}: campo 'physics' deve ser um objeto (recebido {})", ctx, variant_type_name(value))
+	}
+	for key, field in object {
+		switch key {
+		case "blocking":
+			v, ok := field.(bool)
+			if !ok do assets_fatal("{}: 'physics.blocking' deve ser booleano", ctx)
+			if v do definition.flags |= PHYSICS_FLAG_BLOCKING
+			else do definition.flags &= ~u32(PHYSICS_FLAG_BLOCKING)
+		case "hittable":
+			v, ok := field.(bool)
+			if !ok do assets_fatal("{}: 'physics.hittable' deve ser booleano", ctx)
+			if v do definition.flags |= PHYSICS_FLAG_HITTABLE
+			else do definition.flags &= ~u32(PHYSICS_FLAG_HITTABLE)
+		case "friction":
+			v, ok := json_number(field)
+			if !ok do assets_fatal("{}: 'physics.friction' deve ser número", ctx)
+			if v < 0 do assets_fatal("{}: 'physics.friction' = {} fora do limite documentado (≥ 0)", ctx, v)
+			definition.friction = f32(v)
+		case "restitution":
+			v, ok := json_number(field)
+			if !ok do assets_fatal("{}: 'physics.restitution' deve ser número", ctx)
+			if v < 0 || v > 1 do assets_fatal("{}: 'physics.restitution' = {} fora do limite documentado ([0,1])", ctx, v)
+			definition.restitution = f32(v)
+		case:
+			assets_fatal("{}: flag física desconhecida 'physics.{}' (conhecidas: blocking, hittable, friction, restitution)", ctx, key)
+		}
+	}
+	return definition
+}
+
+@(private)
+json_number :: proc(value: json.Value) -> (f64, bool) {
+	if f, ok := value.(f64); ok do return f, true
+	if i, ok := value.(i64); ok do return f64(i), true
+	return 0, false
+}
+
+@(private)
+variant_type_name :: proc(value: json.Value) -> string {
+	switch v in value {
+	case json.Object:
+		return "objeto"
+	case json.Array:
+		return "array"
+	case string:
+		return "string"
+	case i64:
+		return "inteiro"
+	case f64:
+		return "número"
+	case bool:
+		return "booleano"
+	case json.Null:
+		return "null"
+	}
+	return "?"
 }
 
 @(private)

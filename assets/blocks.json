@@ -44,9 +44,13 @@
     { "name": "planta", "path": "textures/planta.png" }
   ],
   "blocks": [
-    { "id": 1, "name": "grama", "mesh": "cubo", "texture": "grama" },
-    { "id": 2, "name": "terra", "mesh": "cubo", "texture": "terra" },
-    { "id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra" },
-    { "id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "transparent": true, "solid": false }
+    { "id": 1, "name": "grama", "mesh": "cubo", "texture": "grama",
+      "physics": { "blocking": true, "hittable": true, "friction": 0.6, "restitution": 0.0 } },
+    { "id": 2, "name": "terra", "mesh": "cubo", "texture": "terra",
+      "physics": { "blocking": true, "hittable": true, "friction": 0.6, "restitution": 0.0 } },
+    { "id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra",
+      "physics": { "blocking": true, "hittable": true, "friction": 0.6, "restitution": 0.0 } },
+    { "id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "transparent": true, "solid": false,
+      "physics": { "blocking": false, "hittable": true, "friction": 0.6, "restitution": 0.0 } }
   ]
 }

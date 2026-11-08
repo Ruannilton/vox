@@ -15,6 +15,15 @@ first_cursor_event: bool
 camera: Camera
 voxel_engine: ^engine.VoxelEngine
 
+// VS-19 (REQ-PHY-10): jogador como corpo AABB do solver; a câmera segue o
+// corpo (olhos na altura PLAYER_EYE_HEIGHT) — input/eventos/render inalterados.
+player_body: engine.PhysicsHandle
+PLAYER_SIZE :: glm.vec3{0.6, 1.8, 0.6}
+PLAYER_HALF_WIDTH :: f32(0.3)
+PLAYER_EYE_HEIGHT :: f32(1.62)
+PLAYER_WALK_SPEED :: f32(6.0)
+PLAYER_SPRINT_FACTOR :: f32(2.0)
+
 main :: proc() {
 	engine.debug_paths_init(VERSION_STRING)
 	file_logger, err := os.create(engine.debug_log_path)
@@ -47,6 +56,12 @@ main :: proc() {
 	voxel_engine = engine.voxel_engine_init()
 
 	camera = camera_create(glm.vec3{32, 75, 60}, glm.vec3{-50, -90, 0}, 45.0)
+	// corpo do jogador: pés sob a câmera; cai e pousa na superfície
+	player_body = engine.physics_body_create(
+		voxel_engine,
+		camera.position - glm.vec3{PLAYER_HALF_WIDTH, PLAYER_EYE_HEIGHT, PLAYER_HALF_WIDTH},
+		PLAYER_SIZE,
+	)
 	projection := glm.mat4Perspective(
 		glm.radians(camera.fov),
 		f32(engine.app.presentation.width) / f32(engine.app.presentation.height),
@@ -119,6 +134,7 @@ main :: proc() {
 
 	engine.events_register({.KeyPress, .KeyRelease}, key_handler)
 	engine.events_register({.MouseMove}, mouse_handler)
+	engine.events_register({.MouseButton}, mouse_handler)
 	engine.events_register({.CloseRequested}, close_handler)
 	engine.events_register(
 		{.TeleportTo, .LookAt, .AddBlock, .RemoveBlock, .ToggleTelemetry, .TelemetrySnapshot},
@@ -128,6 +144,11 @@ main :: proc() {
 				if e.type == .TeleportTo {
 					camera.position = p.v
 					camera.target = camera.position + camera.direction
+					// VS-19: teletransporta também o corpo do jogador
+					if body := engine.physics_body_get(voxel_engine, player_body); body != nil {
+						body.position = p.v - glm.vec3{PLAYER_HALF_WIDTH, PLAYER_EYE_HEIGHT, PLAYER_HALF_WIDTH}
+						body.velocity = {}
+					}
 				} else {
 					camera_look_at(&camera, p.v)
 				}
@@ -171,7 +192,11 @@ main :: proc() {
 				engine.ZoneN("engine_update")
 				engine.Update()
 				engine.telemetry_service()
-				update_camera_movement(min(f32(engine.app.deltaTime), 0.1))
+				frame_dt := min(f32(engine.app.deltaTime), 0.1)
+				update_camera_movement(frame_dt)
+				// VS-19: passos fixos de física na main; a câmera segue o corpo
+				engine.physics_tick(voxel_engine, frame_dt)
+				player_sync_camera()
 
 				engine.voxel_engine_request_frame(voxel_engine, engine.app.currentTimelineValue, engine.app.frameIndex, engine.chunk_coordinate_from_world(camera.position))
 			}
@@ -411,24 +436,40 @@ main :: proc() {
 
 @(private)
 update_camera_movement :: proc(delta_time: f32) {
-	speed: f32 = 10.0 // unidades por segundo
-	if engine.events_is_pressed(glfw.KEY_LEFT_SHIFT) do speed *= 8
+	body := engine.physics_body_get(voxel_engine, player_body)
+	if body == nil do return
+	speed: f32 = PLAYER_WALK_SPEED
+	if engine.events_is_pressed(glfw.KEY_LEFT_SHIFT) do speed *= PLAYER_SPRINT_FACTOR
 
-	forward, right: f32
-	if engine.events_is_pressed(glfw.KEY_W) do forward += 1
-	if engine.events_is_pressed(glfw.KEY_S) do forward -= 1
-	if engine.events_is_pressed(glfw.KEY_D) do right += 1
-	if engine.events_is_pressed(glfw.KEY_A) do right -= 1
-
-	if forward == 0 && right == 0 do return
+	forward_input, right_input: f32
+	if engine.events_is_pressed(glfw.KEY_W) do forward_input += 1
+	if engine.events_is_pressed(glfw.KEY_S) do forward_input -= 1
+	if engine.events_is_pressed(glfw.KEY_D) do right_input += 1
+	if engine.events_is_pressed(glfw.KEY_A) do right_input -= 1
 
 	// evita andar mais rápido na diagonal
-	if forward != 0 && right != 0 {
-		forward *= 0.70710678
-		right *= 0.70710678
+	if forward_input != 0 && right_input != 0 {
+		forward_input *= 0.70710678
+		right_input *= 0.70710678
 	}
 
-	camera_move(&camera, forward * speed * delta_time, right * speed * delta_time)
+	// direção horizontal do yaw da câmera (graus)
+	rad_yaw := glm.radians(camera.rotation.y)
+	forward := glm.vec3{glm.cos(rad_yaw), 0, glm.sin(rad_yaw)}
+	right := glm.vec3{-glm.sin(rad_yaw), 0, glm.cos(rad_yaw)}
+	wish := forward * forward_input + right * right_input
+	// input-driven: a velocidade horizontal é imposta a cada passo; o solver
+	// (gravidade, sweep, fricção de contato) integra o resto
+	body.velocity.x = wish.x * speed
+	body.velocity.z = wish.z * speed
+}
+
+@(private)
+player_sync_camera :: proc() {
+	body := engine.physics_body_get(voxel_engine, player_body)
+	if body == nil do return
+	camera.position = body.position + glm.vec3{PLAYER_HALF_WIDTH, PLAYER_EYE_HEIGHT, PLAYER_HALF_WIDTH}
+	camera.target = camera.position + camera.direction
 }
 
 @(private)
@@ -444,6 +485,11 @@ key_handler :: proc(e: engine.Event) {
 			engine.telemetry_toggle()
 		case glfw.KEY_F9:
 			engine.telemetry_snapshot()
+		case glfw.KEY_F7:
+			// VS-19 (AC-04): validação sob demanda — packed×denso e heights
+			// derivado do bitmask.
+			engine.debug_validate_run(voxel_engine)
+			engine.debug_heights_parity(voxel_engine)
 		}
 	case .KeyRelease:
 	}
@@ -451,11 +497,29 @@ key_handler :: proc(e: engine.Event) {
 
 @(private)
 mouse_handler :: proc(e: engine.Event) {
-	p, _ := e.payload.(engine.MouseMovePayload)
-	sensitivity: f32 = 0.07
-	// Camera.rotation: x: pitch, y: yaw, z: roll
-	delta_rotation := glm.vec3{p.dy * sensitivity, p.dx * sensitivity, 0}
-	camera_rotate(&camera, delta_rotation)
+	#partial switch p in e.payload {
+	case engine.MouseMovePayload:
+		sensitivity: f32 = 0.07
+		// Camera.rotation: x: pitch, y: yaw, z: roll
+		delta_rotation := glm.vec3{p.dy * sensitivity, p.dx * sensitivity, 0}
+		camera_rotate(&camera, delta_rotation)
+	case engine.MouseButtonPayload:
+		// VS-19 (AC-05): seleção por raycast no clique (hook de consulta)
+		if p.press && p.button == 0 {
+			hit := engine.physics_raycast(voxel_engine, camera.position, camera.direction, 12.0)
+			#partial switch hit.result {
+			case .HIT:
+				log.infof(
+					"VS-19 SELEÇÃO hit: voxel={} id={} dist={:.2f} normal={}",
+					hit.voxel, hit.block_id, hit.distance, hit.normal,
+				)
+			case .MISS:
+				log.info("VS-19 SELEÇÃO miss (nada em 12 u)")
+			case .UNKNOWN:
+				log.infof("VS-19 SELEÇÃO unknown: página {} não materializada", hit.unknown_chunk)
+			}
+		}
+	}
 }
 
 @(private)

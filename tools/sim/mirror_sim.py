@@ -17,6 +17,12 @@ pack, replay de pendencias na materializacao, paridade GPU<->mirror em
 Emenda 2026-11-07 (VS-14): bitmask `solid` e heightmap passam a tratar a
 planta (id 4) como NÃO-sólida — ocupa o voxel (ids preservados, paridade
 GPU intacta) mas não entra no bitmask de sólidos nem move o heights.
+
+VS-19 (REQ-PHY-07): o heightmap NÃO vem mais de um ring de export GPU
+(binding 20 removido) — na materialização, as 1.024 colunas são derivadas
+do bitmask `solid` já preenchido (topo sólido real, 0xFFFF = vazia),
+mantendo arcs/flutuantes corretos; o journal E1 continua mantendo as
+colunas incrementalmente.
 """
 
 PLANT_BLOCK_ID = 4
@@ -180,9 +186,24 @@ def mirror_journal_apply(mirror, chunk, world_voxel, block_id):
     page.edit_seq += 1
 
 
+def derive_heights(page):
+    """VS-19 (REQ-PHY-07): 1.024 colunas derivadas do bitmask sólido (topo
+    sólido real da coluna, 0xFFFF = vazia)."""
+    heights = [0xFFFF] * (CHUNK_SIZE * CHUNK_SIZE)
+    for z in range(CHUNK_SIZE):
+        for x in range(CHUNK_SIZE):
+            base = (x << 10) | (z << 5)
+            for y in range(CHUNK_SIZE - 1, -1, -1):
+                idx = base + y
+                if (page.solid[idx >> 5] >> (idx & 31)) & 1:
+                    heights[x | (z << 5)] = y
+                    break
+    return heights
+
+
 # --- materialização (handler de conclusão, REQ-MIRROR-05) ---
 
-def mirror_materialize(mirror, page, worldgen_ids, worldgen_heights=None):
+def mirror_materialize(mirror, page, worldgen_ids):
     """Copia o export (worldgen) e faz o replay das pendências retidas."""
     for i, block_id in enumerate(worldgen_ids):
         page.ids[i] = block_id
@@ -190,17 +211,8 @@ def mirror_materialize(mirror, page, worldgen_ids, worldgen_heights=None):
             page.solid[i >> 5] |= 1 << (i & 31)
         else:
             page.solid[i >> 5] &= ~(1 << (i & 31)) & 0xFFFFFFFF
-    # VS-13: heightmap worldgen vem do ring paralelo (binding 20); sem ring
-    # (cenários antigos) deriva dos ids recém-copiados.
-    if worldgen_heights is None:
-        worldgen_heights = [0xFFFF] * (CHUNK_SIZE * CHUNK_SIZE)
-        for z in range(CHUNK_SIZE):
-            for x in range(CHUNK_SIZE):
-                for y in range(CHUNK_SIZE - 1, -1, -1):
-                    if block_is_solid(page.ids[y | (z << 5) | (x << 10)]):
-                        worldgen_heights[x | (z << 5)] = y
-                        break
-    page.heights = list(worldgen_heights)
+    # VS-19 (REQ-PHY-07): heights derivado do bitmask recém-preenchido.
+    page.heights = derive_heights(page)
     for world_voxel, block_id in page.pending:
         page.apply(world_voxel, block_id)
         page.applied_log.append((world_voxel, block_id))
@@ -212,7 +224,7 @@ def mirror_materialize(mirror, page, worldgen_ids, worldgen_heights=None):
 
 # --- reconciliação (REQ-MIRROR-09) ---
 
-def mirror_reconcile_rejections(mirror, page, worldgen_ids, rejected, worldgen_heights=None):
+def mirror_reconcile_rejections(mirror, page, worldgen_ids, rejected):
     """Rejeição da GPU: re-export (worldgen) + replay do applied_log SEM as
     edições rejeitadas (remove a ocorrência mais recente de cada par)."""
     log = list(page.applied_log)
@@ -229,16 +241,8 @@ def mirror_reconcile_rejections(mirror, page, worldgen_ids, rejected, worldgen_h
             page.solid[i >> 5] |= 1 << (i & 31)
         else:
             page.solid[i >> 5] &= ~(1 << (i & 31)) & 0xFFFFFFFF
-    # VS-13: reexport traz o heightmap worldgen; o replay o mantém.
-    if worldgen_heights is None:
-        worldgen_heights = [0xFFFF] * (CHUNK_SIZE * CHUNK_SIZE)
-        for z in range(CHUNK_SIZE):
-            for x in range(CHUNK_SIZE):
-                for y in range(CHUNK_SIZE - 1, -1, -1):
-                    if block_is_solid(page.ids[y | (z << 5) | (x << 10)]):
-                        worldgen_heights[x | (z << 5)] = y
-                        break
-    page.heights = list(worldgen_heights)
+    # VS-19 (REQ-PHY-07): reexport re-deriva as colunas do bitmask.
+    page.heights = derive_heights(page)
     for world_voxel, block_id in log:
         page.apply(world_voxel, block_id)
         page.applied_log.append((world_voxel, block_id))
@@ -440,13 +444,10 @@ def scenario_journal_heightmap():
     for z in range(CHUNK_SIZE):
         for y in range(0, 11):
             worldgen[mirror_index((4, y, z))] = 2
-    ring_heights = [0xFFFF] * (CHUNK_SIZE * CHUNK_SIZE)
-    for z in range(CHUNK_SIZE):
-        ring_heights[4 | (z << 5)] = 10
-    mirror_materialize(mirror, page, worldgen, ring_heights)
+    mirror_materialize(mirror, page, worldgen)
 
     ok, h = mirror_height_get(mirror, (0, 0, 0), 4, 0)
-    check("materialize: altura do topo sólido", ok and h == 10)
+    check("materialize: altura derivada do topo sólido", ok and h == 10)
     ok, h = mirror_height_get(mirror, (0, 0, 0), 8, 0)
     check("materialize: coluna de ar é 0xFFFF", ok and h == 0xFFFF)
     ok, _h = mirror_height_get(mirror, (1, 0, 0), 4, 0)
@@ -496,6 +497,20 @@ def scenario_journal_heightmap():
     mirror_journal_apply(mirror, (0, 1, 0), (3, 20, 3), 2)
     ok, h = mirror_height_get(mirror, (0, 1, 0), 3, 3)
     check("chunk de ar + journal: altura = y", ok and h == 20)
+
+    # VS-19 (REQ-PHY-07): materialização com bloco flutuante — o topo derivado
+    # aponta o sólido mais alto REAL (arco), não o terreno
+    page_arch = mirror.page_acquire((0, 2, 0))
+    worldgen_arch = [0] * CHUNK_VOXEL_COUNT
+    for z in range(CHUNK_SIZE):
+        for y in range(0, 11):
+            worldgen_arch[mirror_index((4, y, z))] = 2
+    worldgen_arch[mirror_index((4, 25, 0))] = 3  # flutuante em y=25
+    mirror_materialize(mirror, page_arch, worldgen_arch)
+    ok, h = mirror_height_get(mirror, (0, 2, 0), 4, 0)
+    check("materialize: flutuante/arco — topo é o sólido mais alto (y=25)", ok and h == 25)
+    ok, h = mirror_height_get(mirror, (0, 2, 0), 4, 1)
+    check("materialize: coluna vizinha sem arco segue o terreno (y=10)", ok and h == 10)
 
     # heightmap consistente com ids em toda página: topo = último SÓLIDO
     consistent = True
@@ -615,10 +630,7 @@ def scenario_plant_nonsolid():
     for z in range(CHUNK_SIZE):
         for y in range(0, 11):
             worldgen[mirror_index((4, y, z))] = 2
-    ring_heights = [0xFFFF] * (CHUNK_SIZE * CHUNK_SIZE)
-    for z in range(CHUNK_SIZE):
-        ring_heights[4 | (z << 5)] = 10
-    mirror_materialize(mirror, page, worldgen, ring_heights)
+    mirror_materialize(mirror, page, worldgen)
 
     # colocar planta acima do topo: ids registram, bitmask sólida não, heights não move
     mirror_journal_apply(mirror, (0, 0, 0), (4, 11, 0), PLANT_BLOCK_ID)

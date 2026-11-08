@@ -259,18 +259,6 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 			vk.DeviceSize(CHUNK_VOXEL_COUNT * size_of(u16)),
 		),
 	)
-	// VS-13 (REQ-MIR-01/02): ring paralelo do heightmap — mesmo slot, 1.024
-	// u16 z-contíguos (x|z<<5), copiados direto para a página.
-	vk_check(
-		vma.InvalidateAllocation(
-			app.vmaAllocator,
-			voxel_gpu.mirror_heightmap_ring.allocation,
-			vk.DeviceSize(uint(ring_slot) * CHUNK_SIZE * CHUNK_SIZE * size_of(u16)),
-			vk.DeviceSize(CHUNK_SIZE * CHUNK_SIZE * size_of(u16)),
-		),
-	)
-	hm_base := int(ring_slot) * CHUNK_SIZE * CHUNK_SIZE
-	copy(page.heights[:], voxel_gpu.mirror_heightmap_ring_mapped[hm_base:hm_base + CHUNK_SIZE * CHUNK_SIZE])
 
 	// ring -> página (y-contíguo u16) + reconstrução da bitmask de sólidos
 	// (registry: planta ocupa o voxel mas não é sólida — VS-14 emenda).
@@ -279,6 +267,25 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 	for id, i in src {
 		page.ids[i] = id
 		mirror_bit_write(page.solid[:], u32(i), block_is_solid(u32(id)))
+	}
+	// VS-19 (REQ-PHY-07): as 1.024 colunas `heights` são derivadas do bitmask
+	// `solid` recém-preenchido (topo sólido real; 0xFFFF = coluna vazia),
+	// imune a arcos/flutuantes. O ring `mirror_heightmap_ring` (binding 20)
+	// continua sendo escrito pelo generate como RESERVA FUTURA, mas o
+	// materialize o ignora (emenda do mantenedor, 2026-11-08).
+	for z in 0 ..< CHUNK_SIZE {
+		for x in 0 ..< CHUNK_SIZE {
+			column := u32(x) | (u32(z) << 5)
+			column_base := column << 5
+			top: u16 = 0xFFFF
+			for ly in 0 ..< CHUNK_SIZE {
+				if mirror_bit_test(page.solid[:], column_base + u32(ly)) {
+					top = u16(ly)
+					break
+				}
+			}
+			page.heights[column] = top
+		}
 	}
 	if len(page.rejected_log) > 0 {
 
@@ -339,6 +346,37 @@ mirror_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
 		ve.mirror.stats_ring_misses,
 		ve.mirror.stats_pool_misses,
 	)
+}
+
+// VS-19 (AC-04): varredura heights × bitmask em todas as páginas
+// MATERIALIZED — heights[x|z<<5] deve ser o topo SÓLIDO derivado do bitmask.
+debug_heights_parity :: proc(ve: ^VoxelEngine) {
+	sync.mutex_lock(&ve.mirror.mutex)
+	defer sync.mutex_unlock(&ve.mirror.mutex)
+	pages_checked := 0
+	errors := 0
+	for coord, page in ve.mirror.pages {
+		if page.state != .MATERIALIZED do continue
+		pages_checked += 1
+		for z in 0 ..< CHUNK_SIZE {
+			for x in 0 ..< CHUNK_SIZE {
+				column := u32(x) | (u32(z) << 5)
+				expect: u16 = 0xFFFF
+				for ly in 0 ..< CHUNK_SIZE {
+					if mirror_bit_test(page.solid[:], (column << 5) + u32(ly)) {
+						expect = u16(ly)
+						break
+					}
+				}
+				if page.heights[column] != expect do errors += 1
+			}
+		}
+	}
+	if errors == 0 {
+		log.infof("DEBUG HEIGHTS PARITY OK: {} páginas × 1.024 colunas — heights == topo sólido do bitmask", pages_checked)
+	} else {
+		log.errorf("DEBUG HEIGHTS PARITY FALHOU: {} divergências em {} páginas", errors, pages_checked)
+	}
 }
 
 @(private)

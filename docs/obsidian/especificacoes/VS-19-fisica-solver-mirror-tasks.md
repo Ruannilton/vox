@@ -3,13 +3,13 @@ id: VS-19-TASKS
 titulo: Tarefas — física de gameplay sobre o mirror
 tipo: tarefas
 spec: VS-19
-status: bloqueada
+status: concluida
 ultima_atualizacao: 2026-11-08
 ---
 
 # VS-19 — Tarefas de implementação
 
-Pré-condição: ADR-F1 aceita, VS-19 aprovada e dependências concluídas. Executar em ordem; mudança de shader somente depois das sims da etapa 2. Nenhuma tarefa está iniciada.
+ADR-F1 aceita, VS-19 aprovada; etapas VS-19-IMPL-01..07 **concluídas em 2026-11-08** (builds verdes ao fim de cada etapa; validações na coluna obrigatória executadas; ver histórico e ACs da spec). Correção de emenda aplicada na IMPL-02: ring heightmap mantido como reserva futura (materialize mede o topo do bitmask).
 
 | ID | Etapa e alterações | Requisitos / ACs | Validação obrigatória |
 | --- | --- | --- | --- |

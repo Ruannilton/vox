@@ -221,6 +221,30 @@ def validate(doc, base_dir):
         solid = block.get("solid")
         if solid is not None and not isinstance(solid, bool):
             errors.append(f"{where}: campo 'solid' deve ser booleano (recebido {solid!r})")
+        # VS-19 (REQ-PHY-01): 'physics' opcional — objeto com chaves
+        # conhecidas (blocking/hittable bool; friction/restitution números
+        # com limites documentados) validado citando o bloco.
+        physics = block.get("physics")
+        if physics is not None:
+            if not isinstance(physics, dict):
+                errors.append(f"{where}: campo 'physics' deve ser um objeto (recebido {physics!r})")
+            else:
+                for key, value in physics.items():
+                    if key in ("blocking", "hittable"):
+                        if not isinstance(value, bool):
+                            errors.append(f"{where}: 'physics.{key}' deve ser booleano (recebido {value!r})")
+                    elif key in ("friction", "restitution"):
+                        if isinstance(value, bool) or not isinstance(value, (int, float)):
+                            errors.append(f"{where}: 'physics.{key}' deve ser número (recebido {value!r})")
+                        elif key == "friction" and value < 0:
+                            errors.append(f"{where}: 'physics.friction' = {value} fora do limite documentado (≥ 0)")
+                        elif key == "restitution" and not (0 <= value <= 1):
+                            errors.append(f"{where}: 'physics.restitution' = {value} fora do limite documentado ([0,1])")
+                    else:
+                        errors.append(
+                            f"{where}: flag física desconhecida 'physics.{key}' "
+                            "(conhecidas: blocking, hittable, friction, restitution)"
+                        )
         bid = block.get("id")
         if not isinstance(bid, int) or isinstance(bid, bool):
             errors.append(f"{where}: campo 'id' ausente ou malformado (esperado inteiro)")

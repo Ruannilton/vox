@@ -79,6 +79,7 @@ VoxelEngine :: struct {
 	last_empty_log_time:            time.Tick,
 	edit:                           EditManager,
 	mirror:                         MirrorManager,
+	physics:                        PhysicsManager, // VS-19: solver CPU (main)
 
 	// --- domínio de queue_mutex (thread principal <-> worker) ---
 	queue_mutex:           sync.Mutex,
@@ -148,6 +149,7 @@ voxel_engine_init :: proc() -> ^VoxelEngine {
 	}
 	edit_manager_init(ve)
 	mirror_init(ve)
+	physics_init(ve)
 	streaming_cursor_init(ve)
 
 	voxel_gpu_init()
@@ -187,6 +189,7 @@ voxel_engine_destroy :: proc(ve: ^VoxelEngine) {
 	delete(ve.streaming_cursor.pending_unload)
 	edit_manager_destroy(ve)
 	mirror_destroy(ve)
+	physics_destroy(ve)
 	active_ve = nil
 	free(ve)
 }
@@ -372,6 +375,7 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 		ZoneN("mirror_service")
 		mirror_update_bubble(ve, camera_chunk)
 		mirror_service_retries(ve)
+		physics_drain_requests(ve) // VS-19: pedidos coalescidos da física
 	}
 
 	// VS-10 (REQ-VRT-05): log periódico dos contadores de chunks vazios.

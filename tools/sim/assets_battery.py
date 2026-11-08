@@ -91,6 +91,49 @@ CASES = {
         {"name": "terra", "path": "textures/terra_8.png"},
         {"name": "pedra", "path": "textures/pedra.png"},
     ]),
+    # VS-19 (REQ-PHY-01): schema físico — tipo errado, flag desconhecida e
+    # materiais fora dos limites documentados (fricção ≥ 0; restituição [0,1])
+    "physics_tipo_errado": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama",
+         "physics": {"blocking": "sim"}},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": False},
+    ]),
+    "physics_flag_desconhecida": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama",
+         "physics": {"bouncy": True}},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": False},
+    ]),
+    "physics_friccao_negativa": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama",
+         "physics": {"friction": -0.5}},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": False},
+    ]),
+    "physics_restituicao_fora": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama",
+         "physics": {"restitution": 1.5}},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": False},
+    ]),
+}
+
+# VS-19 (REQ-PHY-01): casos VÁLIDOS — o validador aceita objeto completo,
+# objeto parcial (defaults) e ausente.
+VALID_CASES = {
+    "physics_completo_valido": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama",
+         "physics": {"blocking": True, "hittable": True, "friction": 0.6, "restitution": 0.0}},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": False,
+         "physics": {"blocking": False, "hittable": True}},
+    ]),
 }
 
 
@@ -115,6 +158,18 @@ def main():
         proc = subprocess.run([sys.executable, CHECK, path], capture_output=True, text=True)
         status = "OK" if proc.returncode == 1 else f"FALHA (exit {proc.returncode})"
         if proc.returncode != 1:
+            failures += 1
+        print(f"--- {name}: {status}")
+        for line in (proc.stdout + proc.stderr).strip().splitlines():
+            print(f"    {line}")
+    # VS-19: casos válidos devem passar (exit 0)
+    for name, d in VALID_CASES.items():
+        path = os.path.join(TMP, f"{name}.json")
+        with open(path, "w") as fh:
+            json.dump(d, fh)
+        proc = subprocess.run([sys.executable, CHECK, path], capture_output=True, text=True)
+        status = "OK" if proc.returncode == 0 else f"FALHA (exit {proc.returncode})"
+        if proc.returncode != 0:
             failures += 1
         print(f"--- {name}: {status}")
         for line in (proc.stdout + proc.stderr).strip().splitlines():

@@ -772,6 +772,12 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	}
 }
 
+// VS-19 (AC-04): ponto de entrada público da validação packed×denso (a
+// rotina em si é privada deste arquivo); usada pelo hook de debug F7.
+debug_validate_run :: proc(ve: ^VoxelEngine) {
+	debug_readback_validate(ve)
+}
+
 @(private)
 debug_readback_decode_voxels :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate, local_voxels: [][3]i32, tag: string) {
 	record, found := ve.active_chunks[chunk_coord]

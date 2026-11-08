@@ -373,6 +373,42 @@ Sem a UI aberta o client roda desconectado com custo mínimo e o log mostra `Tra
 
 **Captura sem UI:** `tools\tracy\tracy-capture.exe -o sessao.tracy` conecta headless ao app e grava o trace. Para listar cada zona GPU: `tools\tracy\tracy-csvexport.exe -g -u sessao.tracy > gpu.csv`. Salve capturas e exports de análise em `bin/debug/<VERSION_STRING>/tracy/`.
 
+## 13. Física de gameplay — solver CPU sobre o mirror (VS-19, ADR-F1)
+
+Física autoritativa roda **na thread principal**, sobre as APIs mutexadas do mirror C2 (VS-18: a worker continua única dona das mutações). `src/engine/physics.odin` é o módulo único; o algoritmo é espelhado bit a bit por `tools/sim/physics_sim.py` (42 checks).
+
+### 13.1 Tabela física data-driven (REQ-PHY-01)
+
+`PhysicsDefinition` (flags + fricção + restituição, por id de bloco) é exclusivamente CPU-side, carregada do objeto opcional `physics` por bloco em `assets/blocks.json` (`blocking`, `hittable`, `friction` ≥ 0, `restitution` em [0,1]; flags desconhecidas e tipos inválidos são fatais citando o bloco). Defaults: `blocking` = solidez do tipo, `hittable` = true, fricção 0.6, restituição 0. Ar (id 0) nunca bloqueia nem é atingível; a planta (4) é não-bloqueante e atingível. Fallback built-in (`physics_init_builtin`) tem paridade semântica. `BlockDefinition`/std430 de 48 B não mudou e nenhuma propriedade física vai ao shader.
+
+### 13.2 Tempo, corpos e sweep (REQ-PHY-02/03/04)
+
+- Passo fixo `PHYSICS_FIXED_DT` = 1/60 s por acumulador; teto de `PHYSICS_MAX_STEPS_PER_FRAME` = 5 passos/frame (dt de frame clampado em 0.25 s); o excesso é **descartado e contado** (`dropped_steps`) — nunca espiral de morte. Mesmo estado + mesma sequência de inputs ⇒ mesmo resultado (replay best-effort no modelo VS-07).
+- Corpo = AABB alinhada à grade (`position` = canto mínimo). O deslocamento do passo resolve **X→Y→Z** em subpassos de ≤ 0,4 voxel (anti-tunneling), com clamp exato na fronteira do voxel: contato zera o componente (restituição da `PhysicsDefinition` quando > 0), preservando os demais — sliding. O bitmask `solid` filtra candidatos; `ids` + tabela resolvem a semântica.
+- `grounded` é recalculado por contato real a cada passo (probe de apoio com eps; nada persiste após perder o apoio). Fricção: damping horizontal = `1 - friction·10·dt` ao apoiar (regra determinística documentada). Step-up: só após bloqueio horizontal, com TODA a AABB livre na altura +1 e apoio bloqueante no destino; limite de 1 voxel.
+
+### 13.3 Fast-path de chão (REQ-PHY-05)
+
+`physics_ground_probe` responde o apoio via `ChunkPage.heights` em O(1)/coluna quando: colunas cobertas pela AABB todas conhecidas, topo ≠ 0xFFFF, mesmo chunk no plano XZ e corpo inteiramente acima do topo mais alto. 0xFFFF, travessia de chunk, corpo abaixo do topo (interior/caverna), página ausente ou deslocamento vertical caem no sweep completo — o fast-path nunca elimina testes de teto/paredes e nunca contradiz o sweep (prova de equivalência na sim).
+
+### 13.4 Mundo desconhecido (REQ-PHY-06)
+
+Página ausente/em readback **nunca é interpretada como ar**: o passo inteiro é revertido (sem deslocamento parcial), o corpo congela (`frozen`) e a coordenada entra no map coalescido `pending_requests`, drenado pela worker em `mirror_update_bubble` (`physics_drain_requests` → `mirror_request_page`). Ao materializar, o movimento retoma em passos futuros. O raycast retorna `.UNKNOWN` com a coordenada que bloqueou a consulta.
+
+### 13.5 Raycast DDA tri-state (REQ-PHY-08/09)
+
+`physics_raycast` = Amanatides & Woo sobre coordenadas inteiras do mirror, com distância máxima obrigatória (> 0) e rejeição de direção nula (`.MISS` sem percorrer). A célula da origem é testada primeiro (hit com dist 0 e normal nula quando a origem está dentro de um bloco atingível). O hit decide pela tabela `HITTABLE` sobre `ids` — plantas não-sólidas são atingíveis e vêm antes de um sólido atrás. Resultado: `.HIT` (voxel/id/distância/normal da face) / `.MISS` (só ao esgotar a distância) / `.UNKNOWN` (página ausente antes do limite). Nenhum bitmask `hittable` existe.
+
+### 13.6 Heightmap medido e integração do jogador (REQ-PHY-07/10)
+
+`ChunkPage.heights` (1.024 colunas, índice `x|z<<5`, 0xFFFF = vazia) é **derivado do bitmask `solid` na materialização** (topo sólido real — arcos/flutuantes corretos); o journal E1 mantém as colunas incrementalmente. O ring `mirror_heightmap_ring` (binding 20) continua escrito pelo generate como **reserva futura**, mas o materialize o ignora (emenda do mantenedor, 2026-11-08).
+
+O jogador é um corpo AABB (0,6 × 1,8 × 0,6) criado na main; `update_camera_movement` impõe a velocidade horizontal a partir do input (WASD relativo ao yaw) e `physics_tick` avança os passos na main — a câmera segue o corpo (olhos a 1,62). `TeleportTo` move o corpo junto; clique esquerdo dispara o raycast de seleção. Hooks públicos: `physics_body_create/remove/get`, `physics_tick`, `physics_raycast`.
+
+### 13.7 Instrumentação Tracy
+
+Zones: `physics_tick`, `physics_body_step`, `physics_ground_probe` (com subzone `physics_fastpath_scan`), `physics_freeze`, `physics_raycast`. Plots por frame: `physics_steps`, `physics_bodies`, `physics_contacts`, `physics_voxels`. Hook F7 (debug): `debug_validate_run` (packed×denso) + `debug_heights_parity` (heights × bitmask em todas as páginas) — atenção: esses debugs usam `vkDeviceWaitIdle` com a worker ativa e emitem THREADING warnings conhecidos (padrão pré-existente VS-04/VS-12); não usar em smokes de contagem de VUIDs.
+
 ## 12. Versionamento e saídas de debug
 
 `src/version.odin` é a fonte única de `VERSION_MAJOR/MINOR/BUILD` e `VERSION_STRING` (formato `0.1.N`). O arquivo é gerado pelo tooling, mas versionado. O hook `tools/git-hooks/pre-commit`, ativado localmente por `git config core.hooksPath tools/git-hooks`, lê o build atual, incrementa N, reescreve as constantes e executa `git add src/version.odin` antes de cada commit. Não cria commits extras; falhas emitem warning e não bloqueiam o commit. O app loga a versão no startup e a inclui no `AppInfo` do Tracy.
