@@ -65,6 +65,10 @@ VoxelEngine :: struct {
 	slot_generations:               []u32,
 	last_camera_chunk:              ChunkCoordinate,
 	streaming_cursor:               StreamingCursor,
+	visible_set:                    [dynamic]ChunkCoordinate,
+	visible_membership:             map[ChunkCoordinate]int,
+	visible_set_camera:             ChunkCoordinate,
+	visible_set_initialized:        bool,
 	update_appended_tasks:          int,   // VS-15: tarefas enfileiradas no último update (plot work_items)
 	slots_starved:                  bool,
 	first_update:                   bool,
@@ -131,6 +135,7 @@ voxel_engine_init :: proc() -> ^VoxelEngine {
 	ve := new(VoxelEngine)
 	ve^ = VoxelEngine {
 		active_chunks         = make(map[ChunkCoordinate]ChunkRecord),
+		visible_membership    = make(map[ChunkCoordinate]int),
 		free_storage_slots    = make([dynamic]u32, 0, config.resident_slots),
 		slot_generations      = make([]u32, config.resident_slots),
 		pending_tasks         = make([dynamic]GenerationTask),
@@ -169,6 +174,8 @@ voxel_engine_destroy :: proc(ve: ^VoxelEngine) {
 	voxel_gpu_destroy()
 
 	delete(ve.active_chunks)
+	delete(ve.visible_set)
+	delete(ve.visible_membership)
 	delete(ve.free_storage_slots)
 	delete(ve.retiring_slots)
 	delete(ve.retiring_compute_slots)
@@ -218,6 +225,11 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 						to_empty = true
 					} else {
 						rec.state = .CACHED
+						vision_radius2 := i64(config.radius_vision) * i64(config.radius_vision)
+						if calculate_squared_distance(ve.last_camera_chunk, task.coordinate) <= vision_radius2 {
+							rec.state = .RENDERABLE
+							visible_set_add(ve, task.coordinate)
+						}
 					}
 				}
 			}
@@ -276,12 +288,12 @@ voxel_engine_wait_published :: proc(ve: ^VoxelEngine, frame_value: u64, camera_c
 	if ve.has_published && frame_value > ve.published_frame + 2 {
 		ve.publish_bump += 1
 	}
-	for {
-		publish_compatible := ve.has_published && ve.published_camera_chunk == camera_chunk
-		publish_fresh := frame_value <= ve.published_frame + 2
-		if publish_compatible && publish_fresh do break
-		if !sync.cond_wait_with_timeout(&ve.frame_condition, &ve.frame_mutex, 250 * time.Millisecond) {
-			log.warnf("VS-18: publish excedeu 250 ms (frame={}, publicado={}, centro={}/{}, revisão={}/{})", frame_value, ve.published_frame, camera_chunk, ve.published_camera_chunk, ve.world_revision, ve.published_revision)
+	publish_compatible := ve.has_published && ve.published_camera_chunk == camera_chunk
+	publish_fresh := frame_value <= ve.published_frame + 2
+	if !publish_compatible || !publish_fresh {
+		sync.cond_wait_with_timeout(&ve.frame_condition, &ve.frame_mutex, 2 * time.Millisecond)
+		if !ve.has_published || ve.published_camera_chunk != camera_chunk {
+			log.warnf("VS-18: publish atrasado; usando conjunto anterior (frame={}, publicado={}, centro={}/{})", frame_value, ve.published_frame, camera_chunk, ve.published_camera_chunk)
 		}
 	}
 	return ve.published_visible_count
@@ -291,19 +303,25 @@ voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 
 	offset := int(frame_index) * int(config.visible_capacity)
 	count: u32 = 0
 	vision_radius2 := i64(config.radius_vision) * i64(config.radius_vision)
-	for coord, record in ve.active_chunks {
-		is_visible := calculate_squared_distance(ve.last_camera_chunk, coord) <= vision_radius2
-		current_state := record.state
-		if current_state == .CACHED && is_visible {
-			current_state = .RENDERABLE
-		} else if current_state == .RENDERABLE && !is_visible {
-			current_state = .CACHED
-		}
-		if current_state != record.state {
+	if !ve.visible_set_initialized || ve.visible_set_camera != ve.last_camera_chunk {
+		clear(&ve.visible_set)
+		clear(&ve.visible_membership)
+		for coord, record in ve.active_chunks {
+			if record.state != .CACHED && record.state != .RENDERABLE do continue
 			chunk_record := &ve.active_chunks[coord]
-			chunk_record.state = current_state
+			if calculate_squared_distance(ve.last_camera_chunk, coord) <= vision_radius2 {
+				chunk_record.state = .RENDERABLE
+				visible_set_add(ve, coord)
+			} else {
+				chunk_record.state = .CACHED
+			}
 		}
-		if current_state != .RENDERABLE do continue
+		ve.visible_set_camera = ve.last_camera_chunk
+		ve.visible_set_initialized = true
+	}
+	for coord in ve.visible_set {
+		record, found := ve.active_chunks[coord]
+		if !found || record.state != .RENDERABLE do continue
 		if count >= config.visible_capacity do break
 
 		entry := VisibleChunk {
@@ -400,8 +418,7 @@ streaming_cursor_advance :: proc(ve: ^VoxelEngine, camera_chunk: ChunkCoordinate
 		coord := pop(&cursor.pending_unload)
 		streaming_unload_chunk(ve, coord)
 		unload_count += 1
-		if unload_count % STREAMING_TICK_INTERVAL == 0 &&
-		   time.duration_milliseconds(time.tick_since(start)) >= STREAMING_SLICE_BUDGET_MS {
+		if time.duration_milliseconds(time.tick_since(start)) >= STREAMING_SLICE_BUDGET_MS {
 			break
 		}
 	}
@@ -469,7 +486,26 @@ streaming_unload_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
 		vk_check(vk.GetSemaphoreCounterValue(app.vkDevice, app.timelineSemaphore, &completed_graphics))
 		append(&ve.retiring_slots, RetiringSlot{record.storage_slot_index, completed_graphics})
 	}
+	visible_set_remove(ve, coord)
 	delete_key(&ve.active_chunks, coord)
+}
+
+visible_set_add :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
+	if coord in ve.visible_membership do return
+	ve.visible_membership[coord] = len(ve.visible_set)
+	append(&ve.visible_set, coord)
+}
+
+@(private)
+visible_set_remove :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
+	index, found := ve.visible_membership[coord]
+	if !found do return
+	last := pop(&ve.visible_set)
+	if index < len(ve.visible_set) {
+		ve.visible_set[index] = last
+		ve.visible_membership[last] = index
+	}
+	delete_key(&ve.visible_membership, coord)
 }
 
 chunk_coordinate_from_world :: proc "contextless" (position: [3]f32) -> ChunkCoordinate {
