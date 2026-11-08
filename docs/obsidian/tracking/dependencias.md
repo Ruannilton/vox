@@ -24,6 +24,7 @@ graph TD
     VS15[VS-15 — Tracy profiler]
     VS16[VS-16 — Instrumentação detalhada]
     VS17[VS-17 — Streaming incremental]
+    VS18[VS-18 — Mundo na worker]
 
     VS00 --> VS01
     VS01 --> VS02
@@ -42,6 +43,7 @@ graph TD
     VS14 --> VS15
     VS15 --> VS16
     VS16 --> VS17
+    VS17 --> VS18
 ```
 
 ## Registro normativo
@@ -66,6 +68,7 @@ graph TD
 | [[VS-15-tracy-profiler|VS-15]] | VS-05 | — | — |
 | [[VS-16-instrumentacao-detalhada|VS-16]] | VS-15 | — | — |
 | [[VS-17-streaming-incremental|VS-17]] | VS-01 | — | — |
+| [[VS-18-mundo-na-worker|VS-18]] | VS-17 | — | — |
 
 ## Decisões incorporadas
 
@@ -84,6 +87,7 @@ graph TD
 - ADR-P1: VS-14 fecha o backlog B6 com alpha-test cutout (discard condicional à flag `transparente`, pipeline inalterada, CULL_MODE_NONE permanece) e introduz o bloco planta (id 4, malha em X via assets) com spawn por hash determinístico da coluna (x,z), 10% de probabilidade. Emenda 2026-11-07 (pós-validação): a planta é não-sólida — `NON_SOLID` bit 1 de `BlockDefinition.flags` (JSON `"solid": false`); o heightmap exporta o topo sólido (`altura`) e o bitmask `solid` do mirror exclui plantas.
 - ADR-T3: VS-15 integra Tracy v0.14.1 via odin-tracy como opt-in por define (import condicional contorna o link incondicional das bindings; tracy.lib vendored com script de reprodução); zones de CPU, FrameMark, thread names e plots; telemetria VS-05 inalterada.
 - ADR-T4: VS-16 adiciona zonas GPU (dois contextos TracyVk — fila gráfica e compute — com query pools dedicadas, calibração e coleta nos pontos de espera existentes; VS-05 intacta) e CPU aprofundada (call stacks, lock tracking em dois mutexes, sub-zones); degradação por omissão ao invés de overflow de ring.
+- ADR-W1: VS-18 migra o ownership do mundo para a worker thread — active_chunks, streaming, completions/B1, promote/publish no ring com reuse guardado por timeline gráfica, materialização E1 e mirror service; main fica com input/render/present (~4-5 ms/frame); handoff de frame por atomic+condição com dependências para trás (sem deadlock).
 
 ## Dependências transversais a registrar nas specs
 
