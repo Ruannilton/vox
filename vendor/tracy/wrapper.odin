@@ -72,6 +72,81 @@ ZoneBegin :: proc(active: bool, depth: i32, name: string = "", color: u32 = 0, l
 // Connection status
 IsConnected :: #force_inline proc() -> bool { return cast(bool)___tracy_connected() when TRACY_ENABLE else false }
 
+// VS-16 (REQ-GPU-01/02): primitivas gpu_* sem wrapper de alto nível no
+// odin-tracy. Como no TracyVulkan.hpp, usam a fila serial com lock interno:
+// gravação, worker e coleta podem emitir concorrentemente.
+when TRACY_ENABLE {
+	// type 2 = GpuContextType::Vulkan (TracyQueue.hpp); 0 (default do
+	// struct) é Invalid e derruba o servidor.
+	GpuNewContext :: #force_inline proc(gpu_time: i64, period: f32, context_id: u8) {
+		___tracy_emit_gpu_new_context_serial(
+			{gpuTime = gpu_time, period = period, _context = context_id, type = 2},
+		)
+	}
+	GpuContextName :: #force_inline proc(name: cstring, context_id: u8) {
+		___tracy_emit_gpu_context_name_serial({name = name, len = u16(len(name)), _context = context_id})
+	}
+	GpuZoneBegin :: #force_inline proc(srcloc: u64, query_id: u16, context_id: u8) {
+		___tracy_emit_gpu_zone_begin_alloc_serial({srcloc = srcloc, queryId = query_id, _context = context_id})
+	}
+	GpuZoneEnd :: #force_inline proc(query_id: u16, context_id: u8) {
+		___tracy_emit_gpu_zone_end_serial({queryId = query_id, _context = context_id})
+	}
+	GpuTime :: #force_inline proc(gpu_time: i64, query_id: u16, context_id: u8) {
+		___tracy_emit_gpu_time_serial({gpuTime = gpu_time, queryId = query_id, _context = context_id})
+	}
+	GpuCalibration :: #force_inline proc(gpu_time: i64, cpu_delta: i64, context_id: u8) {
+		___tracy_emit_gpu_calibration_serial({gpuTime = gpu_time, cpuDelta = cpu_delta, _context = context_id})
+	}
+	GpuTimeSync :: #force_inline proc(gpu_time: i64, context_id: u8) {
+		___tracy_emit_gpu_time_sync_serial({gpuTime = gpu_time, _context = context_id})
+	}
+	// VS-16 (REQ-GPU-02): srcloc por begin, padrão do wrapper CPU.
+	AllocSrclocName :: #force_inline proc(
+		line: u32,
+		file: string,
+		function: string,
+		name: string,
+		color: u32 = 0,
+	) -> u64 {
+		return ___tracy_alloc_srcloc_name(
+			line,
+			cstring(raw_data(file)),
+			c.size_t(len(file)),
+			cstring(raw_data(function)),
+			c.size_t(len(function)),
+			cstring(raw_data(name)),
+			c.size_t(len(name)),
+			color,
+		)
+	}
+	GetTime :: #force_inline proc() -> i64 {
+		return ___tracy_get_time()
+	}
+}
+
+// VS-16 (REQ-CPU-03): lock tracking — anúncio único + before/after lock.
+when TRACY_ENABLE {
+	LockAnnounce :: proc(srcloc: ^SourceLocationData) -> ^LockCtx {
+		return ___tracy_announce_lockable_ctx(srcloc)
+	}
+	LockCustomName :: #force_inline proc(ctx: ^LockCtx, name: string) {
+		___tracy_custom_name_lockable_ctx(ctx, _sl(name))
+	}
+	LockTerminate :: #force_inline proc(ctx: ^LockCtx) {
+		___tracy_terminate_lockable_ctx(ctx)
+	}
+	LockBefore :: #force_inline proc(ctx: ^LockCtx) {
+		___tracy_before_lock_lockable_ctx(ctx)
+	}
+	LockAfter :: #force_inline proc(ctx: ^LockCtx) {
+		___tracy_after_lock_lockable_ctx(ctx)
+	}
+	LockAfterUnlock :: #force_inline proc(ctx: ^LockCtx) {
+		___tracy_after_unlock_lockable_ctx(ctx)
+	}
+}
+
 // VS-15 (BLK-37): a lib vendora é compilada com TRACY_MANUAL_LIFETIME +
 // TRACY_DELAYED_INIT — o profiler só existe entre StartupProfiler e
 // ShutdownProfiler; qualquer call Tracy fora desse intervalo é inválido.

@@ -8,14 +8,14 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 16 |
-| Specs aprovadas | 16 |
+| Specs registradas | 17 |
+| Specs aprovadas | 17 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 16 |
+| Implementações concluídas | 17 |
 | Validações verificadas | 15 |
 
-Dezesseis especificações registradas e aprovadas, 16 implementadas; 15 integralmente verificadas — VS-15 (Tracy profiler — CPU zones) implementada e com AC-01 verificado (build default sem dependência de link, smoke Tracy com `IsConnected()=false`, telemetria VS-05 intacta), aguardando o AC-02 manual da UI Tracy (passo a passo no manual técnico §11). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Dezessete especificações registradas, aprovadas e implementadas; 15 integralmente verificadas. VS-15 aguarda o AC-02 manual da UI Tracy; VS-16 tem AC-01 verificado e aguarda o AC-02 manual da timeline híbrida/locks/call stacks. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -37,6 +37,7 @@ Dezesseis especificações registradas e aprovadas, 16 implementadas; 15 integra
 | VS-13 | [[VS-13-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aprovada` | `concluida` | `verificada` | VS-04 | — |
 | VS-14 | [[VS-14-plantas-alpha-test-spawn|Plantas — alpha-test e spawn determinístico]] | `aprovada` | `concluida` | `verificada` | VS-12 | — |
 | VS-15 | [[VS-15-tracy-profiler|Tracy profiler (CPU zones)]] | `aprovada` | `concluida` | `em-validacao` | VS-05 | AC-02 manual da UI Tracy (passo a passo no manual técnico §11) |
+| VS-16 | [[VS-16-instrumentacao-detalhada|Instrumentação detalhada (CPU + GPU)]] | `aprovada` | `concluida` | `em-validacao` | VS-15 | AC-02 manual da UI Tracy (manual técnico §11) |
 
 ## Decisões
 
@@ -68,6 +69,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-G1 | [[ADR-G1-heightmap-geracao-mirror|Heightmap na geração e no mirror]] | `aceita` | VS-13 |
 | ADR-P1 | [[ADR-P1-plantas-alpha-test-spawn|Plantas — alpha-test e spawn determinístico]] | `aceita` | VS-14 |
 | ADR-T3 | [[ADR-T3-tracy-profiler|Tracy profiler via odin-tracy, opt-in por define]] | `aceita` | VS-15 |
+| ADR-T4 | [[ADR-T4-instrumentacao-detalhada|Instrumentação detalhada — GPU zones e CPU aprofundada]] | `aceita` | VS-16 |
 
 ## Vocabulário de status
 

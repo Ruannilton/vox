@@ -186,6 +186,10 @@ main :: proc() {
 				engine.ZoneN("frame_wait")
 				signal_value = engine.WaitTimelineSemaphore()
 				engine.telemetry_collect_graphics(engine.app.frameIndex)
+				// VS-16 (REQ-GPU-03): coleta das zonas GPU do contexto
+				// gráfica no mesmo ponto de espera (leitura com
+				// disponibilidade, nunca bloqueante).
+				engine.tracing_gpu_collect_graphics()
 				view := camera_view(&camera)
 				vp = GL_TO_VK_CLIP * projection * view
 
@@ -197,8 +201,15 @@ main :: proc() {
 					continue
 				}
 
-				visible_count = engine.voxel_engine_publish_visible(voxel_engine, engine.app.frameIndex)
-				edit_job_count = engine.edit_ring_write(voxel_engine, engine.app.frameIndex)
+				// VS-16 (REQ-CPU-01)
+				{
+					engine.ZoneN("publish_visible")
+					visible_count = engine.voxel_engine_publish_visible(voxel_engine, engine.app.frameIndex)
+				}
+				{
+					engine.ZoneN("edit_flush")
+					edit_job_count = engine.edit_ring_write(voxel_engine, engine.app.frameIndex)
+				}
 
 				// VS-15 (REQ-TRC-04): plots por frame, coletados só quando a
 				// UI Tracy está conectada.

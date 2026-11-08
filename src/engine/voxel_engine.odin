@@ -127,9 +127,9 @@ voxel_engine_init :: proc() -> ^VoxelEngine {
 
 voxel_engine_destroy :: proc(ve: ^VoxelEngine) {
 	sync.atomic_store(&ve.worker_stop_requested, 1)
-	sync.mutex_lock(&ve.queue_mutex)
+	tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
 	sync.cond_broadcast(&ve.queue_condition)
-	sync.mutex_unlock(&ve.queue_mutex)
+	tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
 	thread.join(ve.worker)
 	thread.destroy(ve.worker)
 
@@ -154,7 +154,7 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 	completed_compute: u64
 	vk_check(vk.GetSemaphoreCounterValue(app.vkDevice, app.computeTimelineSemaphore, &completed_compute))
 
-	sync.mutex_lock(&ve.queue_mutex)
+	tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
 	// VS-10 (REQ-VRT-02): as flags do pack são lidas pela CPU após a
 	// timeline do lote (mesma ordenação da promoção a CACHED, mesmo anti-ABA).
 	vk_check(
@@ -208,7 +208,7 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 		delete(b.tasks)
 	}
 	remove_range(&ve.submitted_batches, 0, completed_count)
-	sync.mutex_unlock(&ve.queue_mutex)
+	tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
 
 	for i := len(ve.retiring_compute_slots) - 1; i >= 0; i -= 1 {
 		if ve.retiring_compute_slots[i].release_timeline_value <= completed_compute {
@@ -262,16 +262,20 @@ voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 
 // virtuais (reativos são recontados no map; economia é acumulada).
 
 voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
-	voxel_engine_service_completions(ve)
+	{
+		ZoneN("service_completions")
+		voxel_engine_service_completions(ve)
+	}
 	ve.update_appended_tasks = 0
 
 	camera_chunk := chunk_coordinate_from_world(camera_position)
 	if camera_chunk != ve.last_camera_chunk {
+		ZoneN("streaming_update")
 		ve.last_camera_chunk = camera_chunk
 
-		sync.mutex_lock(&ve.queue_mutex)
+		tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
 		ve.priority_camera_chunk = camera_chunk
-		sync.mutex_unlock(&ve.queue_mutex)
+		tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
 
 		to_unload := make([dynamic]ChunkCoordinate, context.temp_allocator)
 		for coord in ve.active_chunks {
@@ -334,27 +338,33 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 			ve.slots_starved = false
 		}
 		if len(new_tasks) > 0 {
-			sync.mutex_lock(&ve.queue_mutex)
+			tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
 			append(&ve.pending_tasks, ..new_tasks[:])
 			sync.cond_signal(&ve.queue_condition)
-			sync.mutex_unlock(&ve.queue_mutex)
+			tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
 		}
 		ve.update_appended_tasks = len(new_tasks)
 	}
 
-	for coord, record in ve.active_chunks {
-		is_visible := calculate_squared_distance(camera_chunk, coord) <= i64(config.radius_vision) * i64(config.radius_vision)
-		if record.state == .CACHED && is_visible {
-			chunk_record := &ve.active_chunks[coord]
-			chunk_record.state = .RENDERABLE
-		} else if record.state == .RENDERABLE && !is_visible {
-			chunk_record := &ve.active_chunks[coord]
-			chunk_record.state = .CACHED
+	{
+		ZoneN("promote_visibility")
+		for coord, record in ve.active_chunks {
+			is_visible := calculate_squared_distance(camera_chunk, coord) <= i64(config.radius_vision) * i64(config.radius_vision)
+			if record.state == .CACHED && is_visible {
+				chunk_record := &ve.active_chunks[coord]
+				chunk_record.state = .RENDERABLE
+			} else if record.state == .RENDERABLE && !is_visible {
+				chunk_record := &ve.active_chunks[coord]
+				chunk_record.state = .CACHED
+			}
 		}
 	}
 
-	mirror_update_bubble(ve, camera_chunk)
-	mirror_service_retries(ve)
+	{
+		ZoneN("mirror_service")
+		mirror_update_bubble(ve, camera_chunk)
+		mirror_service_retries(ve)
+	}
 
 	// VS-10 (REQ-VRT-04): edições em chunk EMPTY com pool esgotado ficam na
 	// fila; a materialização é retentada a cada update (sem erro, sem perda).
@@ -377,8 +387,8 @@ chunk_coordinate_from_world :: proc "contextless" (position: [3]f32) -> ChunkCoo
 
 @(private)
 retire_generating_slot :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {
-	sync.mutex_lock(&ve.queue_mutex)
-	defer sync.mutex_unlock(&ve.queue_mutex)
+	tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
+	defer tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
 
 	for task, i in ve.pending_tasks {
 		if task_matches(task, coord, record) {

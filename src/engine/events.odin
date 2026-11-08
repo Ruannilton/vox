@@ -240,6 +240,8 @@ events_drain :: proc() {
 		events.overflow_warned = true
 	}
 
+	// VS-16 (REQ-CPU-01)
+	ZoneN("drain")
 	for events.head != events.tail {
 		e := events.queue[events.head]
 		events.head = (events.head + 1) % EVENT_QUEUE_CAPACITY
@@ -258,6 +260,8 @@ events_drain :: proc() {
 events_replay_feed :: proc(now: f64) {
 	if events.replay_path == "" || events.replay_finished do return
 
+	// VS-16 (REQ-CPU-01)
+	ZoneN("replay_cursor")
 	for events.replay_cursor < len(events.replay_events) {
 		e := events.replay_events[events.replay_cursor]
 		if e.t > now do break

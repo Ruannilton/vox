@@ -20,9 +20,12 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		{
 			ZoneN("worker_iteration")
 
+			// VS-16 (REQ-CPU-01): claim_batch cobre a aquisição do lote sob
+			// queue_mutex (inclui a espera na condvar — o lock aparece
+			// "detido" durante o cond_wait no Tracy, por construção).
 			{
-				ZoneN("batch_assemble")
-				sync.mutex_lock(&ve.queue_mutex)
+				ZoneN("claim_batch")
+				tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
 				for len(ve.pending_tasks) == 0 && len(ve.pending_export_tasks) == 0 &&
 				    sync.atomic_load(&ve.worker_stop_requested) == 0 {
 					sync.cond_wait(&ve.queue_condition, &ve.queue_mutex)
@@ -58,17 +61,19 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 
 				assigned_timeline = claimed_batch.compute_timeline_value
 				append(&ve.submitted_batches, claimed_batch)
-				sync.mutex_unlock(&ve.queue_mutex)
+				tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
 			}
 
 			// Backpressure: no máximo config.batches_in_flight lotes em voo antes
 			// de regravar o ring.
 			if submitted_batch_count >= u64(config.batches_in_flight) {
+				ZoneN("wait_batch_slot")
 				wait_for_compute_timeline(submitted_batch_count - u64(config.batches_in_flight) + 1)
+				tracing_gpu_collect_compute()
 			}
 
 			{
-				ZoneN("batch_submit")
+				ZoneN("submit_batch")
 				ring_index := int(submitted_batch_count % u64(config.batches_in_flight))
 
 				if submitted_batch_count >= u64(config.batches_in_flight) {
@@ -76,11 +81,14 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 				}
 				job_offset := ring_index * int(config.chunks_per_batch)
 
-				for task, i in claimed_batch.tasks {
-					voxel_gpu.generation_jobs_mapped[job_offset + i] = ChunkGenerationJob {
-						chunk_world_origin = task.coordinate * CHUNK_SIZE,
-						storage_slot_index = task.storage_slot_index,
-						mirror_ring_slot   = task.mirror_ring_slot,
+				{
+					ZoneN("build_jobs")
+					for task, i in claimed_batch.tasks {
+						voxel_gpu.generation_jobs_mapped[job_offset + i] = ChunkGenerationJob {
+							chunk_world_origin = task.coordinate * CHUNK_SIZE,
+							storage_slot_index = task.storage_slot_index,
+							mirror_ring_slot   = task.mirror_ring_slot,
+						}
 					}
 				}
 
@@ -120,12 +128,17 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 					&push_constants,
 				)
 
+				// VS-16 (REQ-GPU-02/03): zonas GPU do contexto compute.
+				tracing_gpu_record_context(cmd, TRACING_GPU_CONTEXT_COMPUTE)
+
 				compute_pool := telemetry.compute_pools[ring_index]
 				telemetry_reset_pool(cmd, compute_pool, TELEMETRY_COMPUTE_QUERY_COUNT)
 				telemetry_timestamp_begin(cmd, compute_pool, 0)
 				telemetry_begin_label(cmd, "generate")
+				generate_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_COMPUTE, "generate")
 				vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.generation_pipeline)
 				vk.CmdDispatch(cmd, 4, 4, 4 * u32(len(claimed_batch.tasks)))
+				tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_COMPUTE, generate_query)
 				telemetry_end_label(cmd)
 				telemetry_timestamp_end(cmd, compute_pool, 1)
 
@@ -148,7 +161,9 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 					vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.packing_pipeline)
 					telemetry_timestamp_begin(cmd, compute_pool, 2)
 					telemetry_begin_label(cmd, "pack")
+					pack_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_COMPUTE, "pack")
 					vk.CmdDispatch(cmd, u32(len(claimed_batch.tasks)), 1, 1)
+					tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_COMPUTE, pack_query)
 					telemetry_end_label(cmd)
 					telemetry_timestamp_end(cmd, compute_pool, 3)
 				}

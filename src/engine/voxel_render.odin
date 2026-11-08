@@ -100,11 +100,18 @@ voxel_render_prepare :: proc(
 	vk.CmdPushConstants(cmd, app.computePipelineLayout, {.COMPUTE}, 0, PUSH_CONSTANTS_SIZE, &push_constants)
 
 	if edit_job_count > 0 {
+		// VS-16 (REQ-GPU-02/03): contexto gráfico — resets pendentes e
+		// re-sync entram uma vez por command buffer.
+		tracing_gpu_record_context(cmd, TRACING_GPU_CONTEXT_GRAPHICS)
+
 		gfx_pool := telemetry.gfx_pools[frame_index]
 		telemetry_timestamp_begin(cmd, gfx_pool, 2)
 		telemetry_begin_label(cmd, "apply_voxel_edits")
+		ZoneN("apply_edits_record")
+		apply_edits_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_GRAPHICS, "apply_edits")
 		vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.edit_pipeline)
 		vk.CmdDispatch(cmd, edit_job_count, 1, 1)
+		tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_GRAPHICS, apply_edits_query)
 		telemetry_end_label(cmd)
 		telemetry_timestamp_end(cmd, gfx_pool, 3)
 
@@ -115,6 +122,7 @@ voxel_render_prepare :: proc(
 			dstStageMask  = {.COMPUTE_SHADER},
 			dstAccessMask = {.SHADER_READ},
 		}
+		ZoneN("barriers_record")
 		vk.CmdPipelineBarrier2(
 			cmd,
 			&vk.DependencyInfo {
@@ -127,9 +135,14 @@ voxel_render_prepare :: proc(
 
 	if visible_count == 0 do return
 
+	if edit_job_count == 0 {
+		tracing_gpu_record_context(cmd, TRACING_GPU_CONTEXT_GRAPHICS)
+	}
+
 	state_offset := vk.DeviceSize(frame_index * config.work_queue_slot_words * size_of(u32))
 	vk.CmdFillBuffer(cmd, voxel_gpu.work_queue.handle, state_offset, WORK_QUEUE_STATE_WORDS * 4, 0)
 
+	ZoneN("barriers_record")
 	fill_barrier := vk.BufferMemoryBarrier2 {
 		sType         = .BUFFER_MEMORY_BARRIER_2,
 		srcStageMask  = {.CLEAR},
@@ -151,8 +164,11 @@ voxel_render_prepare :: proc(
 
 	telemetry_timestamp_begin(cmd, telemetry.gfx_pools[frame_index], 4)
 	telemetry_begin_label(cmd, "build_work_queue")
+	ZoneN("builder_record")
+	builder_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_GRAPHICS, "build_work_queue")
 	vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.build_work_queue_pipeline)
 	vk.CmdDispatch(cmd, visible_count, 1, 1)
+	tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_GRAPHICS, builder_query)
 	telemetry_end_label(cmd)
 	telemetry_timestamp_end(cmd, telemetry.gfx_pools[frame_index], 5)
 
@@ -177,8 +193,11 @@ voxel_render_prepare :: proc(
 
 	telemetry_timestamp_begin(cmd, telemetry.gfx_pools[frame_index], 6)
 	telemetry_begin_label(cmd, "finalize_work_queue")
+	ZoneN("finalize_record")
+	finalize_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_GRAPHICS, "finalize_work_queue")
 	vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.finalize_work_queue_pipeline)
 	vk.CmdDispatch(cmd, 1, 1, 1)
+	tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_GRAPHICS, finalize_query)
 	telemetry_end_label(cmd)
 	telemetry_timestamp_end(cmd, telemetry.gfx_pools[frame_index], 7)
 
@@ -240,6 +259,8 @@ voxel_render_record :: proc(
 	state_offset := vk.DeviceSize(frame_index * config.work_queue_slot_words * size_of(u32))
 	telemetry_timestamp_begin(cmd, telemetry.gfx_pools[frame_index], 8)
 	telemetry_begin_label(cmd, "draw_mesh")
+	ZoneN("mesh_draw_record")
+	draw_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_GRAPHICS, "draw_mesh")
 	vk.CmdDrawMeshTasksIndirectEXT(
 		cmd,
 		voxel_gpu.work_queue.handle,
@@ -247,6 +268,7 @@ voxel_render_record :: proc(
 		1,  // um único comando (x = contagem de itens, com clamp do finalize)
 		12, // stride = size_of(VkDrawMeshTasksIndirectCommandEXT) = 3 u32
 	)
+	tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_GRAPHICS, draw_query)
 	telemetry_end_label(cmd)
 	telemetry_timestamp_end(cmd, telemetry.gfx_pools[frame_index], 9)
 }

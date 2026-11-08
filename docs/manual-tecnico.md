@@ -349,20 +349,25 @@ Profiling de CPU **opt-in por define de compilação**, via bindings Odin do [os
 | Item | Valor |
 |---|---|
 | Define | `TRACY_ENABLE` (`#config`, default `false`); `run.bat` desligado, `run_tracy.bat` ligado |
-| Wrapper | `src/engine/tracing.odin` — único módulo que referencia o package `tracy`; desligado, toda a API é no-op inline e `TracingIsConnected()` é `false` |
+| Wrapper | `src/engine/tracing.odin` (CPU/lifetime/locks) + `src/engine/tracing_gpu.odin` (GPU); desligado, toda a API é no-op inline e `TracingIsConnected()` é `false` |
 | Link | `bindings.odin` vendored faz `foreign import tracy "tracy.lib"` **só com `TRACY_ENABLE=true`** (desligado usa `system:kernel32`) — o build default não depende da lib |
 | Rebuild da lib | `tools\build_tracy_client.bat` (clone `--recurse-submodules` do odin-tracy, client C++ com `-MD` — o `-MT` do upstream colide com o CRT do VMA — e `-DTRACY_MANUAL_LIFETIME -DTRACY_DELAYED_INIT`: o startup do profiler é manual, depois do init Vulkan — ver BLK-37 no backlog) |
-| Zones (main) | `frame`, `events_drain`, `engine_update`, `frame_wait`, `render_record`, `present` |
-| Zones (worker) | `worker_iteration`, `batch_assemble`, `batch_submit` |
+| Zones (main) | `frame`, `events_drain`, `engine_update`, `frame_wait`, `render_record`, `present`; sub-zones `service_completions`, `streaming_update`, `promote_visibility`, `mirror_service`, `publish_visible`, `edit_flush`, `apply_edits_record`, `builder_record`, `finalize_record`, `mesh_draw_record`, `barriers_record`, `drain`, `replay_cursor` |
+| Zones (worker) | `worker_iteration`, `claim_batch`, `build_jobs`, `wait_batch_slot`, `submit_batch` |
+| GPU zones | Contexto 0 (`graphics`): `apply_edits`, `build_work_queue`, `finalize_work_queue`, `draw_mesh`; contexto 1 (`compute`): `generate`, `pack` |
+| Call stacks | `run_tracy.bat` passa `-define:TRACY_CALLSTACK=10`; cada zone CPU captura até 10 frames (custo adicional de stack walking e transmissão) |
+| Locks | `queue_mutex` e `results_mutex`, anunciados no startup e instrumentados por `tracing_mutex_lock/unlock` |
 | Extras | `FrameMark` por frame; threads `main`/`voxel_worker`; `AppInfo` com a config efetiva; plots `visible_chunks`, `work_items`, `empty_chunks` (só quando conectado) |
 
 ### Como rodar com a UI Tracy (AC-02, manual)
 
 1. O pacote da UI Tracy (**v0.14.1**) já fica em `tools\tracy\` (`tracy-profiler.exe` + utilitários; não versionado, `*.exe` ignorado pelo git). Se precisar reobter: release oficial em https://github.com/wolfpld/tracy/releases/tag/v0.14.1.
-2. Execute `run_tracy.bat` na raiz do repo (abre a UI + compila shaders + `odin build -define:TRACY_ENABLE=true` + roda `vox.exe`). Se `vendor\tracy\tracy.lib` estiver ausente, o script aponta `tools\build_tracy_client.bat` e sai com erro.
+2. Execute `run_tracy.bat` na raiz do repo (abre a UI + compila shaders + `odin build -define:TRACY_ENABLE=true -define:TRACY_CALLSTACK=10` + roda `vox.exe`). Se `vendor\tracy\tracy.lib` estiver ausente, o script aponta `tools\build_tracy_client.bat` e sai com erro.
 3. Na UI Tracy, clique em **Connect** (ou aguarde o app aparecer no listen). O profiler sobe logo após o init Vulkan (`TRACY_MANUAL_LIFETIME`), então a janela do app pode aparecer alguns segundos antes da conexão ser possível.
-4. Confira: frames no marcador `FrameMark`; zonas `frame`/`engine_update`/`render_record` na thread `main` e `worker_iteration`/`batch_assemble`/`batch_submit` na thread `voxel_worker`; plots `visible_chunks`/`work_items`/`empty_chunks` atualizando por frame.
+4. Confira: frames no marcador `FrameMark`; sub-zones CPU e call stacks; locks `queue_mutex`/`results_mutex`; timeline GPU com `generate`/`pack` no compute e as quatro passagens na gráfica; plots atualizando por frame.
 
-Sem a UI aberta o client roda desconectado com custo mínimo e o log mostra `Tracy IsConnected()=false`; os plots são pulados (`TracingIsConnected()` guarda a coleta). Não há GPU zones nesta versão (backlog BLK-33); memory profiling/lock tracking/call stacks em BLK-34..36.
+Sem a UI aberta o client roda desconectado com custo mínimo e o log mostra `Tracy IsConnected()=false`; os plots são pulados (`TracingIsConnected()` guarda a coleta). Memory profiling permanece em BLK-34.
 
-**Captura sem UI:** `tools\tracy\tracy-capture.exe -o sessao.tracy` conecta headless ao app e grava o trace — útil para validar o fluxo de zonas em smokes automatizados (ex.: AC-01/02 sem cliques).
+`src/engine/tracing_gpu.odin` mantém uma query pool dedicada por fila, com ring de 4.096 timestamps. Cada zona consome dois IDs distintos (begin/end); coleta gráfica ocorre após `WaitTimelineSemaphore` e compute após a espera do lote. Apenas faixas coletadas são resetadas; pressão no ring omite zonas com warning único, sem overflow. Calibração inicial usa timestamp GPU + `GpuNewContext(period=timestampPeriod)`; re-sync ocorre a cada 60 coletas sem sobrescrever sync pendente. Os emits seguem `TracyVulkan.hpp` e usam a fila serial com lock interno. As pools da telemetria VS-05 são independentes e permanecem inalteradas.
+
+**Captura sem UI:** `tools\tracy\tracy-capture.exe -o sessao.tracy` conecta headless ao app e grava o trace. Para listar cada zona GPU: `tools\tracy\tracy-csvexport.exe -g -u sessao.tracy > gpu.csv`.

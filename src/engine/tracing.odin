@@ -6,12 +6,14 @@
 
 package engine
 
-TRACY_ENABLE :: #config(TRACY_ENABLE, false)
+import "core:sync"
 
-// Odin não permite `import` dentro de `when`; o package é importado sempre,
-// mas com TRACY_ENABLE=false o próprio package no-opa toda a API e o foreign
-// import condicional (bindings.odin) elimina a dependência de link.
 import tracy "../../vendor/tracy"
+
+// Odin não permite import em when: o package entra sempre, mas com
+// TRACY_ENABLE=false a API dele no-opa e o foreign import vira kernel32.
+
+TRACY_ENABLE :: #config(TRACY_ENABLE, false)
 
 when TRACY_ENABLE {
 	ZoneCtx :: tracy.ZoneCtx
@@ -29,15 +31,16 @@ when TRACY_ENABLE {
 	// Chama ZoneBegin (sem defer) e é o ÚNICO dono do par deferido: as
 	// procs ZoneN/Zone do odin-tracy já têm @(deferred_out=ZoneEnd), então
 	// delegar a elas com defer próprio emitia dois ZoneEnd por ZoneBegin
-	// ("zone ended twice" na UI/capture Tracy).
+	// ("zone ended twice" na UI/capture Tracy). Depth vem de TRACY_CALLSTACK
+	// (REQ-CPU-02: run_tracy.bat passa 10).
 	@(deferred_out=zone_end)
 	ZoneN :: #force_inline proc(name: string, active := true, loc := #caller_location) -> (ctx: ZoneCtx) {
-		return tracy.ZoneBegin(active, 0, name, 0, loc)
+		return tracy.ZoneBegin(active, tracy.TRACY_CALLSTACK, name, 0, loc)
 	}
 
 	@(deferred_out=zone_end)
 	Zone :: #force_inline proc(name: string = "", active := true, loc := #caller_location) -> (ctx: ZoneCtx) {
-		return tracy.ZoneBegin(active, 0, name, 0, loc)
+		return tracy.ZoneBegin(active, tracy.TRACY_CALLSTACK, name, 0, loc)
 	}
 } else {
 	@(deferred_out=zone_end)
@@ -94,14 +97,80 @@ TracingIsConnected :: #force_inline proc() -> bool {
 // client Tracy ativo desde o CRT init (hang em vkCreateComputePipelines).
 // Só chamar com TRACY_ENABLE ligado e fora do intervalo nenhuma API Tracy
 // pode ser usada (GetProfiler asserta com o profiler não iniciado).
+// VS-16: o startup também sobe os contextos GPU (tracing_gpu_init) e
+// anuncia os locks rastreados; o shutdown coleta o restante das zonas GPU
+// antes de descer o profiler.
 TracingStartup :: #force_inline proc() {
 	when TRACY_ENABLE {
 		tracy.StartupProfiler()
+		tracing_gpu_init()
+		tracing_locks_init()
 	}
 }
 
 TracingShutdown :: #force_inline proc() {
 	when TRACY_ENABLE {
+		tracing_gpu_shutdown()
 		tracy.ShutdownProfiler()
+	}
+}
+
+// VS-16 (REQ-CPU-03): lock tracking nos mutexes principais. Anúncio único
+// no startup; os wrappers emitem before/after lock ao redor do sync.Mutex.
+// Os srclocs precisam de storage estático: o protocolo envia o ponteiro
+// bruto ao servidor (lockAnnounce.lckloc = srcloc).
+when TRACY_ENABLE {
+	TracingLock :: struct {
+		ctx:       ^tracy.LockCtx,
+		announced: bool,
+	}
+
+	@(private)
+	queue_lock_srcloc := tracy.SourceLocationData {
+		name     = "queue_mutex",
+		function = "queue_mutex",
+		file     = "src/engine/voxel_engine.odin",
+		line     = 0,
+		color    = 0,
+	}
+
+	@(private)
+	results_lock_srcloc := tracy.SourceLocationData {
+		name     = "results_mutex",
+		function = "results_mutex",
+		file     = "src/engine/telemetry.odin",
+		line     = 0,
+		color    = 0,
+	}
+} else {
+	TracingLock :: struct {}
+}
+
+tracing_queue_lock: TracingLock
+tracing_results_lock: TracingLock
+
+tracing_locks_init :: proc() {
+	when TRACY_ENABLE {
+		tracing_queue_lock.ctx = tracy.LockAnnounce(&queue_lock_srcloc)
+		tracing_results_lock.ctx = tracy.LockAnnounce(&results_lock_srcloc)
+		tracing_queue_lock.announced = true
+		tracing_results_lock.announced = true
+	}
+}
+
+tracing_mutex_lock :: proc(m: ^sync.Mutex, lock: ^TracingLock) {
+	when TRACY_ENABLE {
+		if lock.announced do tracy.LockBefore(lock.ctx)
+	}
+	sync.mutex_lock(m)
+	when TRACY_ENABLE {
+		if lock.announced do tracy.LockAfter(lock.ctx)
+	}
+}
+
+tracing_mutex_unlock :: proc(m: ^sync.Mutex, lock: ^TracingLock) {
+	sync.mutex_unlock(m)
+	when TRACY_ENABLE {
+		if lock.announced do tracy.LockAfterUnlock(lock.ctx)
 	}
 }

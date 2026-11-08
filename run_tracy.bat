@@ -1,10 +1,10 @@
 @echo off
 setlocal
 
-:: VS-15 (REQ-TRC-01): build com Tracy ligado (-define:TRACY_ENABLE=true).
-:: Exige vendor\tracy\tracy.lib; se ausente, gere com tools\build_tracy_client.bat.
-:: A UI Tracy fica em tools\tracy\tracy-profiler.exe; encontrada, o script a abre
-:: automaticamente antes do app.
+:: VS-15 (REQ-TRC-01) + VS-16 (REQ-CPU-02): build com Tracy ligado e call
+:: stacks de profundidade 10. Exige vendor\tracy\tracy.lib; se ausente, gere
+:: com tools\build_tracy_client.bat. A UI Tracy fica em
+:: tools\tracy\tracy-profiler.exe; encontrada, o script a abre antes do app.
 
 if not exist ".\vendor\tracy\tracy.lib" goto sem_lib
 goto com_lib
@@ -45,6 +45,6 @@ xcopy /E /I /Y ".\assets" ".\bin\assets" >nul
 echo.
 echo Finalizado!
 
-odin build .\src\ -out:./bin/vox.exe -define:TRACY_ENABLE=true || exit /b 1
+odin build .\src\ -out:./bin/vox.exe -define:TRACY_ENABLE=true -define:TRACY_CALLSTACK=10 || exit /b 1
 chdir ./bin
 vox.exe %*

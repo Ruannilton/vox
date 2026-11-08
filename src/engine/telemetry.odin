@@ -239,9 +239,9 @@ telemetry_service :: proc() {
 
 	telemetry_collect_vram()
 
-	sync.mutex_lock(&telemetry.results_mutex)
+	tracing_mutex_lock(&telemetry.results_mutex, &tracing_results_lock)
 	times := telemetry.last_times_us
-	sync.mutex_unlock(&telemetry.results_mutex)
+	tracing_mutex_unlock(&telemetry.results_mutex, &tracing_results_lock)
 
 	sb := strings.builder_make(context.temp_allocator)
 	fmt.sbprintf(&sb, "%d,%d", i64(time.duration_milliseconds(time.tick_since(session_start_tick))), app.tick)
@@ -264,9 +264,9 @@ telemetry_snapshot :: proc() {
 	vma.BuildStatsString(app.vmaAllocator, &stats_string, true)
 	defer vma.FreeStatsString(app.vmaAllocator, stats_string)
 
-	sync.mutex_lock(&telemetry.results_mutex)
+	tracing_mutex_lock(&telemetry.results_mutex, &tracing_results_lock)
 	times := telemetry.last_times_us
-	sync.mutex_unlock(&telemetry.results_mutex)
+	tracing_mutex_unlock(&telemetry.results_mutex, &tracing_results_lock)
 
 	sb := strings.builder_make(context.temp_allocator)
 
@@ -367,9 +367,9 @@ telemetry_publish_pair :: proc(op: TelemetryOperation, values: []u64) {
 	end_value, end_ok := values[2], values[3]
 	if begin_ok == 0 || end_ok == 0 do return
 	if end_value <= begin_value do return
-	sync.mutex_lock(&telemetry.results_mutex)
+	tracing_mutex_lock(&telemetry.results_mutex, &tracing_results_lock)
 	telemetry.last_times_us[op] = f64(end_value - begin_value) * telemetry.timestamp_period_ns / 1000.0
-	sync.mutex_unlock(&telemetry.results_mutex)
+	tracing_mutex_unlock(&telemetry.results_mutex, &tracing_results_lock)
 }
 
 @(private)
