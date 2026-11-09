@@ -2,11 +2,11 @@
 id: VS-21
 titulo: Texturas — nearest, flip Y, stb_image e multi-face
 tipo: especificacao
-status_spec: em-revisao
+status_spec: aprovada
 status_implementacao: nao-iniciada
 status_validacao: nao-iniciada
 depende_de: [VS-11, VS-12]
-bloqueada_por: [ADR-T5]
+bloqueada_por: []
 requisitos: [REQ-TEX-01, REQ-TEX-02, REQ-TEX-03, REQ-TEX-04, REQ-TEX-05, REQ-TEX-06, REQ-TEX-07, REQ-TEX-08, REQ-TEX-09]
 ultima_atualizacao: 2026-11-08
 ---
@@ -29,18 +29,18 @@ Corrigir deterministicamente a orientação vertical das PNGs, adotar `vendor:st
 - **REQ-TEX-01 — Decoder stb.** Substituir `core:image/png` por `vendor:stb/image`, usando `load_from_memory` com `desired_channels = 4`, validação de ponteiro/dimensões/canais de entrada e `image_free` em todos os caminhos após decode. RGB e RGBA 8-bit são aceitos e normalizados a RGBA8; erro cita textura/path e `failure_reason`. A foreign library do Odin faz o link; no ambiente atual `stb_image.lib` já existe e nenhum implementation define ou flag de build é necessário. TASKS deve verificar os dois scripts e registrar o pré-requisito da lib para ambientes sem ela.
 - **REQ-TEX-02 — Flip explícito.** Após decode e antes de montar `texture_pixels`, aplicar `flip_rows` por linha, stride `width·4`, trocando `y` com `height−1−y`. Não usar flip global do stb. A convenção resultante deve orientar corretamente UV e triplanar; sim com cantos marcados verifica cada pixel e dupla inversão restaura a entrada. Causa atual registrada: nem o decoder antigo nem o upload faziam flip; `upload_to_device_image` copia rows diretamente.
 - **REQ-TEX-03 — NEAREST sem mipmaps.** O sampler compartilhado, criado nos caminhos asset e built-in, usa mag/min `NEAREST`, `mipmapMode NEAREST`, endereçamento REPEAT preservado e `maxLod=0`; imagens permanecem com um mip level. O mesmo sampler atende albedo e dummy PBR, sem blur nem filtragem anisotrópica nova.
-- **REQ-TEX-04 — Schema string ou top/side.** O campo `texture` de cada bloco aceita string (todas as faces, compatível) ou objeto contendo exatamente `top` e `side`, ambos strings. Ausência de chave, chave extra, array/número/null ou tipo errado são erros fatais citando bloco e campo; referências precisam existir na seção textures. `assets_check.py` e loader compartilham a mesma semântica.
-- **REQ-TEX-05 — Registry sem crescimento.** Em Odin e Slang, `padding_2` vira `albedo_texture_top: u32`; string simples grava `0xFFFFFFFF`, objeto grava a camada top e `albedo_texture_index` recebe side. `padding_3` permanece padding. `#assert(size_of(BlockDefinition)==48)` e demais offsets/bindings/provisionamento inalterados. Registrar notas nas VS-02/VS-12.
-- **REQ-TEX-06 — Seleção de camada no fragment.** Antes de amostrar, escolher top somente se `albedo_texture_top != 0xFFFFFFFF && normal_mundial.y > 0,5`; caso contrário, side/`albedo_texture_index`. A camada selecionada alimenta tanto UV quanto triplanar. Normal continua derivada de `world_position`; topo é +Y mundial mesmo em bloco rotacionado (semântica v1). Alpha-test, highlight VS-20, derivadas e plantas/cruzas permanecem funcionais; planta usa top INVALID.
-- **REQ-TEX-07 — Assets e fallback.** `assets/blocks.json` define grama id 1 como `{ "top": "grama", "side": "terra" }`; terra, pedra e planta continuam strings. Sem JSON, fallback built-in mantém todas as definições atuais e atribui à grama top=grama/side=terra, com top INVALID nos demais. Paleta procedural segue coerente com os ids/camadas existentes.
-- **REQ-TEX-08 — Simulações e paridade.** Antes do shader, estender sims para flip por pixel, normalização RGBA, sampler e seleção top/side/INVALID em UV e triplanar, incluindo limiar ±Y e coordenadas negativas. Validador/bateria cobrem string compatível e objeto válido/inválido. Checks antigos permanecem verdes.
+- **REQ-TEX-04 — Schema string ou objeto de 6 faces (emenda do mantenedor, 2026-11-08).** O campo `texture` aceita **string** (todas as faces iguais — compatível) ou **objeto com as 6 faces**: `{"top","bottom","front","back","left","right"}` (strings), convenção: `top`=+Y, `bottom`=−Y, `front`=+Z, `back`=−Z, `right`=+X, `left`=−X. **O loader normaliza: string vira o objeto com as 6 faces apontando para a mesma textura — internamente só existe a representação de objeto.** Objeto incompleto, chave extra, array/número/null ou tipo errado são erros fatais citando bloco e campo; referências precisam existir na seção textures. `assets_check.py` e loader compartilham a mesma semântica (incluindo a normalização string→objeto).
+- **REQ-TEX-05 — Registry cresce para 72 B (revisão de contrato VS-00/VS-02).** `albedo_texture_index` e os dois paddings dão lugar a `albedo_faces[6]: u32` **em ordem `FACE_NORMALS`** (+X=right, −X=left, +Y=top, −Y=bottom, +Z=front, −Z=back) + padding de alinhamento: `BlockDefinition` passa de 48 B para **72 B** em Odin e Slang espelhados (`#assert(size_of(BlockDefinition)==72)`), com revisão do buffer do registry (stride/capacidade), offsets e notas nas VS-02/VS-12. Demais campos (mesh/pbr/flags/emissão/materiais/rotação) inalterados.
+- **REQ-TEX-06 — Seleção de camada por face no fragment.** A camada vem de `albedo_faces` no índice da face selecionada pelo **eixo dominante da normal mundial** (maior |componente|; empate determinístico na ordem Y, X, Z), sinal do eixo escolhendo a face (±). A face segue +Y mundial mesmo em bloco rotacionado (semântica v1). A camada selecionada alimenta tanto UV quanto triplanar. Normal continua derivada de `world_position`; alpha-test, highlight VS-20, derivadas e plantas/cruzas permanecem funcionais (planta: 6 faces com a mesma camada — string normalizada).
+- **REQ-TEX-07 — Assets e fallback.** `assets/blocks.json`: grama id 1 vira objeto com `top: "grama"` e as demais 5 faces `"terra"`; terra, pedra e planta continuam **strings** (normalizadas no loader). Blocos com front/back/left/right distintos são dados futuros, não código novo. Sem JSON, fallback built-in mantém as definições atuais e atribui à grama o objeto top=grama/outras=terra, com strings nos demais. Paleta procedural segue coerente com os ids/camadas existentes.
+- **REQ-TEX-08 — Simulações e paridade.** Antes do shader, estender sims para flip por pixel, normalização RGBA, sampler, **seleção de face nos 6 eixos** (incluindo empates e coordenadas negativas) e a **normalização string→objeto** em UV e triplanar. Validador/bateria cobrem string compatível, objeto de 6 faces válido/incompleto/extra e tipos errados. Checks antigos permanecem verdes.
 - **REQ-TEX-09 — Instrumentação e evidência.** Zone Tracy `assets_texture_decode` cobre decode/flip/montagem das camadas, com contagem de texturas/bytes; caminho de render existente mede o fragment. Fechamento usa `bin/debug/<version>/tracy/VS-21_texturas_nearest_flip_stb_faces.tracy` e comparação K2.8 com VS-20, incluindo custo de startup e render.
 
 ## Escopo
 
 - Migração stb, liberação correta e flip de linhas.
 - Sampler NEAREST nos caminhos JSON/built-in.
-- Schema top/side, registry e fragment.
+- Schema string/objeto de 6 faces, registry 72 B e fragment.
 - Assets de exemplo, fallback, sims/validador, docs, stress e profiling.
 
 ## Não escopo
@@ -61,8 +61,8 @@ Corrigir deterministicamente a orientação vertical das PNGs, adotar `vendor:st
 | --- | --- | --- |
 | stb decode | bytes → RGBA8 + dimensões | `image_free` obrigatório |
 | `flip_rows` | linhas RGBA invertidas | antes das camadas; testável |
-| `texture` | string ou `{top,side}` exato | compatibilidade string |
-| `albedo_texture_top` | camada top ou `0xFFFFFFFF` | antigo `padding_2`; 48 B total |
+| `texture` | string ou objeto de 6 faces (`top/bottom/front/back/left/right`) | string é normalizada pelo loader para o objeto com todas as faces iguais — internamente só existe a representação de objeto |
+| `albedo_faces[6]` | camada por face, ordem `FACE_NORMALS` (+X,−X,+Y,−Y,+Z,−Z) | registry cresce 48→72 B (revisão VS-00/VS-02) |
 | Seleção fragment | top se normal.y > 0,5 | +Y mundial; UV e triplanar |
 | Sampler | NEAREST mag/min/mipmap | um mip; dummy PBR incluído |
 
@@ -76,7 +76,7 @@ Corrigir deterministicamente a orientação vertical das PNGs, adotar `vendor:st
 
 ### Grama multi-face
 
-- **Dado** bloco grama com top grama e side terra.
+- **Dado** bloco grama com objeto de 6 faces (top=grama, demais=terra).
 - **Quando** suas faces +Y, −Y e laterais renderizam por UV ou triplanar.
 - **Então** apenas +Y usa grama; todas as demais usam terra, inclusive se o bloco tiver rotação de asset.
 
@@ -92,7 +92,7 @@ Corrigir deterministicamente a orientação vertical das PNGs, adotar `vendor:st
 | --- | --- | --- | --- |
 | VS-21-AC-01 | Pixel-check prova orientação correta e idempotência da dupla inversão em RGB/RGBA; decode stb libera memória e upload preserva a ordem corrigida | Sim com cantos/rows marcadas + build/link default/Tracy | Pendente |
 | VS-21-AC-02 | Sampler mag/min/mipmap NEAREST e um mip; texels contrastantes sem blur | Inspeção de parâmetros + captura visual ampliada | Pendente |
-| VS-21-AC-03 | Bateria aceita string/objeto e rejeita chaves/tipos/refs inválidos; fallback e registry 48 B íntegros | `assets_check`, bateria e asserts/build | Pendente |
+| VS-21-AC-03 | Bateria aceita string/objeto de 6 faces e rejeita incompleto/extra/tipos/refs inválidos; normalização string→objeto; fallback e registry 72 B íntegros | `assets_check`, bateria e asserts/build | Pendente |
 | VS-21-AC-04 | Sim e sessão mostram grama verde no +Y e terra nas outras faces; planta, alpha-test, highlight, UV/triplanar e rotação seguem contratos | Sims antes do shader + capturas/readback de camadas e smoke | Pendente |
 | VS-21-AC-05 | Stress 5× em cada build com gameplay/edição/teleports e `--full-teardown`: zero VUIDs/threading/deadlock, teardown limpo | Stress scriptado reproduzível | Pendente |
 | VS-21-AC-06 | Zone/contadores novos presentes; captura versionada íntegra e comparação com VS-20 documentam startup/render | `run_tracy.bat` + `tracy-capture`; subagente coder K2.8 thinking low | Pendente |
@@ -110,8 +110,8 @@ Ver [[VS-21-texturas-nearest-flip-stb-faces-tasks]]. Nenhuma implementação pod
 
 ## Emendas registradas
 
-- **VS-02:** `BlockDefinition.padding_2` passa a ser `albedo_texture_top`; tamanho/layout de 48 B inalterados.
-- **VS-12:** `texture` aceita string ou objeto exato `{top,side}`; decode stb RGBA8 + flip; fallback da grama ganha top/side.
+- **VS-02:** `BlockDefinition` passa de 48 B para 72 B com `albedo_faces[6]` em ordem `FACE_NORMALS` (revisão de contrato do registry; stride do buffer e `#assert` atualizados).
+- **VS-12:** `texture` aceita string (normalizada para o objeto de 6 faces pelo loader — internamente só existe a representação de objeto) ou objeto completo `top/bottom/front/back/left/right`; decode stb RGBA8 + flip; fallback da grama ganha o objeto (top=grama, demais=terra).
 
 ## Questões abertas
 
@@ -120,3 +120,4 @@ Ver [[VS-21-texturas-nearest-flip-stb-faces-tasks]]. Nenhuma implementação pod
 ## Histórico
 
 - 2026-11-08 — Spec completa submetida à revisão, bloqueada pela ADR-T5 pendente; nenhuma implementação iniciada.
+- 2026-11-08 — Emenda pré-implementação (decisão do mantenedor): `texture` aceita string **ou objeto de 6 faces** (`top/bottom/front/back/left/right`); o loader **normaliza string → objeto com 6 faces iguais** — internamente só existe a representação de objeto. `BlockDefinition` cresce 48→72 B com `albedo_faces[6]` (ordem `FACE_NORMALS`); fragment seleciona a face pelo eixo dominante da normal mundial. ADR-T5 revisada (Opção B de faces adotada). Spec aprovada pelo mantenedor com a revisão.

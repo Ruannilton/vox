@@ -77,7 +77,7 @@ graph TD
 | [[VS-18-mundo-na-worker|VS-18]] | VS-17 | — | VS-19 |
 | [[VS-19-fisica-solver-mirror|VS-19]] | VS-04, VS-13, VS-14, VS-18 | — | VS-20 |
 | [[VS-20-gameplay-selecao-construcao-pulo|VS-20]] | VS-03, VS-07, VS-19 | — | — |
-| [[VS-21-texturas-nearest-flip-stb-faces|VS-21]] | VS-11, VS-12 | ADR-T5 | — |
+| [[VS-21-texturas-nearest-flip-stb-faces|VS-21]] | VS-11, VS-12 | — | — |
 
 ## Decisões incorporadas
 
