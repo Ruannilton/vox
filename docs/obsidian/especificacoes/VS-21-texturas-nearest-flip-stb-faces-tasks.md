@@ -3,13 +3,13 @@ id: VS-21-TASKS
 titulo: Tarefas — nearest, flip Y, stb_image e multi-face
 tipo: tarefas
 spec: VS-21
-status: bloqueada
+status: concluida
 ultima_atualizacao: 2026-11-08
 ---
 
 # VS-21 — Tarefas de implementação
 
-Pré-condição: ADR-T5 aceita e VS-21 aprovada. Sims de pixel e seleção de face precedem qualquer mudança de shader. Nenhuma tarefa iniciada.
+ADR-T5 aceita e VS-21 aprovada (com emenda de 6 faces). Etapas VS-21-IMPL-01..06 **concluídas em 2026-11-09** — atenção: a coluna da IMPL-03 descrevia o desenho pré-emenda; a implementação seguiu a emenda aprovada (`albedo_faces[6]`, eixo dominante). Ver ACs e histórico da spec.
 
 | ID | Etapa e alterações | Requisitos / ACs | Validação obrigatória |
 | --- | --- | --- | --- |

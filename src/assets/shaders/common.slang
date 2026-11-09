@@ -109,15 +109,18 @@ struct SpecialVoxelRecord {
 
 struct BlockDefinition {
     uint   mesh_template_index;
-    uint   albedo_texture_index;
     uint   pbr_texture_index;
     uint   flags;
+    // VS-21 (REQ-TEX-05): camada por face em ordem FACE_NORMALS
+    // (+X, -X, +Y, -Y, +Z, -Z). Registry cresce 48 -> 72 B (VS-00/VS-02).
+    uint   albedo_faces[6];
     float3 emission_color;
     float  base_roughness;
     float  base_metallic;
     uint   rotation;
     uint   padding_2;
     uint   padding_3;
+    uint   padding_4;
 };
 
 struct MeshTemplate {

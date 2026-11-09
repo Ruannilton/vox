@@ -1797,6 +1797,157 @@ def scenario_gameplay_rules():
           1.35 <= apex <= 1.65)
 
 
+
+
+# ============================================================================
+# VS-21 (REQ-TEX-02/04/06/08) — flip_rows, seleção de face por normal e
+# normalização string→objeto. Espelha voxel_assets.odin (flip_rows), o loader
+# (schema de 6 faces) e render.slang (eixo dominante, empate Y→X→Z).
+# ============================================================================
+
+FACES_6 = ("top", "bottom", "front", "back", "left", "right")
+# ordem FACE_NORMALS do registry: +X,-X,+Y,-Y,+Z,-Z
+FACE_NORMALS_ORDER = ("right", "left", "top", "bottom", "front", "back")
+
+
+def flip_rows(pixels, width, height):
+    """Espelha flip_rows (voxel_assets.odin): troca y com height-1-y, stride w*4."""
+    stride = width * 4
+    px = list(pixels)
+    for y in range(height // 2):
+        opp = (height - 1 - y) * stride
+        base = y * stride
+        px[base:base + stride], px[opp:opp + stride] = px[opp:opp + stride], px[base:base + stride]
+    return px
+
+
+def dominant_face_index(normal):
+    """Espelha o fragment: maior |componente|; empate Y→X→Z; sinal escolhe ±.
+    Retorna o índice em FACE_NORMALS_ORDER (0=+X ... 5=-Z)."""
+    ax, ay, az = abs(normal[0]), abs(normal[1]), abs(normal[2])
+    if ay >= ax and ay >= az:
+        return 2 if normal[1] > 0 else 3
+    if ax >= az:
+        return 0 if normal[0] > 0 else 1
+    return 4 if normal[2] > 0 else 5
+
+
+def normalize_texture_spec(spec, texture_names, block_name):
+    """REQ-TEX-04: string → objeto com 6 faces iguais; objeto completo OK;
+    incompleto/extra/tipo errado/refs ausentes → mensagem citando bloco."""
+    if isinstance(spec, str):
+        if spec == "":
+            return None, f"bloco '{block_name}': campo 'texture' ausente ou vazio"
+        if spec not in texture_names:
+            return None, f"bloco '{block_name}': textura '{spec}' não encontrada"
+        return {face: spec for face in FACES_6}, None
+    if isinstance(spec, dict):
+        keys = set(spec.keys())
+        if keys != set(FACES_6):
+            missing = sorted(set(FACES_6) - keys)
+            extra = sorted(keys - set(FACES_6))
+            detail = []
+            if missing:
+                detail.append(f"faltando {missing}")
+            if extra:
+                detail.append(f"extras {extra}")
+            return None, f"bloco '{block_name}': objeto 'texture' incompleto ({', '.join(detail)})"
+        for face in FACES_6:
+            value = spec[face]
+            if not isinstance(value, str) or value == "":
+                return None, f"bloco '{block_name}': 'texture.{face}' deve ser string não vazia (recebido {value!r})"
+            if value not in texture_names:
+                return None, f"bloco '{block_name}': textura '{value}' não encontrada (texture.{face})"
+        return dict(spec), None
+    return None, f"bloco '{block_name}': campo 'texture' deve ser string ou objeto de 6 faces (recebido {spec!r})"
+
+
+def scenario_vs21_flip():
+    print("[cenario] VS-21: flip_rows pixel a pixel e normalização RGBA")
+    # imagem 2x3 com cantos marcados: cada pixel carrega (x, y, x+y, 255)
+    w, h = 2, 3
+    px = []
+    for y in range(h):
+        for x in range(w):
+            px += [x * 100, y * 100, (x + y) * 50, 255]
+
+    def pix(buf, x, y):
+        return tuple(buf[(y * w + x) * 4:(y * w + x) * 4 + 4])
+
+    flipped = flip_rows(px, w, h)
+    # canto superior-esquerdo (0,0) foi para baixo; cada pixel exato conferido
+    ok = True
+    for y in range(h):
+        for x in range(w):
+            if pix(flipped, x, y) != (x * 100, (h - 1 - y) * 100, (x + (h - 1 - y)) * 50, 255):
+                ok = False
+    check("flip: cada pixel na linha espelhada (y -> h-1-y)", ok)
+    check("flip: canto (0,0) vai para (0,h-1)", pix(flipped, 0, 0) == (0, 200, 100, 255))
+    check("flip: dupla inversão restaura a entrada", flip_rows(flipped, w, h) == px)
+    check("flip: altura 1 é no-op", flip_rows([7, 8, 9, 10], 1, 1) == [7, 8, 9, 10])
+
+
+def scenario_vs21_face_selection():
+    print("[cenario] VS-21: seleção de face pelo eixo dominante da normal")
+    # seis eixos puros
+    pure = {(1, 0, 0): 0, (-1, 0, 0): 1, (0, 1, 0): 2, (0, -1, 0): 3,
+            (0, 0, 1): 4, (0, 0, -1): 5}
+    check("face: seis eixos puros (+X,-X,+Y,-Y,+Z,-Z)",
+          all(dominant_face_index(n) == i for n, i in pure.items()))
+
+    # empates determinísticos Y→X→Z
+    check("face: empate |x|=|y| -> Y", dominant_face_index((1, 1, 0)) == 2)
+    check("face: empate |y|=|z| -> Y", dominant_face_index((0, -1, 1)) == 3)
+    check("face: empate |x|=|z| -> X", dominant_face_index((1, 0, -1)) == 0)
+    check("face: empate triplo -> Y", dominant_face_index((1, 1, 1)) == 2)
+
+    # normais não unitárias e negativas
+    check("face: normal não unitária ok", dominant_face_index((0.2, 9.9, 0.1)) == 2)
+    check("face: sinal negativo escolhe a face -", dominant_face_index((0, -0.7, 0.2)) == 3)
+
+    # o índice alimenta UV e triplanar: camada = albedo_faces[face]
+    faces = {"top": 1, "bottom": 2, "front": 2, "back": 2, "left": 2, "right": 2}
+    registry_faces = [faces[f] for f in FACE_NORMALS_ORDER]
+    check("face: grama top=1, demais=2 no registry (FACE_NORMALS)",
+          registry_faces == [2, 2, 1, 2, 2, 2])
+    layer = registry_faces[dominant_face_index((0.1, 0.9, 0.3))]
+    check("face: normal +Y dominante -> camada grama", layer == 1)
+    layer = registry_faces[dominant_face_index((0.9, 0.1, -0.2))]
+    check("face: normal +X dominante -> camada terra", layer == 2)
+
+
+def scenario_vs21_texture_spec():
+    print("[cenario] VS-21: normalização string->objeto e erros de schema")
+    names = {"grama", "terra", "pedra", "planta"}
+
+    obj, err = normalize_texture_spec("terra", names, "terra")
+    check("spec: string normaliza para 6 faces iguais",
+          err is None and all(v == "terra" for v in obj.values()))
+
+    full, err = normalize_texture_spec(
+        {"top": "grama", "bottom": "terra", "front": "terra", "back": "terra",
+         "left": "terra", "right": "terra"}, names, "grama")
+    check("spec: objeto completo de 6 faces válido",
+          err is None and full["top"] == "grama" and full["right"] == "terra")
+
+    for bad, msg in (
+        ({"top": "grama"}, "incompleto"),
+        ({"top": "grama", "bottom": "terra", "front": "terra", "back": "terra",
+          "left": "terra", "right": "terra", "diag": "x"}, "extra"),
+        (42, "número"), (["grama"], "array"), (None, "null"),
+    ):
+        _o, err = normalize_texture_spec(bad, names, "grama")
+        check(f"spec: {msg} rejeitado citando o bloco", err is not None and "bloco 'grama'" in err)
+
+    _o, err = normalize_texture_spec("inexistente", names, "pedra")
+    check("spec: referência ausente citada", err is not None and "'inexistente'" in err)
+    _o, err = normalize_texture_spec(
+        {"top": "x", "bottom": "terra", "front": "terra", "back": "terra",
+         "left": "terra", "right": "terra"}, names, "pedra")
+    check("spec: referência ausente por face citada",
+          err is not None and "texture.top" in err and "'x'" in err)
+
+
 def main():
     scenario_budget()
     scenario_selection()
@@ -1815,6 +1966,9 @@ def main():
     scenario_plant_nonsolid()
     scenario_target_highlight()
     scenario_gameplay_rules()
+    scenario_vs21_flip()
+    scenario_vs21_face_selection()
+    scenario_vs21_texture_spec()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
 

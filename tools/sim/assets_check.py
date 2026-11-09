@@ -259,15 +259,46 @@ def validate(doc, base_dir):
             errors.append(f"{where}: id {bid} duplicado (já usado por '{block_ids[bid]}')")
         else:
             block_ids[bid] = name
-        for field in ("mesh", "texture"):
-            ref = block.get(field)
-            if not isinstance(ref, str) or ref == "":
-                errors.append(f"{where}: campo '{field}' ausente ou vazio")
-                continue
-            if field == "mesh" and ref not in mesh_names:
-                errors.append(f"{where}: malha '{ref}' não encontrada")
-            if field == "texture" and ref not in texture_names:
-                errors.append(f"{where}: textura '{ref}' não encontrada")
+        ref = block.get("mesh")
+        if not isinstance(ref, str) or ref == "":
+            errors.append(f"{where}: campo 'mesh' ausente ou vazio")
+        elif ref not in mesh_names:
+            errors.append(f"{where}: malha '{ref}' não encontrada")
+        # VS-21 (REQ-TEX-04): 'texture' aceita string (todas as faces iguais —
+        # compatível) ou objeto com as 6 faces top/bottom/front/back/left/right
+        # (front=+Z, back=-Z, right=+X, left=-X). Loader e validador
+        # compartilham a semântica; string é normalizada para o objeto.
+        texture = block.get("texture")
+        if isinstance(texture, str):
+            if texture == "":
+                errors.append(f"{where}: campo 'texture' ausente ou vazio")
+            elif texture not in texture_names:
+                errors.append(f"{where}: textura '{texture}' não encontrada")
+        elif isinstance(texture, dict):
+            faces = ("top", "bottom", "front", "back", "left", "right")
+            keys = set(texture.keys())
+            if keys != set(faces):
+                missing = sorted(set(faces) - keys)
+                extra = sorted(keys - set(faces))
+                detail = []
+                if missing:
+                    detail.append(f"faltando {missing}")
+                if extra:
+                    detail.append(f"extras {extra}")
+                errors.append(f"{where}: objeto 'texture' incompleto ({', '.join(detail)})")
+            else:
+                for face in faces:
+                    value = texture[face]
+                    if not isinstance(value, str) or value == "":
+                        errors.append(
+                            f"{where}: 'texture.{face}' deve ser string não vazia (recebido {value!r})"
+                        )
+                    elif value not in texture_names:
+                        errors.append(f"{where}: textura '{value}' não encontrada (texture.{face})")
+        else:
+            errors.append(
+                f"{where}: campo 'texture' deve ser string ou objeto de 6 faces (recebido {texture!r})"
+            )
 
     missing = [str(b) for b in REQUIRED_BLOCK_IDS if b not in block_ids]
     if missing:

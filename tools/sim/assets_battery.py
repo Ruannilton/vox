@@ -35,10 +35,10 @@ def doc(verts=CUBE_VERTS, tris=CUBE_TRIS, tags=CUBE_TAGS, uvs=CUBE_UVS, blocks=N
              "cull_tags": PLANT_TAGS, "uvs": PLANT_UVS},
         ],
         "textures": textures if textures is not None else [
-            {"name": "grama", "path": "textures/grama.png"},
-            {"name": "terra", "path": "textures/terra.png"},
-            {"name": "pedra", "path": "textures/pedra.png"},
-            {"name": "planta", "path": "textures/planta.png"},
+            {"name": "grama", "path": "textures/grass.png"},
+            {"name": "terra", "path": "textures/dirt.png"},
+            {"name": "pedra", "path": "textures/stone.png"},
+            {"name": "planta", "path": "textures/plant.png"},
         ],
         "blocks": blocks if blocks is not None else [
             {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama"},
@@ -81,15 +81,53 @@ CASES = {
         {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": "não"},
     ]),
     "textura_planta_ausente": doc(textures=[
-        {"name": "grama", "path": "textures/grama.png"},
-        {"name": "terra", "path": "textures/terra.png"},
-        {"name": "pedra", "path": "textures/pedra.png"},
-        {"name": "planta", "path": "textures/nada_planta.png"},
+        {"name": "grama", "path": "textures/grass.png"},
+        {"name": "terra", "path": "textures/dirt.png"},
+        {"name": "pedra", "path": "textures/stone.png"},
+        {"name": "planta", "path": "textures/nada_plant.png"},
+    ]),
+    # VS-21 (REQ-TEX-04): objeto de 6 faces — válido, incompleto, extra, tipo
+    # errado e referência ausente por face
+    "textura_faces_incompleto": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture": {"top": "grama"}},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": False},
+    ]),
+    "textura_faces_extra": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture":
+         {"top": "grama", "bottom": "terra", "front": "terra", "back": "terra",
+          "left": "terra", "right": "terra", "diag": "planta"}},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": False},
+    ]),
+    "textura_faces_tipo_errado": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture":
+         {"top": 42, "bottom": "terra", "front": "terra", "back": "terra",
+          "left": "terra", "right": "terra"}},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": False},
+    ]),
+    "textura_faces_ref_ausente": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture":
+         {"top": "nada", "bottom": "terra", "front": "terra", "back": "terra",
+          "left": "terra", "right": "terra"}},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": False},
+    ]),
+    "textura_tipo_errado": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture": 42},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "solid": False},
     ]),
     "dimensao_divergente": doc(textures=[
-        {"name": "grama", "path": "textures/grama.png"},
-        {"name": "terra", "path": "textures/terra_8.png"},
-        {"name": "pedra", "path": "textures/pedra.png"},
+        {"name": "grama", "path": "textures/grass.png"},
+        {"name": "terra", "path": "textures/dirt_8.png"},
+        {"name": "pedra", "path": "textures/stone.png"},
     ]),
     # VS-19 (REQ-PHY-01): schema físico — tipo errado, flag desconhecida e
     # materiais fora dos limites documentados (fricção ≥ 0; restituição [0,1])
@@ -126,6 +164,14 @@ CASES = {
 # VS-19 (REQ-PHY-01): casos VÁLIDOS — o validador aceita objeto completo,
 # objeto parcial (defaults) e ausente.
 VALID_CASES = {
+    "textura_faces_valido": doc(blocks=[
+        {"id": 1, "name": "grama", "mesh": "cubo", "texture":
+         {"top": "grama", "bottom": "terra", "front": "terra", "back": "terra",
+          "left": "terra", "right": "terra"}},
+        {"id": 2, "name": "terra", "mesh": "cubo", "texture": "terra"},
+        {"id": 3, "name": "pedra", "mesh": "cubo", "texture": "pedra"},
+        {"id": 4, "name": "planta", "mesh": "planta", "texture": "planta", "transparent": True},
+    ]),
     "physics_completo_valido": doc(blocks=[
         {"id": 1, "name": "grama", "mesh": "cubo", "texture": "grama",
          "physics": {"blocking": True, "hittable": True, "friction": 0.6, "restitution": 0.0}},
@@ -144,7 +190,7 @@ def main():
     shutil.copytree(os.path.join(SRC, "textures"), os.path.join(TMP, "textures"))
     # PNG divergente (16x8) para o caso dimensao_divergente
     from png_min import encode_png
-    with open(os.path.join(TMP, "textures", "terra_8.png"), "wb") as fh:
+    with open(os.path.join(TMP, "textures", "dirt_8.png"), "wb") as fh:
         fh.write(encode_png(16, 8, bytes([128, 89, 51, 255]) * 16 * 8))
     failures = 0
     for name, d in CASES.items():

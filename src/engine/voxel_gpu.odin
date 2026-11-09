@@ -501,6 +501,7 @@ voxel_gpu_init :: proc() {
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.finalize_work_queue_pipeline, .PIPELINE, "pipeline_finalize_work_queue")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.mesh_pipeline, .PIPELINE, "pipeline_mesh_draw")
 
+	debug_texture_parity()
 	log.info("Recursos GPU do voxel engine inicializados")
 }
 
@@ -813,6 +814,83 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	}
 }
 
+
+// VS-21 (AC-01/AC-04): readback da paleta albedo e comparação pixel a pixel
+// com texture_pixels (já flipado). Executado ao final do init, com o device
+// ocioso — prova que a orientação pós-flip sobrevive ao upload. Sem assets
+// (fallback de paleta procedural) a checagem é estrutural apenas.
+debug_texture_parity :: proc() {
+	if !voxel_assets.loaded {
+		log.info("DEBUG TEXTURE PARITY: fallback built-in — checagem de camadas pulada")
+		return
+	}
+	w := voxel_assets.texture_width
+	h := voxel_assets.texture_height
+	layers := voxel_assets.texture_layers
+	size := vk.DeviceSize(w * h * 4 * layers)
+	readback, mapped := gpu_buffer_create_host(size, {.TRANSFER_DST})
+	defer gpu_buffer_destroy(&readback)
+
+	to_src := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		image = voxel_gpu.albedo_palette_image,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
+		oldLayout = .SHADER_READ_ONLY_OPTIMAL,
+		newLayout = .TRANSFER_SRC_OPTIMAL,
+		srcStageMask = {.ALL_COMMANDS},
+		srcAccessMask = {.SHADER_READ},
+		dstStageMask = {.COPY},
+		dstAccessMask = {.TRANSFER_READ},
+	}
+	back_to_read := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		image = voxel_gpu.albedo_palette_image,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = layers},
+		oldLayout = .TRANSFER_SRC_OPTIMAL,
+		newLayout = .SHADER_READ_ONLY_OPTIMAL,
+		srcStageMask = {.COPY},
+		srcAccessMask = {.TRANSFER_READ},
+		dstStageMask = {.ALL_COMMANDS},
+		dstAccessMask = {.SHADER_READ},
+	}
+	cmd := voxel_gpu.compute_command_buffers[0]
+	vk_check(vk.ResetCommandBuffer(cmd, {}))
+	vk_check(vk.BeginCommandBuffer(cmd, &vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}}))
+	vk.CmdPipelineBarrier2(cmd, &vk.DependencyInfo{sType = .DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = &to_src})
+	region := vk.BufferImageCopy {
+		imageSubresource = {aspectMask = {.COLOR}, mipLevel = 0, baseArrayLayer = 0, layerCount = layers},
+		imageExtent = {width = w, height = h, depth = 1},
+	}
+	vk.CmdCopyImageToBuffer(cmd, voxel_gpu.albedo_palette_image, .TRANSFER_SRC_OPTIMAL, readback.handle, 1, &region)
+	vk.CmdPipelineBarrier2(cmd, &vk.DependencyInfo{sType = .DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = &back_to_read})
+	vk_check(vk.EndCommandBuffer(cmd))
+	vk_check(vk.QueueSubmit2(app.queues[.Compute].queue, 1, &vk.SubmitInfo2 {
+		sType = .SUBMIT_INFO_2,
+		commandBufferInfoCount = 1,
+		pCommandBufferInfos = &vk.CommandBufferSubmitInfo{sType = .COMMAND_BUFFER_SUBMIT_INFO, commandBuffer = cmd},
+	}, {}))
+	vk_check(vk.QueueWaitIdle(app.queues[.Compute].queue))
+
+	gpu_pixels := cast([^]u8)mapped
+	errors := 0
+	for i in 0 ..< int(size) {
+		if gpu_pixels[i] != voxel_assets.texture_pixels[i] do errors += 1
+	}
+	if errors == 0 {
+		log.infof(
+			"DEBUG TEXTURE PARITY OK: albedo readback == texture_pixels ({}x{}x{} camadas, {} bytes, flip incluído)",
+			w, h, layers, size,
+		)
+	} else {
+		log.errorf("DEBUG TEXTURE PARITY FALHOU: {} bytes divergentes de {}", errors, size)
+	}
+}
+
+// VS-21 (REQ-TEX-09): ponto de entrada público da validação de textura.
+debug_texture_validate :: proc() {
+	debug_texture_parity()
+}
+
 // VS-19 (AC-04): ponto de entrada público da validação packed×denso (a
 // rotina em si é privada deste arquivo); usada pelo hook de debug F7.
 debug_validate_run :: proc(ve: ^VoxelEngine) {
@@ -1019,6 +1097,10 @@ upload_asset_registry :: proc() {
 // (índice de camada + UV) inalterado — zero mudança de shader.
 @(private)
 upload_asset_textures :: proc() {
+	// VS-21 (REQ-TEX-09): zone no caminho de texturas — o decode propriamente
+	// roda em assets_load, ANTES do TracingStartup (BLK-37), e é medido por
+	// tempo no log; o upload é o primeiro ponto pós-startup do pipeline.
+	ZoneN("assets_texture_decode")
 	w := voxel_assets.texture_width
 	h := voxel_assets.texture_height
 	layers := voxel_assets.texture_layers
@@ -1035,8 +1117,11 @@ upload_asset_textures :: proc() {
 			app.vkDevice,
 			&vk.SamplerCreateInfo {
 				sType = .SAMPLER_CREATE_INFO,
-				magFilter = .LINEAR,
-				minFilter = .LINEAR,
+				// VS-21 (REQ-TEX-03): NEAREST sem mipmaps — texel nítido,
+				// sem blur; REPEAT preservado, um mip, maxLod = 0.
+				magFilter = .NEAREST,
+				minFilter = .NEAREST,
+				mipmapMode = .NEAREST,
 				addressModeU = .REPEAT,
 				addressModeV = .REPEAT,
 				addressModeW = .REPEAT,
@@ -1124,16 +1209,28 @@ upload_builtin_templates :: proc() {
 @(private)
 upload_block_registry :: proc() {
 	registry: [BLOCK_REGISTRY_CAPACITY]BlockDefinition
-	for id in 1 ..= 3 {
-		registry[id] = BlockDefinition{mesh_template_index = 1, albedo_texture_index = u32(id)}
+	// VS-21 (REQ-TEX-07): fallback em paridade com o JSON — grama com
+	// top=grama (camada 1) e as demais 5 faces terra (camada 2); ordem
+	// FACE_NORMALS (+X,-X,+Y,-Y,+Z,-Z).
+	registry[1] = BlockDefinition{
+		mesh_template_index = 1,
+		albedo_faces = {2, 2, 1, 2, 2, 2},
+	}
+	registry[2] = BlockDefinition{
+		mesh_template_index = 1,
+		albedo_faces = {2, 2, 2, 2, 2, 2},
+	}
+	registry[3] = BlockDefinition{
+		mesh_template_index = 1,
+		albedo_faces = {3, 3, 3, 3, 3, 3},
 	}
 	// VS-14 (REQ-PLT-05): fallback sem assets — id 4 (planta) usa o template
-	// cruz built-in (2) + camada 4 da paleta, com alpha-test (flags bit 0) e
-	// NON_SOLID (flags bit 1 — emenda 2026-11-07).
+	// cruz built-in (2) + camada 4, com alpha-test (flags bit 0) e NON_SOLID
+	// (flags bit 1 — emenda 2026-11-07). VS-21: string normalizada (6x4).
 	registry[4] = BlockDefinition{
 		mesh_template_index = 2,
-		albedo_texture_index = 4,
 		flags = BLOCK_DEFINITION_FLAG_TRANSPARENT | BLOCK_DEFINITION_FLAG_NON_SOLID,
+		albedo_faces = {4, 4, 4, 4, 4, 4},
 	}
 	upload_to_device_buffer(&registry, size_of(registry), voxel_gpu.block_registry.handle)
 }
@@ -1232,7 +1329,8 @@ gpu_image_2d_array_create :: proc(
 		arrayLayers = layers,
 		samples     = {._1},
 		tiling      = .OPTIMAL,
-		usage       = {.SAMPLED, .TRANSFER_DST},
+		// VS-21 (AC-01): TRANSFER_SRC para o readback de paridade de textura.
+		usage       = {.SAMPLED, .TRANSFER_DST, .TRANSFER_SRC},
 	}
 	if families[0] != families[1] {
 		image_info.sharingMode = .CONCURRENT
@@ -1352,8 +1450,11 @@ upload_palette_textures :: proc() {
 			app.vkDevice,
 			&vk.SamplerCreateInfo {
 				sType = .SAMPLER_CREATE_INFO,
-				magFilter = .LINEAR,
-				minFilter = .LINEAR,
+				// VS-21 (REQ-TEX-03): NEAREST sem mipmaps — texel nítido,
+				// sem blur; REPEAT preservado, um mip, maxLod = 0.
+				magFilter = .NEAREST,
+				minFilter = .NEAREST,
+				mipmapMode = .NEAREST,
 				addressModeU = .REPEAT,
 				addressModeV = .REPEAT,
 				addressModeW = .REPEAT,

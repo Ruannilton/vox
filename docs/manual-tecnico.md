@@ -429,6 +429,20 @@ Clique esquerdo (`press`) coloca **pedra id 3** em `hit.voxel + hit.normal`; dir
 
 Zones: `gameplay_target_update`, `gameplay_place_block`, `gameplay_remove_block`, `gameplay_jump`. Contadores (structs + plots em `GameplayManager`): hit/miss/unknown da mira, edições solicitadas, no-ops das guardas, pulos aceitos/rejeitados. O custo do fragment alterado é avaliável nas GPU zones de render existentes (VS-16) — nenhum contexto Tracy novo.
 
+## 15. Texturas — nearest, flip Y, stb_image e multi-face (VS-21, ADR-T5)
+
+### 15.1 Decode e orientação (REQ-TEX-01/02)
+
+Decoder `vendor:stb/image` (`load_from_memory` com `desired_channels = 4` — RGB/RGBA e demais formatos suportados pelo stb normalizam a RGBA8; `image_free` em todos os caminhos). Após decode, `flip_rows` inverte as linhas (stride `w·4`, troca `y ↔ height−1−y`) antes de montar `texture_pixels` — a causa raiz registrada era que nem o decoder antigo nem o upload invertiam linhas. A orientação corrigida é provada pelo `debug_texture_parity` (readback da paleta ao final do init, device ocioso: `albedo readback == texture_pixels`, flip incluído). Zone Tracy `assets_texture_decode` cobre decode/flip/montagem, com contagem de texturas/bytes no log.
+
+### 15.2 Sampler NEAREST (REQ-TEX-03)
+
+O sampler único (caminhos asset e built-in): `magFilter`/`minFilter`/`mipmapMode` = `NEAREST`, endereçamento `REPEAT` preservado, `maxLod = 0`, um mip level. Serve albedo e dummy PBR.
+
+### 15.3 Multi-face (REQ-TEX-04..07)
+
+`texture` no `blocks.json` aceita **string** (todas as faces iguais — o loader normaliza para o objeto de 6 faces; internamente só existe a representação de objeto) ou **objeto completo** `{"top","bottom","front","back","left","right"}` (front=+Z, back=−Z, right=+X, left=−X); incompleto/extra/tipo errado/refs ausentes são fatais citando o bloco (loader e `assets_check.py` compartilham a semântica). `BlockDefinition` cresceu 48→**72 B** com `albedo_faces[6]` em ordem `FACE_NORMALS` (+X,−X,+Y,−Y,+Z,−Z) + `padding_4` (revisão VS-00/VS-02, `#assert` espelhado Odin↔Slang). O fragment seleciona a camada pelo **eixo dominante da normal mundial** (maior |componente|, empate determinístico Y→X→Z, sinal escolhe ±) — a face segue +Y mundial mesmo em bloco rotacionado — e a camada alimenta UV e triplanar. Grama id 1 usa `top: grama` + demais `terra`; planta segue string (6 faces iguais); fallback built-in reproduz a mesma combinação.
+
 ## 12. Versionamento e saídas de debug
 
 `src/version.odin` é a fonte única de `VERSION_MAJOR/MINOR/BUILD` e `VERSION_STRING` (formato `0.1.N`). O arquivo é gerado pelo tooling, mas versionado. O hook `tools/git-hooks/pre-commit`, ativado localmente por `git config core.hooksPath tools/git-hooks`, lê o build atual, incrementa N, reescreve as constantes e executa `git add src/version.odin` antes de cada commit. Não cria commits extras; falhas emitem warning e não bloqueiam o commit. O app loga a versão no startup e a inclui no `AppInfo` do Tracy.

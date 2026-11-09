@@ -237,12 +237,25 @@ float4 shade_voxel(MeshVertex input) : SV_Target {
     float3 normal_y = ddy(input.world_position);
     float3 normal = normalize(cross(normal_x, normal_y));
 
+    // VS-21 (REQ-TEX-06): camada por face — eixo dominante da normal mundial
+    // (maior |componente|; empate determinístico Y, X, Z; sinal escolhe +/-).
+    // A face segue +Y mundial mesmo em bloco rotacionado (semântica v1).
+    float3 an = abs(normal);
+    uint face_index;
+    if (an.y >= an.x && an.y >= an.z) {
+        face_index = normal.y > 0.0 ? 2u : 3u;
+    } else if (an.x >= an.z) {
+        face_index = normal.x > 0.0 ? 0u : 1u;
+    } else {
+        face_index = normal.z > 0.0 ? 4u : 5u;
+    }
+    uint albedo_layer = def.albedo_faces[face_index];
+
     // VS-11 (REQ-UV-03): com UV (uv.x >= 0) amostra a camada de albedo por
     // UV; com a sentinela cai no triplanar (fallback inalterado da VS-02).
-    // Na paleta de cores sólidas as duas rotas são idênticas por construção.
     float4 albedo = input.uv.x >= 0.0
-        ? block_albedo_textures.Sample(float3(input.uv, float(def.albedo_texture_index)))
-        : sample_triplanar_albedo(input.world_position, normal, def.albedo_texture_index);
+        ? block_albedo_textures.Sample(float3(input.uv, float(albedo_layer)))
+        : sample_triplanar_albedo(input.world_position, normal, albedo_layer);
 
     // VS-14 (REQ-PLT-01, ADR-P1 Opção A): alpha-test cutout — blocos com
     // flags bit 0 (transparente) descartam fragmentos com albedo.a < 0.5

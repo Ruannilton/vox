@@ -96,18 +96,21 @@ SpecialVoxelRecord :: struct {
 	block_identifier:      u32,
 }
 
-// 48 B std430 — espelha o Slang.
+// 72 B std430 — espelha o Slang. VS-21 (REQ-TEX-05, revisão VS-00/VS-02):
+// albedo_texture_index + paddings viram albedo_faces[6] (camada por face,
+// ordem FACE_NORMALS: +X,-X,+Y,-Y,+Z,-Z) + padding de alinhamento.
 BlockDefinition :: struct {
-	mesh_template_index:  u32,
-	albedo_texture_index: u32,
-	pbr_texture_index:    u32,
-	flags:                u32,
-	emission_color:       [3]f32,
-	base_roughness:       f32,
-	base_metallic:        f32,
-	rotation:             u32,
-	padding_2:            u32,
-	padding_3:            u32,
+	mesh_template_index: u32,
+	pbr_texture_index:   u32,
+	flags:               u32,
+	albedo_faces:        [6]u32,
+	emission_color:      [3]f32,
+	base_roughness:      f32,
+	base_metallic:       f32,
+	rotation:            u32,
+	padding_2:           u32,
+	padding_3:           u32,
+	padding_4:           u32,
 }
 
 // 32 B std430 — espelha o Slang. VS-11 (REQ-UV-02): uv_offset no lugar de um
@@ -188,7 +191,7 @@ VoxelPushConstants :: struct {
 #assert(size_of(MirrorChunkPage) == 71824) // 70,14 KiB (VS-13; era 69776 = 68,14 KiB)
 #assert(size_of(ChunkGenerationJob) == 32)
 #assert(size_of(ChunkHeader) == 2064)
-#assert(size_of(BlockDefinition) == 48)
+#assert(size_of(BlockDefinition) == 72)
 #assert(size_of(MeshTemplate) == 32)
 #assert(size_of(VisibleChunk) == 48)
 #assert(size_of(EditChunkJob) == 16)
