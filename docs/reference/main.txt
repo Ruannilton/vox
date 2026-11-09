@@ -1,0 +1,47 @@
+package main
+	constants
+		PLAYER_EYE_HEIGHT :: f32(1.62)
+		PLAYER_HALF_WIDTH :: f32(0.3)
+		PLAYER_SIZE :: glm.vec3{0.6, 1.8, 0.6}
+		PLAYER_SPRINT_FACTOR :: f32(2.0)
+		PLAYER_WALK_SPEED :: f32(6.0)
+		VERSION_BUILD :: 25
+		VERSION_MAJOR :: 0
+		VERSION_MINOR :: 1
+		VERSION_STRING :: "0.1.25"
+
+	variables
+		camera: Camera 
+		first_cursor_event: bool 
+		jump_apex_y: f32 
+		jump_base_y: f32 
+		jump_tracking: bool 
+		last_x: f64 
+		last_y: f64 
+		player_body: engine.PhysicsHandle 
+			VS-19 (REQ-PHY-10): jogador como corpo AABB do solver; a câmera segue o
+			corpo (olhos na altura PLAYER_EYE_HEIGHT) — input/eventos/render inalterados.
+
+		space_pressed: bool 
+		voxel_engine: ^engine.VoxelEngine 
+
+	procedures
+		camera_create :: proc(position, rotation: glm.vec3, fov: f32) -> Camera {...} /* main:camera.odin!281 */
+		camera_look_at :: proc(c: ^Camera, target: glm.vec3) {...} /* main:camera.odin!792 */
+		camera_move :: proc(c: ^Camera, forward_amount, right_amount: f32) {...} /* main:camera.odin!592 */
+		camera_rotate :: proc(c: ^Camera, delta: glm.vec3) {...} /* main:camera.odin!1035 */
+		camera_view :: proc(c: ^Camera) -> glm.mat4 {...} /* main:camera.odin!488 */
+		main :: proc() {...} /* main:main.odin!879 */
+		vk_check :: proc(result: vk.Result, location := #caller_location) {...} /* main:utils.odin!71 */
+
+	types
+		Camera :: struct {position: glm.vec3, rotation: glm.vec3, fov: f32, target: glm.vec3, direction: glm.vec3, up: glm.vec3, right: glm.vec3}
+
+
+	fullpath:
+		D:/Dev/projects/vox/src/
+	files:
+		camera.odin
+		main.odin
+		utils.odin
+		version.odin
