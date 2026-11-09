@@ -5,10 +5,10 @@ package main
 		PLAYER_SIZE :: glm.vec3{0.6, 1.8, 0.6}
 		PLAYER_SPRINT_FACTOR :: f32(2.0)
 		PLAYER_WALK_SPEED :: f32(6.0)
-		VERSION_BUILD :: 27
+		VERSION_BUILD :: 28
 		VERSION_MAJOR :: 0
 		VERSION_MINOR :: 1
-		VERSION_STRING :: "0.1.27"
+		VERSION_STRING :: "0.1.28"
 
 	variables
 		camera: Camera 
