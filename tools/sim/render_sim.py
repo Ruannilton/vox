@@ -2043,6 +2043,110 @@ def scenario_cube_uv_per_face():
     check("cubo24: pior caso de triângulos = 6 (<= 24)", worst == 6)
 
 
+
+
+# ============================================================================
+# VS-21 correção por verificação — auditoria completa das 6 faces do cubo 24v
+# (winding outward, não-degeneração, UV [0,1]² por face, índices no range).
+# Carrega a definição do assets/blocks.json e compara com o built-in.
+# ============================================================================
+
+CUBE24_GROUP_NORMALS = [(-1, 0, 0), (1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+
+
+def cross3(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def sub3(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def audit_cube24(name, vertices, triangles, uvs):
+    """Retorna lista de divergências (vazia = ok)."""
+    problems = []
+    if len(vertices) != 24 or len(triangles) != 12 or len(uvs) != 24:
+        return ["tamanhos: v=%d t=%d uv=%d (esperado 24/12/24)" % (len(vertices), len(triangles), len(uvs))]
+    for t in triangles:
+        if any(i < 0 or i >= 24 for i in t):
+            problems.append(f"triângulo {t} fora do range 0..23")
+    for g in range(6):
+        normal = CUBE24_GROUP_NORMALS[g]
+        base = g * 4
+        tris = (triangles[2 * g], triangles[2 * g + 1])
+        for t in tris:
+            e1 = sub3(vertices[t[1]], vertices[t[0]])
+            e2 = sub3(vertices[t[2]], vertices[t[0]])
+            c = cross3(e1, e2)
+            dot = sum(c[i] * normal[i] for i in range(3))
+            if dot <= 0:
+                problems.append(
+                    f"face grupo {g} (normal {normal}): tri {t} cross={c} sem componente outward (dot={dot})"
+                )
+            area2 = sum(abs(x) for x in c)
+            if area2 == 0:
+                problems.append(f"face grupo {g}: tri {t} degenerado")
+        quad_uvs = set()
+        for i in range(4):
+            uv = (round(uvs[base + i][0], 6), round(uvs[base + i][1], 6))
+            if not (0.0 <= uv[0] <= 1.0 and 0.0 <= uv[1] <= 1.0):
+                problems.append(f"face grupo {g}: uv {uv} fora de [0,1]²")
+            quad_uvs.add(uv)
+        if quad_uvs != {(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)}:
+            problems.append(f"face grupo {g}: UVs {sorted(quad_uvs)} não cobrem [0,1]² exatamente uma vez")
+        # os 4 vértices do grupo devem estar no plano da face
+        axis = 0 if normal[0] else (1 if normal[1] else 2)
+        value = 1 if sum(normal) > 0 or normal[axis] > 0 else 0
+        value = 1 if normal[axis] > 0 else 0
+        for i in range(4):
+            v = vertices[base + i]
+            if v[axis] != value:
+                problems.append(f"face grupo {g}: vértice {v} fora do plano (eixo {axis}={value})")
+    return problems
+
+
+def scenario_audit_cube24():
+    print("[cenario] VS-21 verificação: auditoria completa das 6 faces do cubo 24v")
+    import json as _json, os
+    path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "assets", "blocks.json"))
+    doc = _json.load(open(path, encoding="utf-8"))
+    cube = next(m for m in doc["meshes"] if m["name"] == "cubo")
+    verts = [tuple(v) for v in cube["vertices"]]
+    tris = [tuple(t) for t in cube["triangles"]]
+    uvs = [tuple(u) for u in cube["uvs"]]
+    problems = audit_cube24("json", verts, tris, uvs)
+    for p in problems:
+        check(f"JSON cubo: {p}", False)
+    check(f"JSON cubo 24v: 6 faces com winding outward, UV [0,1]², índices ok ({len(problems)} problemas)", not problems)
+
+    # built-in (espelha BUILTIN_CUBE_* em voxel_gpu.odin)
+    b_verts = [
+        (0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0),
+        (1, 0, 0), (1, 0, 1), (1, 1, 1), (1, 1, 0),
+        (0, 1, 1), (1, 1, 1), (1, 1, 0), (0, 1, 0),
+        (0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1),
+        (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),
+        (0, 0, 0), (0, 1, 0), (1, 0, 0), (1, 1, 0),
+    ]
+    b_tris = [
+        (0, 1, 2), (0, 2, 3), (4, 6, 5), (4, 7, 6),
+        (8, 9, 10), (8, 10, 11), (12, 13, 14), (12, 14, 15),
+        (16, 17, 18), (16, 18, 19), (20, 21, 22), (20, 23, 22),
+    ]
+    b_uvs = [
+        (0, 0), (1, 0), (1, 1), (0, 1),
+        (0, 0), (1, 0), (1, 1), (0, 1),
+        (0, 0), (1, 0), (1, 1), (0, 1),
+        (0, 0), (1, 0), (1, 1), (0, 1),
+        (0, 0), (1, 0), (1, 1), (0, 1),
+        (0, 0), (0, 1), (1, 0), (1, 1),
+    ]
+    problems_b = audit_cube24("builtin", b_verts, b_tris, b_uvs)
+    for p in problems_b:
+        check(f"builtin cubo: {p}", False)
+    check(f"builtin cubo 24v: 6 faces com winding outward, UV [0,1]², índices ok ({len(problems_b)} problemas)", not problems_b)
+
+
 def main():
     scenario_budget()
     scenario_selection()
@@ -2065,6 +2169,7 @@ def main():
     scenario_vs21_face_selection()
     scenario_vs21_texture_spec()
     scenario_cube_uv_per_face()
+    scenario_audit_cube24()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
 

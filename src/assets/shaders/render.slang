@@ -236,6 +236,12 @@ float4 shade_voxel(MeshVertex input) : SV_Target {
     float3 normal_x = ddx(input.world_position);
     float3 normal_y = ddy(input.world_position);
     float3 normal = normalize(cross(normal_x, normal_y));
+    // VS-21 correção: a derivada em tela (Vulkan y-down) aponta para dentro
+    // da face visível — sem corrigir o sinal, a seleção de face por eixo
+    // dominante trocava +/- (o topo recebia bottom/terra) e o diffuse usava
+    // normal invertida. faceforward pela câmera deixa a normal outward.
+    float3 view_dir = normalize(push_constants.camera_position - input.world_position);
+    if (dot(normal, view_dir) < 0.0) normal = -normal;
 
     // VS-21 (REQ-TEX-06): camada por face — eixo dominante da normal mundial
     // (maior |componente|; empate determinístico Y, X, Z; sinal escolhe +/-).

@@ -466,6 +466,10 @@ assets_build_blocks :: proc(doc: ^assets_json_doc) {
 			physics_default |= PHYSICS_FLAG_BLOCKING
 		}
 		voxel_physics[block.id] = assets_parse_physics(ctx, block.physics, physics_default)
+		if block.id == 1 {
+			names := [6]string{face_names_face(voxel_assets.registry[1].albedo_faces[0]), face_names_face(voxel_assets.registry[1].albedo_faces[1]), face_names_face(voxel_assets.registry[1].albedo_faces[2]), face_names_face(voxel_assets.registry[1].albedo_faces[3]), face_names_face(voxel_assets.registry[1].albedo_faces[4]), face_names_face(voxel_assets.registry[1].albedo_faces[5])}
+			log.infof("VS-21 grama albedo_faces FACE_NORMALS(+X,-X,+Y,-Y,+Z,-Z) = {} -> camadas {}", voxel_assets.registry[1].albedo_faces, names)
+		}
 	}
 
 	// VS-14 (REQ-PLT-05): contrato do worldgen exige ids 1..4 (planta = 4).
@@ -495,6 +499,14 @@ assets_build_blocks :: proc(doc: ^assets_json_doc) {
 
 @(private)
 TEXTURE_FACE_KEYS :: [6]string{"top", "bottom", "front", "back", "left", "right"}
+
+@(private)
+face_names_face :: proc(layer: u32) -> string {
+	for name, index in voxel_assets.layer_of {
+		if u32(index) == layer do return name
+	}
+	return "?"
+}
 
 // VS-21 (REQ-TEX-04): ordena as faces do objeto para albedo_faces[6] na
 // ordem FACE_NORMALS (+X=right, -X=left, +Y=top, -Y=bottom, +Z=front,

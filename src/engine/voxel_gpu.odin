@@ -27,11 +27,11 @@ BUILTIN_CUBE_VERTICES :: [24][3]f32 {
 }
 BUILTIN_CUBE_TRIANGLES :: [12][4]u32 {
 	{0, 1, 2, 1}, {0, 2, 3, 1}, // -X
-	{4, 5, 6, 0}, {4, 6, 7, 0}, // +X
+	{4, 6, 5, 0}, {4, 7, 6, 0}, // +X (VS-21: winding outward)
 	{8, 9, 10, 2}, {8, 10, 11, 2}, // +Y
 	{12, 13, 14, 3}, {12, 14, 15, 3}, // -Y
 	{16, 17, 18, 4}, {16, 18, 19, 4}, // +Z
-	{20, 21, 22, 5}, {20, 22, 23, 5}, // -Z
+	{20, 21, 22, 5}, {20, 23, 22, 5}, // -Z (VS-21: winding outward)
 }
 BUILTIN_PLANT_VERTICES :: [8][3]f32 {
 	{0, 0, 0}, {1, 0, 1}, {1, 1, 1}, {0, 1, 0}, // quad diagonal 1
@@ -1248,6 +1248,7 @@ upload_block_registry :: proc() {
 		albedo_faces = {4, 4, 4, 4, 4, 4},
 	}
 	upload_to_device_buffer(&registry, size_of(registry), voxel_gpu.block_registry.handle)
+	log.infof("VS-21 fallback grama albedo_faces FACE_NORMALS(+X,-X,+Y,-Y,+Z,-Z) = {} (camadas: 1=grama, 2=terra)", registry[1].albedo_faces)
 }
 
 @(private)
