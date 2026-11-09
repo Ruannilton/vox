@@ -35,15 +35,16 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 | ADR-W1 | [[ADR-W1-ownership-mundo-worker|Ownership do mundo na worker thread]] | `aceita` | VS-18 |
 | ADR-F1 | [[ADR-F1-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aceita` | VS-00, VS-13, VS-19 |
 | ADR-G2 | [[ADR-G2-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aceita` | VS-00, VS-20 |
+| ADR-T5 | [[ADR-T5-texturas-stb-face|Texturas — stb_image, flip Y, nearest e topo por face]] | `pendente` | VS-02, VS-12, VS-21 |
 
 ## Resumo
 
-- 29 decisões registradas e aceitas.
-- Nenhuma decisão pendente.
+- 30 decisões registradas: 29 aceitas e 1 pendente.
+- ADR-T5 aguarda ratificação do mantenedor.
 - Nenhuma decisão representa, por si só, implementação concluída ou validação verificada.
 
 ## Bloqueios
 
-Não há bloqueios de aprovação por ADR. A VS-20 foi aprovada de nascença por dispensa expressa do mantenedor.
+ADR-T5 bloqueia a aprovação da VS-21. As demais escolhas foram incorporadas às suas specs.
 
 Novas decisões devem usar [[modelo-decisao|o modelo de ADR]], receber um ID único e ser adicionadas a este índice, ao painel de status e ao grafo quando bloquearem uma spec.

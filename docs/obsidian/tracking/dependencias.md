@@ -27,6 +27,7 @@ graph TD
     VS18[VS-18 — Mundo na worker]
     VS19[VS-19 — Física solver/mirror]
     VS20[VS-20 — Gameplay seleção/construção/pulo]
+    VS21[VS-21 — Texturas nearest/flip/stb/faces]
 
     VS00 --> VS01
     VS01 --> VS02
@@ -48,6 +49,7 @@ graph TD
     VS17 --> VS18
     VS18 --> VS19
     VS19 --> VS20
+    VS12 --> VS21
 ```
 
 ## Registro normativo
@@ -66,7 +68,7 @@ graph TD
 | [[VS-09-visible-index-16-bits|VS-09]] | VS-08 | — | — |
 | [[VS-10-chunks-vazios-virtuais|VS-10]] | VS-04 | — | — |
 | [[VS-11-uvs-templates|VS-11]] | VS-02 | — | — |
-| [[VS-12-assets-json|VS-12]] | VS-11 | — | — |
+| [[VS-12-assets-json|VS-12]] | VS-11 | — | VS-21 |
 | [[VS-13-heightmap-geracao-mirror|VS-13]] | VS-04 | — | — |
 | [[VS-14-plantas-alpha-test-spawn|VS-14]] | VS-12 | — | — |
 | [[VS-15-tracy-profiler|VS-15]] | VS-05 | — | — |
@@ -75,6 +77,7 @@ graph TD
 | [[VS-18-mundo-na-worker|VS-18]] | VS-17 | — | VS-19 |
 | [[VS-19-fisica-solver-mirror|VS-19]] | VS-04, VS-13, VS-14, VS-18 | — | VS-20 |
 | [[VS-20-gameplay-selecao-construcao-pulo|VS-20]] | VS-03, VS-07, VS-19 | — | — |
+| [[VS-21-texturas-nearest-flip-stb-faces|VS-21]] | VS-11, VS-12 | ADR-T5 | — |
 
 ## Decisões incorporadas
 
@@ -96,6 +99,7 @@ graph TD
 - ADR-W1: VS-18 migra o ownership do mundo para a worker thread — active_chunks, streaming, completions/B1, promote/publish no ring com reuse guardado por timeline gráfica, materialização E1 e mirror service; main fica com input/render/present (~4-5 ms/frame); handoff de frame por atomic+condição com dependências para trás (sem deadlock).
 - ADR-F1 (aceita, implementada pela VS-19): física CPU na main sobre o mirror, `PhysicsDefinition` separada, AABB/sweep em passo fixo e DDA tri-state; heightmap derivado do bitmask na materialização (ring/binding 20 mantido como reserva futura por emenda do mantenedor) e emendas VS-13/VS-00.
 - ADR-G2 de gameplay (aceita): VS-20 usa DDA central por frame, realce no fragment por UBO binding 21 (16 B), cliques via E1 e impulso SPACE de 1,5 bloco somente grounded; spec aprovada de nascença por dispensa do mantenedor.
+- ADR-T5 (pendente): VS-21 propõe stb_image RGBA8 com flip explícito, sampler NEAREST sem mipmaps e `albedo_texture_top` no antigo padding do BlockDefinition de 48 B; schema textura string/top-side e emendas VS-02/VS-12.
 
 ## Dependências transversais a registrar nas specs
 
