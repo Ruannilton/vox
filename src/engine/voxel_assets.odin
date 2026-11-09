@@ -499,7 +499,7 @@ TEXTURE_FACE_KEYS :: [6]string{"top", "bottom", "front", "back", "left", "right"
 // VS-21 (REQ-TEX-04): ordena as faces do objeto para albedo_faces[6] na
 // ordem FACE_NORMALS (+X=right, -X=left, +Y=top, -Y=bottom, +Z=front,
 // -Z=back). String vira o objeto com as 6 faces iguais.
-TEXTURE_FACE_TO_SLOT :: [6]int{4, 5, 0, 1, 2, 3} // top,bottom,front,back,left,right -> slot
+TEXTURE_FACE_TO_SLOT :: [6]int{2, 3, 4, 5, 1, 0} // top,bottom,front,back,left,right -> slot FACE_NORMALS (+X=0,-X=1,+Y=2,-Y=3,+Z=4,-Z=5)
 
 @(private)
 assets_parse_texture_faces :: proc(ctx: string, value: json.Value, layer_of: map[string]int) -> [6]u32 {
