@@ -9,13 +9,13 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Indicador | Quantidade |
 | --- | ---: |
 | Specs registradas | 22 |
-| Specs aprovadas | 21 |
-| Specs em elaboração ou revisão | 1 |
-| Implementações em andamento | 1 |
+| Specs aprovadas | 22 |
+| Specs em elaboração ou revisão | 0 |
+| Implementações em andamento | 0 |
 | Implementações concluídas | 22 |
 | Validações verificadas | 20 |
 
-Vinte e duas especificações registradas; 21 aprovadas/concluídas e **19 integralmente verificadas**; **VS-21 (texturas — nearest, flip Y, stb_image, multi-face) implementação em andamento**. VS-15 e VS-16 aguardam os ACs manuais da UI Tracy. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Vinte e duas especificações registradas e aprovadas; **22 implementadas, 20 integralmente verificadas** (VS-21 concluída e verificada). VS-15 e VS-16 aguardam os ACs manuais da UI Tracy. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
