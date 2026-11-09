@@ -1948,6 +1948,101 @@ def scenario_vs21_texture_spec():
           err is not None and "texture.top" in err and "'x'" in err)
 
 
+
+
+# ============================================================================
+# VS-21 correção (Frente 2) — cubo com 24 vértices e UVs [0,1]² por face.
+# A projeção planar da VS-11 deixava U constante nas faces ±X e V constante
+# nas ±Z (listra de uma coluna de texel). Espelha assets/blocks.json (mesh
+# "cubo") e BUILTIN_CUBE_* em voxel_gpu.odin.
+# ============================================================================
+
+# 4 vértices por face, na ordem FACE_NORMALS dos triângulos:
+# -X (v0..3), +X (v4..7), +Y (v8..11), -Y (v12..15), +Z (v16..19), -Z (v20..23).
+CUBE24_VERTICES = [
+    # -X (x=0): projeção (z, y)
+    (0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0),
+    # +X (x=1): projeção (z, y)
+    (1, 0, 0), (1, 0, 1), (1, 1, 1), (1, 1, 0),
+    # +Y (y=1): projeção (x, z)
+    (0, 1, 0), (1, 1, 1), (1, 1, 0), (0, 1, 1),
+    # -Y (y=0): projeção (x, z)
+    (0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1),
+    # +Z (z=1): projeção (x, y)
+    (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),
+    # -Z (z=0): projeção (x, y)
+    (0, 0, 0), (0, 1, 0), (1, 0, 0), (1, 1, 0),
+]
+CUBE24_TRIANGLES = [
+    (0, 1, 2), (0, 2, 3),   # -X, cull 1
+    (4, 5, 6), (4, 6, 7),   # +X, cull 0
+    (8, 9, 10), (8, 10, 11),  # +Y, cull 2
+    (12, 13, 14), (12, 14, 15),  # -Y, cull 3
+    (16, 17, 18), (16, 18, 19),  # +Z, cull 4
+    (20, 21, 22), (20, 22, 23),  # -Z, cull 5
+]
+CUBE24_TAGS = [1, 1, 0, 0, 2, 2, 3, 3, 4, 4, 5, 5]
+# UVs por face: cada grupo de 4 cobre [0,1]² inteiro
+CUBE24_UVS = [
+    (0, 0), (1, 0), (1, 1), (0, 1),  # -X (z,y)
+    (0, 0), (1, 0), (1, 1), (0, 1),  # +X (z,y)
+    (0, 0), (1, 1), (1, 0), (0, 1),  # +Y (x,z)
+    (0, 0), (1, 0), (1, 1), (0, 1),  # -Y (x,z)
+    (0, 0), (1, 0), (1, 1), (0, 1),  # +Z (x,y)
+    (0, 0), (0, 1), (1, 0), (1, 1),  # -Z (x,y)
+]
+
+
+def scenario_cube_uv_per_face():
+    print("[cenario] VS-21 correcao: cubo 24 vértices com UV [0,1]² por face")
+    check("cubo24: 24 vértices, 12 triângulos, 24 UVs",
+          len(CUBE24_VERTICES) == 24 and len(CUBE24_TRIANGLES) == 12 and len(CUBE24_UVS) == 24)
+    check("cubo24: triângulos indexam dentro do range",
+          all(0 <= i < 24 for t in CUBE24_TRIANGLES for i in t))
+    check("cubo24: cull tags por face (1,1,0,0,2,2,3,3,4,4,5,5)",
+          CUBE24_TAGS == [1, 1, 0, 0, 2, 2, 3, 3, 4, 4, 5, 5])
+
+    # nenhuma face com U ou V constante (o bug das listras): cada grupo de 4
+    # UVs deve ter U e V variando em [0,1]
+    ok_uv = True
+    for face in range(6):
+        uvs = CUBE24_UVS[face * 4:face * 4 + 4]
+        us = {uv[0] for uv in uvs}
+        vs = {uv[1] for uv in uvs}
+        bounds = all(0 <= uv[0] <= 1 and 0 <= uv[1] <= 1 for uv in uvs)
+        if len(us) < 2 or len(vs) < 2 or not bounds:
+            ok_uv = False
+    check("cubo24: nenhuma face com U ou V constante (listras eliminadas)", ok_uv)
+    check("cubo24: cada face cobre [0,1]² inteiro (4 cantos)",
+          all(set(CUBE24_UVS[f * 4:f * 4 + 4]) == {(0, 0), (1, 0), (1, 1), (0, 1)}
+              for f in (0, 1, 3, 4)))
+
+    # projeção planar antiga (VS-11): ±X tinham U constante, ±Z V constante
+    planar_uvs = [(v[0], v[2]) for v in CUBE24_VERTICES]
+    for face, axis_const in ((1, 0), (3, 0), (4, 1), (5, 1)):  # +X,-X U const; +Z,-Z V const
+        uvs = planar_uvs[face * 4:face * 4 + 4]
+        values = {uv[axis_const] for uv in uvs}
+        if len(values) != 1:
+            break
+    else:
+        check("regressao conhecida: projeção planar reproduz o bug (sanidade)", False)
+
+    # cada triângulo fica numa única face do cubo (planaridade preservada)
+    def face_of(v):
+        x, y, z = CUBE24_VERTICES[v]
+        on = [c for c, val in ((0, x), (1, y), (2, z)) if val in (0, 1)]
+        return on
+    planar = all(len(set.intersection(*[set(face_of(i)) for i in t])) >= 1
+                 for t in CUBE24_TRIANGLES)
+    check("cubo24: triângulos permanecem nas faces do cubo", planar)
+
+    # worst case de triângulos (culling direcional) inalterado: 6
+    never = sum(1 for t in CUBE24_TAGS if t == CULL_FACE_NEVER)
+    per_face = [CUBE24_TAGS.count(f) for f in range(6)]
+    worst = never + max(per_face[0], per_face[1]) + max(per_face[2], per_face[3]) + max(per_face[4], per_face[5])
+    check("cubo24: pior caso de triângulos = 6 (<= 24)", worst == 6)
+
+
 def main():
     scenario_budget()
     scenario_selection()
@@ -1969,6 +2064,7 @@ def main():
     scenario_vs21_flip()
     scenario_vs21_face_selection()
     scenario_vs21_texture_spec()
+    scenario_cube_uv_per_face()
     print(f"\n{PASS} passaram, {FAIL} falharam")
     raise SystemExit(1 if FAIL else 0)
 

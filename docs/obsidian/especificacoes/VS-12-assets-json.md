@@ -168,3 +168,5 @@ Só entram na fila após a aprovação desta spec e a ratificação da ADR-A1. C
 - 2026-11-08 — **Emenda planejada pela [[VS-21-texturas-nearest-flip-stb-faces|VS-21]] (ADR-T5 pendente):** decode migra para `vendor:stb/image` RGBA8 com flip explícito de linhas; `texture` aceita string ou objeto exato `{top,side}`; grama usa grama no topo e terra nas demais faces, com fallback equivalente. Registry permanece 48 B.
 
 - 2026-11-09 — **Emenda VS-21 consumada (REQ-TEX-01/02/04/07):** decode de texturas migra para `vendor:stb/image` (`load_from_memory` com `desired_channels = 4`, `image_free` em todos os caminhos) com `flip_rows` explícito pós-decode; campo `texture` aceita **string (normalizada pelo loader para o objeto de 6 faces iguais — internamente só existe a representação de objeto)** ou objeto completo `top/bottom/front/back/left/right` (front=+Z, back=−Z, right=+X, left=−X); fallback built-in reproduz a grama multi-face (top=grama, demais=terra).
+
+- 2026-11-09 — **Correção VS-21:** cubo do `blocks.json` com 24 vértices (4 por face) e UVs [0,1]² por face; decode/sampler/schema inalterados.

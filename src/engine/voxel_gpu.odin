@@ -8,20 +8,31 @@ import vk "vendor:vulkan"
 
 BLOCK_REGISTRY_CAPACITY :: 256
 MESH_TEMPLATE_CAPACITY :: 256
-BUILTIN_CUBE_VERTICES :: [8][3]f32 {
-	{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0},
-	{0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1},
+// VS-21 correção: 24 vértices (4 por face) com UVs [0,1]² por face — a
+// projeção planar da VS-11 deixava U constante nas faces ±X e V constante
+// nas ±Z (listra de uma coluna de texel esticada nas laterais).
+BUILTIN_CUBE_VERTICES :: [24][3]f32 {
+	// -X (x=0), projeção (z,y)
+	{0, 0, 0}, {0, 0, 1}, {0, 1, 1}, {0, 1, 0},
+	// +X (x=1), projeção (z,y)
+	{1, 0, 0}, {1, 0, 1}, {1, 1, 1}, {1, 1, 0},
+	// +Y (y=1), projeção (x,z)
+	{0, 1, 0}, {1, 1, 1}, {1, 1, 0}, {0, 1, 1},
+	// -Y (y=0), projeção (x,z)
+	{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1},
+	// +Z (z=1), projeção (x,y)
+	{0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1},
+	// -Z (z=0), projeção (x,y)
+	{0, 0, 0}, {0, 1, 0}, {1, 0, 0}, {1, 1, 0},
 }
-
 BUILTIN_CUBE_TRIANGLES :: [12][4]u32 {
-	{1, 3, 7, 0}, {1, 7, 5, 0}, // +X
-	{0, 4, 6, 1}, {0, 6, 2, 1}, // -X
-	{2, 7, 3, 2}, {2, 6, 7, 2}, // +Y
-	{0, 1, 5, 3}, {0, 5, 4, 3}, // -Y
-	{4, 5, 7, 4}, {4, 7, 6, 4}, // +Z
-	{0, 3, 1, 5}, {0, 2, 3, 5}, // -Z
+	{0, 1, 2, 1}, {0, 2, 3, 1}, // -X
+	{4, 5, 6, 0}, {4, 6, 7, 0}, // +X
+	{8, 9, 10, 2}, {8, 10, 11, 2}, // +Y
+	{12, 13, 14, 3}, {12, 14, 15, 3}, // -Y
+	{16, 17, 18, 4}, {16, 18, 19, 4}, // +Z
+	{20, 21, 22, 5}, {20, 22, 23, 5}, // -Z
 }
-
 BUILTIN_PLANT_VERTICES :: [8][3]f32 {
 	{0, 0, 0}, {1, 0, 1}, {1, 1, 1}, {0, 1, 0}, // quad diagonal 1
 	{1, 0, 0}, {0, 0, 1}, {0, 1, 1}, {1, 1, 0}, // quad diagonal 2
@@ -598,7 +609,7 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	{
 		// VS-12: com assets carregados, o readback casa com os dados do JSON
 		// (vértices + UVs); sem assets, mantém a regresso contra os built-ins.
-		vertex_count := 16
+		vertex_count := 32
 		uv_count := 0
 		if voxel_assets.loaded {
 			vertex_count = len(voxel_assets.vertices)
@@ -652,14 +663,14 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 				if gpu_vertices[i].xyz != v { vtx_errors += 1 }
 			}
 			for v, i in BUILTIN_PLANT_VERTICES {
-				if gpu_vertices[8 + i].xyz != v { vtx_errors += 1 }
+				if gpu_vertices[24 + i].xyz != v { vtx_errors += 1 }
 			}
 		}
 		if vtx_errors == 0 {
 			if voxel_assets.loaded {
 				log.infof("DEBUG READBACK OK: template_vertices ({} vértices, stride 16) == assets JSON", vertex_count)
 			} else {
-				log.info("DEBUG READBACK OK: template_vertices (16 vértices, stride 16) == built-ins")
+				log.info("DEBUG READBACK OK: template_vertices (32 vértices, stride 16) == built-ins (cubo 24 + planta 8)")
 			}
 		} else {
 			log.errorf("DEBUG READBACK FALHOU: template_vertices — {} vértices divergentes", vtx_errors)
@@ -1155,12 +1166,16 @@ upload_builtin_templates :: proc() {
 
 	cube_verts := BUILTIN_CUBE_VERTICES
 	plant_verts := BUILTIN_PLANT_VERTICES
-	// VS-11 (REQ-UV-02): built-ins com UV — cubo: projeção planar (x,z) por
-	// vértice (os 8 vértices são compartilhados entre 3 faces; unwrap por face
-	// exigiria duplicar vértices — simplificação registrada na VS-11, questão
-	// aberta de rotação/unwrap por face); planta: cada quad da cruz com [0,1]².
-	cube_uvs: [8][2]f32
-	for v, i in cube_verts do cube_uvs[i] = {v[0], v[2]}
+	// VS-11 (REQ-UV-02): built-ins com UV — planta: cada quad da cruz com [0,1]².
+	// VS-21 correção: UV [0,1]² por face do cubo 24 vértices.
+	cube_uvs: [24][2]f32 = {
+		{0, 0}, {1, 0}, {1, 1}, {0, 1}, // -X (z,y)
+		{0, 0}, {1, 0}, {1, 1}, {0, 1}, // +X (z,y)
+		{0, 0}, {1, 1}, {1, 0}, {0, 1}, // +Y (x,z)
+		{0, 0}, {1, 0}, {1, 1}, {0, 1}, // -Y (x,z)
+		{0, 0}, {1, 0}, {1, 1}, {0, 1}, // +Z (x,y)
+		{0, 0}, {0, 1}, {1, 0}, {1, 1}, // -Z (x,y)
+	}
 	plant_uvs := [8][2]f32{{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 0}, {1, 0}, {1, 1}, {0, 1}}
 	log.assert(validate_template(cube_verts[:], cube_tris[:]), "template cubo inválido")
 	log.assert(validate_template(plant_verts[:], plant_tris[:4]), "template planta inválido")
@@ -1169,9 +1184,9 @@ upload_builtin_templates :: proc() {
 
 	templates := [3]MeshTemplate {
 		{uv_offset = NO_TEMPLATE_UV_OFFSET}, // 0 = ar: nada emite
-		{ // 1 = cubo
+		{ // 1 = cubo (VS-21: 24 vértices, 4 por face)
 			vertex_offset   = 0,
-			vertex_count    = 8,
+			vertex_count    = 24,
 			triangle_offset = 0,
 			triangle_count  = 12,
 			worst_case_tris = compute_worst_case_tris(cube_tris[:]),
@@ -1179,25 +1194,25 @@ upload_builtin_templates :: proc() {
 			uv_offset       = 0,
 		},
 		{ // 2 = planta
-			vertex_offset   = 8,
+			vertex_offset   = 24,
 			vertex_count    = 8,
 			triangle_offset = 12,
 			triangle_count  = 4,
 			worst_case_tris = compute_worst_case_tris(plant_tris[:4]),
 			flags           = 0,
-			uv_offset       = 8,
+			uv_offset       = 24,
 		},
 	}
 
-	vertices: [16][4]f32
+	vertices: [32][4]f32
 	for v, i in cube_verts do vertices[i] = {v[0], v[1], v[2], 0}
-	for v, i in plant_verts do vertices[8 + i] = {v[0], v[1], v[2], 0}
+	for v, i in plant_verts do vertices[24 + i] = {v[0], v[1], v[2], 0}
 	triangles: [16]u32
 	copy(triangles[0:12], cube_tris[:])
 	copy(triangles[12:16], plant_tris[:4])
-	uvs: [16][2]f32
-	copy(uvs[0:8], cube_uvs[:])
-	copy(uvs[8:16], plant_uvs[:])
+	uvs: [32][2]f32
+	copy(uvs[0:24], cube_uvs[:])
+	copy(uvs[24:32], plant_uvs[:])
 
 	upload_to_device_buffer(&templates, size_of(templates), voxel_gpu.mesh_templates.handle)
 	upload_to_device_buffer(&vertices, size_of(vertices), voxel_gpu.template_vertices.handle)

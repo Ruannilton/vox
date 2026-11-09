@@ -107,20 +107,24 @@ struct SpecialVoxelRecord {
     uint block_identifier;
 };
 
+// VS-21 (REQ-TEX-05): camada por face em ordem FACE_NORMALS
+// (+X, -X, +Y, -Y, +Z, -Z). Registry 48 -> 80 B (VS-00/VS-02; correção
+// 2026-11-09: float3 alinhado a 16 — ordem e size múltiplo de 16 espelham
+// o Odin byte a byte; verificável pela reflection do slangc).
 struct BlockDefinition {
-    uint   mesh_template_index;
-    uint   pbr_texture_index;
-    uint   flags;
-    // VS-21 (REQ-TEX-05): camada por face em ordem FACE_NORMALS
-    // (+X, -X, +Y, -Y, +Z, -Z). Registry cresce 48 -> 72 B (VS-00/VS-02).
-    uint   albedo_faces[6];
-    float3 emission_color;
-    float  base_roughness;
-    float  base_metallic;
-    uint   rotation;
-    uint   padding_2;
-    uint   padding_3;
-    uint   padding_4;
+    uint   mesh_template_index; // 0
+    uint   pbr_texture_index;   // 4
+    uint   flags;               // 8
+    uint   albedo_faces[6];     // 12..36
+    uint   rotation;            // 36
+    uint   padding_2;           // 40
+    uint   padding_3;           // 44
+    float3 emission_color;      // 48..60 (offset múltiplo de 16)
+    float  base_roughness;      // 60
+    float  base_metallic;       // 64
+    uint   padding_4;           // 68
+    uint   padding_5;           // 72
+    uint   padding_6;           // 76
 };
 
 struct MeshTemplate {

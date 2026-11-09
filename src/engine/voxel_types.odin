@@ -53,7 +53,11 @@ NEIGHBOR_OFFSETS :: [6]ChunkCoordinate{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1,
 SLOT_INDEX_INVALID :: max(u32)
 
 ALBEDO_PALETTE_LAYERS :: 256
-ALBEDO_PALETTE_LAYER_SIZE :: 4
+// VS-21 correção: era 4 — com o sampler NEAREST, a UV por face e a
+// minificação extrema dos blocos distantes (visão 22), a paleta 4×4×256
+// causava DEVICE_LOST reproduzível no caminho built-in (5/5; com 16×16,
+// estável 3/3). 16×16 é o padrão dos assets reais; camada = cor sólida.
+ALBEDO_PALETTE_LAYER_SIZE :: 16
 
 NO_TEMPLATE_UV_OFFSET :: 0xFFFFFFFF
 
@@ -96,21 +100,27 @@ SpecialVoxelRecord :: struct {
 	block_identifier:      u32,
 }
 
-// 72 B std430 — espelha o Slang. VS-21 (REQ-TEX-05, revisão VS-00/VS-02):
+// 80 B — espelha o Slang byte a byte (verificável por offset_of e pela
+// reflection do slangc). VS-21 (REQ-TEX-05, revisão VS-00/VS-02):
 // albedo_texture_index + paddings viram albedo_faces[6] (camada por face,
-// ordem FACE_NORMALS: +X,-X,+Y,-Y,+Z,-Z) + padding de alinhamento.
+// ordem FACE_NORMALS: +X,-X,+Y,-Y,+Z,-Z). Correção 2026-11-09: float3 tem
+// alinhamento 16 no Slang — sem colocar emission_color num offset múltiplo
+// de 16 e o size múltiplo de 16 (stride de array), o shader lia o registry
+// desalinhado (regressão de renderização: flags/mesh/albedo_faces lixo).
 BlockDefinition :: struct {
-	mesh_template_index: u32,
-	pbr_texture_index:   u32,
-	flags:               u32,
-	albedo_faces:        [6]u32,
-	emission_color:      [3]f32,
-	base_roughness:      f32,
-	base_metallic:       f32,
-	rotation:            u32,
-	padding_2:           u32,
-	padding_3:           u32,
-	padding_4:           u32,
+	mesh_template_index: u32,   // 0
+	pbr_texture_index:   u32,   // 4
+	flags:               u32,   // 8
+	albedo_faces:        [6]u32, // 12..36 (FACE_NORMALS: +X,-X,+Y,-Y,+Z,-Z)
+	rotation:            u32,   // 36
+	padding_2:           u32,   // 40
+	padding_3:           u32,   // 44
+	emission_color:      [3]f32, // 48..60 (offset múltiplo de 16)
+	base_roughness:      f32,   // 60
+	base_metallic:       f32,   // 64
+	padding_4:           u32,   // 68
+	padding_5:           u32,   // 72
+	padding_6:           u32,   // 76
 }
 
 // 32 B std430 — espelha o Slang. VS-11 (REQ-UV-02): uv_offset no lugar de um
@@ -191,7 +201,9 @@ VoxelPushConstants :: struct {
 #assert(size_of(MirrorChunkPage) == 71824) // 70,14 KiB (VS-13; era 69776 = 68,14 KiB)
 #assert(size_of(ChunkGenerationJob) == 32)
 #assert(size_of(ChunkHeader) == 2064)
-#assert(size_of(BlockDefinition) == 72)
+#assert(size_of(BlockDefinition) == 80)
+#assert(offset_of(BlockDefinition, albedo_faces) == 12)
+#assert(offset_of(BlockDefinition, emission_color) == 48)
 #assert(size_of(MeshTemplate) == 32)
 #assert(size_of(VisibleChunk) == 48)
 #assert(size_of(EditChunkJob) == 16)
