@@ -18,10 +18,14 @@ Documentação de aprendizado: para quem nunca teve contato com o projeto. Três
 ## Guia de estilo (vale para todos os documentos)
 
 - Formato Obsidian (wiki-links `[[...]]`); PT-BR; frontmatter mínimo (`id`, `titulo`, `tipo`, `ultima_atualizacao`).
-- **Referência cruza-se com Sistema, Sistema cruza-se com Alto nível** — todo documento linka para cima (contexto) e para os vizinhos.
+- **Tom: tutorial guiado.** O leitor nunca viu o projeto. Você está guiando a primeira visita, não resumindo para quem já conhece.
+- **Regra de ouro — introduza antes de usar:** na primeira menção de qualquer conceito interno, diga o que é, onde vive (`` `proc` `` em `arquivo.odin`) e por que existe — antes de usá-lo no raciocínio. Nunca "o handler de conclusão libera o slot" sem antes: "a rotina `voxel_engine_service_completions` (em `voxel_engine.odin`), que a worker executa a cada frame para processar os lotes que a GPU terminou — é ela quem libera o slot". Se o conceito foi definido no documento anterior da ordem de leitura, basta linkar.
+- **Âncoras de código sempre:** todo nome interno (proc, struct, buffer, binding) aparece com crase e arquivo — o leitor pode ir ver com um clique.
+- **Ritmo de explicação:** frases completas, um parágrafo por ideia, números reais do projeto (6 ms, 16 chunks, 32³) para concretizar. Evite telegrafês de referência nas visões Alto nível e Sistema.
+- **Referência** mantém tabelas e concisão, mas cada entrada abre com uma frase de contexto (quem chama, quando, por quê) e nenhum termo interno aparece sem âncora ou link para onde foi definido.
 - Decisões de desenho apontam para a **ADR** e a **spec** correspondentes (`decisoes/`, `especificacoes/`) — a documentação explica o estado atual; specs/ADRs explicam a história.
-- Código: nome de proced/struct em `` `code` `` com arquivo e, quando útil, linha aproximada. Shaders: binding e layout explícitos.
 - Invariantes do AGENTS.md (regras 1–7) são citados onde pertinentes — não repetidos.
+- **Aprofundamentos no fim de cada seção** (links "para ir mais fundo"), não espalhados pelo texto.
 - Nada de markdown gerado por reflexo: cada documento parte da leitura do código atual (não da memória).
 
 ## Mapa

@@ -7,12 +7,14 @@ ultima_atualizacao: 2026-11-09
 
 # Referência — engine, engine_vulkan, types
 
-Referência de **cada struct e procedure** dos três arquivos da fundação. Contexto e motivação: [[sistema-engine-fundacao]] (sistema), [[visao-geral]] (macro). Convenções:
+Você chegou aqui pela [[sistema-engine-fundacao]], que contou a história da fundação: por que ela existe, como o frame flui, como a swapchain é recriada. Este documento é o passeio **struct por struct, procedure por procedure** dos três arquivos dessa fundação — um catálogo de consulta, no ritmo do trabalho. Leia as entradas na ordem em que aparecem; cada uma abre dizendo quem a chama, quando e por que.
 
-- **Erros fatais**: `log.panic`/`log.panicf` (via `vk_check` ou explícito) — encerram o processo com diagnóstico. Inicialização inteira é fatal: não existe recuperação parcial de `CreateEngine`.
+Duas convenções valem para tudo o que segue:
+
+- **Erros fatais**: `log.panic`/`log.panicf` (via `vk_check` ou explícito) — encerram o processo com diagnóstico. A inicialização inteira é fatal: não existe recuperação parcial de `CreateEngine`.
 - **Recuperáveis**: retornos `ok: bool`/`false` — frame pulado ou recriação de swapchain adiada; nunca pânico.
 - **Sincronização**: toda criação/destruição respeita a ordem de `CreateEngine`/`DestroyEngine` (contrato `REQ-FND-SYNC-02`); destruição abre com `vkDeviceWaitIdle`.
-- Tipos `vk.*`/`vma.*`/`glfw.*` são bindings Odin padrão (vendor), não documentados aqui.
+- Tipos `vk.*`/`vma.*`/`glfw.*` são bindings Odin padrão (vendor), não documentados aqui. Termos Vulkan genéricos que não foram definidos nos documentos anteriores (image view — a "janela" por meio da qual um shader lê uma imagem; semáforo binário — o objeto síncrono de dois estados usado para ordenar operações entre filas; command pool — o alocador de command buffers) ganham uma mini-definição na primeira menção; os conceitos internos do motor (timeline semaphore, VMA, push constant, ring de frames) já foram apresentados em [[visao-geral]] e [[sistema-engine-fundacao]], então aqui basta linkar.
 
 Arquivos:
 
@@ -26,16 +28,20 @@ Arquivos:
 
 ## Constantes
 
+Estas constantes são as regras do jogo que todo o resto da engine assume. Foram apresentadas ao longo de [[sistema-engine-fundacao]]; aqui estão com seus valores exatos.
+
 | Constante | Valor | Papel |
 | --- | --- | --- |
-| `NUM_FRAMES_IN_FLIGHT` | 2 | Tamanho do ring de frames. Guarda a reutilização de `FrameResource` via timeline gráfica e limita a distância do wait (`N - NUM_FRAMES_IN_FLIGHT`). |
-| `NUM_SWAP_CHAIN_IMAGES` | 3 (`NUM_FRAMES_IN_FLIGHT + 1`) | Quantidade de imagens da swapchain (um a mais que frames em voo), limitado por `maxImageCount` do surface. |
+| `NUM_FRAMES_IN_FLIGHT` | 2 | Tamanho do ring de frames (a fila circular de slots de recursos reutilizáveis, guardada pela timeline gráfica — ver [[sistema-engine-fundacao]]). Guarda a reutilização de `FrameResource` via timeline e limita a distância do wait (`N - NUM_FRAMES_IN_FLIGHT`). |
+| `NUM_SWAP_CHAIN_IMAGES` | 3 (`NUM_FRAMES_IN_FLIGHT + 1`) | Quantidade de imagens da swapchain (a estrutura de "próxima imagem a exibir" do Vulkan — um a mais que frames em voo), limitado por `maxImageCount` do surface. |
 | `ACQUIRE_TIMEOUT_NS` | 100 ms | Timeout de `vkAcquireNextImageKHR`. `TIMEOUT`/`NOT_READY` → frame pulado (recuperável). |
 | `DESCRIPTOR_SET_BINDING_COUNT` | 22 | Número de bindings do set 0 (fonte única: `src/assets/shaders/common.slang`). Cresceu por spec: VS-11 (binding 19), VS-13 (binding 20), VS-20 (binding 21). |
-| `PUSH_CONSTANTS_SIZE` | 92 | Bytes de push constants por passagem de pipeline. |
+| `PUSH_CONSTANTS_SIZE` | 92 | Bytes de push constants por passagem de pipeline (o pequeno bloco de dados por submit, definido em [[sistema-engine-fundacao]]). |
 | `REQUIRED_DEVICE_EXTENSIONS` | swapchain, mesh shader, shader object, memory budget | Extensões **obrigatórias** na seleção de dispositivo (`REQ-FND-DEV-04`); ausência de qualquer uma rejeita o candidato. |
 
 ## Enum e structs — `types.odin`
+
+Os cinco structs deste arquivo são os "invólucros" de pequenos conjuntos de recursos Vulkan. Nenhum deles tem comportamento próprio — são contratos de posse: quem criou, quem destrói, e o que sobrevive a um resize.
 
 ### `QueueType` (`types.odin:6`)
 
@@ -43,7 +49,7 @@ Arquivos:
 QueueType :: enum { Graphics, Compute, Transfer }
 ```
 
-Índice do array `app.queues`. `Transfer` existe no enum mas nenhuma fila é provisionada para ele — só `Graphics` e `Compute` são criadas (`create_vulkan_device`).
+O índice do array `app.queues`. `Transfer` existe no enum mas nenhuma fila é provisionada para ele — só `Graphics` e `Compute` são criadas (`create_vulkan_device`).
 
 ### `QueueTuple` (`types.odin:12`)
 
@@ -54,7 +60,7 @@ QueueTuple :: struct {
 }
 ```
 
-Fila Vulkan + índice da família. Preenchido em duas etapas: `select_physical_device` grava `familyIndex`; `create_vulkan_device` grava `queue` via `vkGetDeviceQueue`. Contrato: se compute não tem família dedicada, `queues[.Compute].familyIndex == queues[.Graphics].familyIndex` (fallback logado como warning).
+Uma fila Vulkan mais o índice da família a que ela pertence. É preenchido em duas etapas porque a informação chega em duas etapas: `select_physical_device` já sabe a família e grava `familyIndex`; `create_vulkan_device` só depois pode resolver o handle e grava `queue` via `vkGetDeviceQueue`. Contrato: se compute não tem família dedicada, `queues[.Compute].familyIndex == queues[.Graphics].familyIndex` (o fallback logado como warning que você viu em [[sistema-engine-fundacao]]).
 
 ### `FrameResource` (`types.odin:17`)
 
@@ -66,7 +72,7 @@ FrameResource :: struct {
 }
 ```
 
-Os recursos **por frame em voo** (ring de `NUM_FRAMES_IN_FLIGHT`). Criados por `create_frame_data`; reuso guardado exclusivamente pela timeline gráfica — `WaitTimelineSemaphore` garante que a GPU terminou o uso anterior antes do reset do command pool. O semáforo de aquisição é binário e dedicado: um por slot, nunca reutilizado entre slots no mesmo acquire.
+O kit de recursos **por frame em voo** — um slot do ring de `NUM_FRAMES_IN_FLIGHT` frames. Criado por `create_frame_data`, ele embala os três objetos que a main thread usa para gravar cada frame: um command pool (o alocador de command buffers daquele slot), o command buffer primário gravado por frame, e um semáforo binário dedicado que ordena "imagem adquirida" → "comandos de render". O reuso do kit é guardado exclusivamente pela timeline gráfica — `WaitTimelineSemaphore` garante que a GPU terminou o uso anterior antes do reset do command pool. O semáforo de aquisição é binário e dedicado: um por slot, nunca reutilizado entre slots no mesmo acquire.
 
 ### `SwapChainFrameData` (`types.odin:23`)
 
@@ -78,7 +84,7 @@ SwapChainFrameData :: struct {
 }
 ```
 
-Os recursos **por imagem da swapchain** (3 imagens, criadas por `setup_swap_chain_frames`). A imagem pertence à swapchain (não é destruída pela engine); view e semáforo de present **dedicado** por imagem são destruídos em `destroy_swap_chain`. Morte junto com a swapchain: `recreate_swapchain` destrói tudo e recria.
+O espelho de `FrameResource`, mas **por imagem da swapchain** (3 imagens, criadas por `setup_swap_chain_frames`). A imagem pertence à swapchain (não é destruída pela engine); a image view (a janela de leitura/escrita da imagem, no aspecto color) e o semáforo de present **dedicado** por imagem são destruídos em `destroy_swap_chain`. A morte é junto com a swapchain: `recreate_swapchain` destrói tudo e recria — estes dados não sobrevivem a resize.
 
 ### `PresentationInfo` (`types.odin:29`)
 
@@ -93,7 +99,7 @@ PresentationInfo :: struct {
 }
 ```
 
-Tudo que descreve a apresentação. `imageIndex` é o índice da imagem adquirida pela última `AcquireNextImage` bem-sucedida — **válido só até o próximo acquire** e consumido por `Present`. `frames` é alocado com o allocator padrão e liberado em `destroy_swap_chain` (`delete`). Sobrevive ao recreate: o struct inteiro é reescrito por `create_swap_chain`, mas o objeto em si não é destruído.
+Tudo que descreve a apresentação em um só lugar — é o campo `presentation` dentro de `VoxEngine`. `imageIndex` é o índice da imagem adquirida pela última `AcquireNextImage` bem-sucedida — **válido só até o próximo acquire** e consumido por `Present`. `frames` é alocado com o allocator padrão e liberado em `destroy_swap_chain` (`delete`). Sobrevive ao recreate: o struct inteiro é reescrito por `create_swap_chain`, mas o objeto em si não é destruído.
 
 ### `DepthBuffer` (`types.odin:38`)
 
@@ -106,7 +112,7 @@ DepthBuffer :: struct {
 }
 ```
 
-Depth `D32_SFLOAT` da resolução atual, alocado via VMA com `DEDICATED_MEMORY`. Não sobrevive ao recreate: `recreate_swapchain` destrói e recria com a nova extent.
+O depth buffer — a imagem auxiliar de profundidade que o passo de fragment usa para decidir quais pixels ficam na frente. É `D32_SFLOAT` da resolução atual, alocado via VMA (o Vulkan Memory Allocator, a biblioteca de alocação de memória de vídeo apresentada em [[sistema-engine-fundacao]]) com `DEDICATED_MEMORY`. Não sobrevive ao recreate: `recreate_swapchain` destrói e recria com a nova extent, por ter dimensão de janela.
 
 ## Struct global — `engine.odin`
 
@@ -150,13 +156,13 @@ VoxEngine :: struct {
 }
 ```
 
-O **estado global da engine**. Existe exatamente uma instância — a variável de pacote `app: VoxEngine` (`engine.odin:58`) — acessada por todos os módulos sem passagem de parâmetro. Campos por bloco:
+O **estado global da engine** — o único struct que praticamente todo módulo toca. Existe exatamente uma instância: a variável de pacote `app: VoxEngine` (`engine.odin:58`), acessada por todos os módulos sem passagem de parâmetro (é o que permite um `vk_check` em qualquer arquivo, por exemplo). Os campos, por bloco:
 
 - **`runtimeContext`**: o `context` do chamador de `CreateEngine`, guardado para restaurar o contexto de Odin dentro dos callbacks C do GLFW e do debug messenger (sem isso o `log` do callback quebra).
 - **glfw**: janela e dimensões. `windowWidth/Height` são atualizadas pelo callback de framebuffer **e** por `create_swap_chain` (source of truth no momento do create).
-- **vulkan**: handles da cadeia instance→device, `queues` indexado por `QueueType`, e os agregados `PresentationInfo`, `DepthBuffer`, `frameData`.
+- **vulkan**: handles da cadeia instance→device, `queues` indexado por `QueueType`, e os agregados `PresentationInfo`, `DepthBuffer`, `frameData` — os structs de `types.odin` que você acabou de ver.
 - **sync**: as duas timelines. `timelineSemaphore` é a guarda do ring de frames (sinalizada pelo submit do frame, esperada por `WaitTimelineSemaphore`). `computeTimelineSemaphore` pertence à worker (1 lote = 1 valor, regra 3). `currentTimelineValue`/`nextTimelineValue` implementam a reserva monotônica: `Update` reserva um valor por frame e `CancelFrameReservation` desfaz.
-- **descriptors**: o set 0 único e os dois pipeline layouts (ver [[sistema-engine-fundacao]] — o contrato que todos os shaders assinam).
+- **descriptors**: o set 0 único e os dois pipeline layouts (o contrato que todos os shaders assinam, detalhado em [[sistema-engine-fundacao]]).
 - **estado**: `validationLayersEnabled` (se a layer Khronos foi de fato ativada), `swapchainNeedsRecreate` (set por resize/out-of-date, consumido por `AcquireNextImage`).
 - **time**: `deltaTime`/`tick`/`frameIndex` etc., mantidos por `Update`. Nota: `Update` escreve `lastFrameTime = app.currentTime` (não o tempo atual) — `deltaTime` cobre o intervalo entre o início do frame anterior e agora.
 
@@ -168,7 +174,7 @@ O **estado global da engine**. Existe exatamente uma instância — a variável 
 CreateEngine :: proc(width: u32 = 800, height: u32 = 600)
 ```
 
-Inicializa `app` e executa a sequência linear `init_glfw → create_vulkan_instance → create_vulkan_surface → create_vulkan_device → create_vma_allocator → config_validate_machine → create_swap_chain → create_depth_buffer → create_sync_objects → create_frame_data → create_descriptor_layouts → telemetry_init`. Contratos:
+A porta de entrada da engine, chamada uma única vez por `main` antes de qualquer frame. Inicializa `app` e executa a sequência linear `init_glfw → create_vulkan_instance → create_vulkan_surface → create_vulkan_device → create_vma_allocator → config_validate_machine → create_swap_chain → create_depth_buffer → create_sync_objects → create_frame_data → create_descriptor_layouts → telemetry_init`. Contratos:
 
 - **Fatal em qualquer falha** — sem recuperação parcial; `vk_check`/`log.panic` encerram o processo.
 - `nextTimelineValue` inicia em `NUM_FRAMES_IN_FLIGHT + 1` (3), combinando com o valor inicial `NUM_FRAMES_IN_FLIGHT` (2) da timeline gráfica.
@@ -180,7 +186,7 @@ Inicializa `app` e executa a sequência linear `init_glfw → create_vulkan_inst
 DestroyEngine :: proc()
 ```
 
-Abre com `vkDeviceWaitIdle` (a GPU não pode estar usando nada) e destrói na **ordem inversa** da criação: layouts → frame data → sync objects → depth → swapchain → VMA → device → surface → instance → janela → `glfw.Terminate`. No jogo normal este caminho não roda (fast-exit com `os.exit` após flush do Tracy — ver [[visao-geral]]); é o teardown completo de `--full-teardown` (smokes/CI).
+O espelho de `CreateEngine`. Abre com `vkDeviceWaitIdle` (a GPU não pode estar usando nada) e destrói na **ordem inversa** da criação: layouts → frame data → sync objects → depth → swapchain → VMA → device → surface → instance → janela → `glfw.Terminate`. No jogo normal este caminho não roda (fast-exit com `os.exit` após flush do Tracy — ver [[visao-geral]]); é o teardown completo de `--full-teardown` (smokes/CI).
 
 ### `Update` (`engine.odin:103`)
 
@@ -188,9 +194,11 @@ Abre com `vkDeviceWaitIdle` (a GPU não pode estar usando nada) e destrói na **
 Update :: proc()
 ```
 
-Avança o estado por-frame: computa `deltaTime`, incrementa `tick`, avança `frameIndex` no ring de 2 e **reserva** o valor da timeline (`currentTimelineValue = nextTimelineValue++`). A reserva é monotônica — todo valor é reservado por exatamente um frame; a de-reserva só ocorre via `CancelFrameReservation` (ver [[sistema-engine-fundacao]] — invariável pós-deadlock da VS-00).
+Chamada pela main thread no início de cada frame (o passo 1 do pipeline de frame de [[sistema-engine-fundacao]]). Avança o estado por-frame: computa `deltaTime`, incrementa `tick`, avança `frameIndex` no ring de 2 e **reserva** o valor da timeline (`currentTimelineValue = nextTimelineValue++`). A reserva é monotônica — todo valor é reservado por exatamente um frame; a de-reserva só ocorre via `CancelFrameReservation` (ver [[sistema-engine-fundacao]] — invariável pós-deadlock da VS-00).
 
 ## API de frame — `engine.odin`
+
+Quatro procedures que a main thread invoca, nesta ordem, a cada frame — você já viu o papel de cada uma no roteiro do frame; aqui estão os contratos exatos.
 
 ### `WaitTimelineSemaphore` (`engine.odin:172`)
 
@@ -198,7 +206,7 @@ Avança o estado por-frame: computa `deltaTime`, incrementa `tick`, avança `fra
 WaitTimelineSemaphore :: proc() -> u64
 ```
 
-`vkWaitSemaphores` bloqueante (`timeout = max(u64)`) na timeline gráfica pelo valor `currentTimelineValue - NUM_FRAMES_IN_FLIGHT`. É a guarda do ring: só retorna quando a GPU confirmou o frame de 2 iterações atrás. Retorna o valor reservado (`signal_value`) para quem chamou sinalizá-lo no submit. **Fatal** se o wait falhar (`vk_check`) — não há recuperação de sincronização quebrada.
+A guarda do ring, chamada logo após `Update`. Faz `vkWaitSemaphores` bloqueante (`timeout = max(u64)`) na timeline gráfica pelo valor `currentTimelineValue - NUM_FRAMES_IN_FLIGHT` — só retorna quando a GPU confirmou o frame de 2 iterações atrás. Retorna o valor reservado (`signal_value`) para quem chamou sinalizá-lo no submit. **Fatal** se o wait falhar (`vk_check`) — não há recuperação de sincronização quebrada.
 
 ### `AcquireFrameResource` (`engine.odin:142`)
 
@@ -206,7 +214,7 @@ WaitTimelineSemaphore :: proc() -> u64
 AcquireFrameResource :: proc() -> ^FrameResource
 ```
 
-Retorna `&app.frameData[app.frameIndex]`. Puro acesso ao ring — não sincroniza nada; a garantia de reuso vem de `WaitTimelineSemaphore`, que a main chama antes.
+Retorna `&app.frameData[app.frameIndex]` — o kit do slot atual do ring. Puro acesso ao ring: não sincroniza nada; a garantia de reuso vem de `WaitTimelineSemaphore`, que a main chama antes.
 
 ### `CancelFrameReservation` (`engine.odin:166`)
 
@@ -214,7 +222,7 @@ Retorna `&app.frameData[app.frameIndex]`. Puro acesso ao ring — não sincroniz
 CancelFrameReservation :: proc()
 ```
 
-Desfaz a reserva do frame corrente: recua `frameIndex` e decrementa `currentTimelineValue`/`nextTimelineValue`. Usado quando o frame é pulado (acquire com `TIMEOUT`/`NOT_READY`) para que o valor de timeline não fique "furado" — cada valor reservado é ou consumido por um submit ou cancelado.
+Desfaz a reserva do frame corrente: recua `frameIndex` e decrementa `currentTimelineValue`/`nextTimelineValue`. Quem chama é `AcquireNextImage` (via main) quando o frame é pulado (acquire com `TIMEOUT`/`NOT_READY`), para que o valor de timeline não fique "furado" — cada valor reservado é ou consumido por um submit ou cancelado.
 
 ### `AcquireNextImage` (`engine.odin:114`)
 
@@ -222,7 +230,7 @@ Desfaz a reserva do frame corrente: recua `frameIndex` e decrementa `currentTime
 AcquireNextImage :: proc() -> (frame: SwapChainFrameData, ok: bool)
 ```
 
-Acorda a recriação se `swapchainNeedsRecreate` estiver marcado (`recreate_swapchain` falha com janela 0×0 → `ok = false`, frame pulado). Depois `vkAcquireNextImageKHR` com timeout de 100 ms e o semáforo de aquisição do frame. Tratamento:
+O ponto onde a swapchain é consultada — e, se necessário, recriada. Primeiro acorda a recriação se `swapchainNeedsRecreate` estiver marcado (`recreate_swapchain` falha com janela 0×0 → `ok = false`, frame pulado). Depois `vkAcquireNextImageKHR` com timeout de 100 ms e o semáforo de aquisição do frame. Tratamento:
 
 - `TIMEOUT` / `NOT_READY` → `ok = false` (recuperável; chamador deve `CancelFrameReservation`).
 - `OUT_OF_DATE` / `SUBOPTIMAL` → marca `swapchainNeedsRecreate`, `ok = false`.
@@ -235,7 +243,7 @@ Acorda a recriação se `swapchainNeedsRecreate` estiver marcado (`recreate_swap
 Present :: proc() -> ()
 ```
 
-`vkQueuePresentKHR` na fila gráfica, aguardando o semáforo de present da imagem adquirida. `OUT_OF_DATE`/`SUBOPTIMAL` → marca `swapchainNeedsRecreate` (recuperável, nunca pânico); demais erros → `vk_check` (fatal). Pré-condição: `AcquireNextImage` bem-sucedida no mesmo frame (`imageIndex` válido).
+O fechamento do frame. `vkQueuePresentKHR` na fila gráfica, aguardando o semáforo de present da imagem adquirida. `OUT_OF_DATE`/`SUBOPTIMAL` → marca `swapchainNeedsRecreate` (recuperável, nunca pânico); demais erros → `vk_check` (fatal). Pré-condição: `AcquireNextImage` bem-sucedida no mesmo frame (`imageIndex` válido).
 
 ## Utilitários — `engine.odin`
 
@@ -245,7 +253,7 @@ Present :: proc() -> ()
 vk_check :: proc(result: vk.Result, exp := #caller_expression, location := #caller_location)
 ```
 
-O filtro único de erros Vulkan: `result != .SUCCESS` → `log.panicf` com o resultado, a expressão do chamador e o local. Toda a init e o runtime crítico passam por aqui. **Exceção deliberada**: acquire/present tratam `OUT_OF_DATE`/`SUBOPTIMAL`/`TIMEOUT`/`NOT_READY` antes de chegar a `vk_check` — ver [[sistema-engine-fundacao]].
+O filtro único de erros Vulkan — toda a init e o runtime crítico passam por aqui. `result != .SUCCESS` → `log.panicf` com o resultado, a expressão do chamador (`#caller_expression`) e o local (`#caller_location`). **Exceção deliberada**: acquire/present tratam `OUT_OF_DATE`/`SUBOPTIMAL`/`TIMEOUT`/`NOT_READY` antes de chegar a `vk_check` — ver [[sistema-engine-fundacao]].
 
 ### `load_file` (`engine.odin:244`, privada ao arquivo)
 
@@ -253,7 +261,7 @@ O filtro único de erros Vulkan: `result != .SUCCESS` → `log.panicf` com o res
 load_file :: proc(path: string, allocator: runtime.Allocator, location := #caller_location) -> []byte
 ```
 
-Leitura íntegra do arquivo ou `log.panicf` com o caminho. Usada para SPIR-V, `blocks.json` e assets (ver [[sistema-suporte]]). Quem chama é dono da liberação da fatia retornada.
+Leitura íntegra do arquivo ou `log.panicf` com o caminho — usada para SPIR-V, `blocks.json` e assets (ver [[sistema-suporte]]). Quem chama é dono da liberação da fatia retornada.
 
 ### `init_glfw` (`engine.odin:187`, privada ao arquivo)
 
@@ -261,7 +269,7 @@ Leitura íntegra do arquivo ou `log.panicf` com o caminho. Usada para SPIR-V, `b
 init_glfw :: proc()
 ```
 
-GLFW sem API de cliente (`NO_API` — Vulkan criará a surface). Registra dois callbacks que restauram `app.runtimeContext` antes de logar:
+O primeiro passo de `CreateEngine`. GLFW sem API de cliente (`NO_API` — Vulkan criará a surface). Registra dois callbacks que restauram `app.runtimeContext` antes de logar:
 
 - **Error callback**: erros do GLFW → `log.errorf`.
 - **Framebuffer size callback**: grava as novas dimensões e marca `swapchainNeedsRecreate = true` — a recriação é **adiada** para o próximo `AcquireNextImage`, nunca executada dentro do callback.
@@ -274,9 +282,11 @@ Falhas de `glfw.Init`/`CreateWindow` são fatais (`log.panic`).
 recreate_swapchain :: proc() -> bool
 ```
 
-Recuperável por construção. Janela 0×0 (minimizada) → `false`, nada é criado (`REQ-FND-FRM-03`). Com extent válida: limpa a flag, `vkDeviceWaitIdle`, destrói depth + swapchain e recria ambos com a nova extent. Frame data, timelines, VMA e layouts **sobrevivem** ao resize. Acionada apenas por `AcquireNextImage`.
+Recuperável por construção, e acionada apenas por `AcquireNextImage`. Janela 0×0 (minimizada) → `false`, nada é criado (`REQ-FND-FRM-03`). Com extent válida: limpa a flag, `vkDeviceWaitIdle`, destrói depth + swapchain e recria ambos com a nova extent. Frame data, timelines, VMA e layouts **sobrevivem** ao resize — só o que tem dimensão de janela é recriado.
 
 ## Inicialização Vulkan — `engine_vukan.odin`
+
+Cada `create_vulkan_*` desta seção é um passo da sequência de `CreateEngine` — e cada `destroy_*` correspondente é o passo espelhado de `DestroyEngine`. O passo a passo conceitual está em [[sistema-engine-fundacao]]; aqui valem os detalhes de implementação.
 
 ### `DeviceFeatureChain` (`engine_vukan.odin:22`)
 
@@ -292,7 +302,7 @@ DeviceFeatureChain :: struct {
 }
 ```
 
-A cadeia pNext de features consultada **e** requisitada na seleção de dispositivo. Serve duplo papel:
+O pacote que a seleção de dispositivo consulta e requisita. Uma "cadeia pNext" é a lista encadeada de structs que o Vulkan permite anexar a uma chamada — aqui, as features suportadas/requeridas de Vulkan 1.0 a 1.4 mais as duas extensões. Serve duplo papel:
 
 - **Consulta** (`query_device_features`): monta a cadeia, chama `vkGetPhysicalDeviceFeatures2` e devolve o que o dispositivo suporta; `collect_missing_features` compara contra a lista obrigatória e `select_physical_device` rejeita quem falta algo.
 - **Requisição** (`init_device_feature_chain` + `create_vulkan_device`): a mesma cadeia com as features obrigatórias ligadas é passada em `pNext` do `DeviceCreateInfo`.
@@ -304,6 +314,8 @@ Features obrigatórias (ver [[sistema-engine-fundacao]]): `shaderInt16`, `shader
 ```odin
 @(private) create_vulkan_instance :: proc()
 ```
+
+O passo 2 da init. Em ordem:
 
 1. Carrega os ponteiros globais via `glfwGetInstanceProcAddress`; `vk.CreateInstance == nil` → `log.assert` (fatal).
 2. Enumera layers; ativa `VK_LAYER_KHRONOS_validation` **somente se disponível** (ausente → warning e continua; `validationLayersEnabled` reflete o resultado).
@@ -329,6 +341,8 @@ Auxiliares privados da seleção de dispositivo (ver `DeviceFeatureChain` acima 
 @(private) create_vulkan_device :: proc()
 ```
 
+O passo mais importante da init — o que decide se há uma GPU que serve. Em ordem:
+
 1. `select_physical_device` → `false` (nenhum candidato serve) → `log.panic` fatal com diagnóstico acumulado.
 2. Cria 1–2 filas: gráfica sempre; de compute só se em família diferente (evita criar fila duplicada na mesma família).
 3. Habilita as extensões de device (swapchain, shader object, sync2, mesh shader + deps de SPIR-V) e a cadeia de features completa.
@@ -345,7 +359,7 @@ Auxiliares privados da seleção de dispositivo (ver `DeviceFeatureChain` acima 
 
 ### `create_vma_allocator` (`:374`) / `destroy_vma_allocator` (`:390`)
 
-Allocator VMA com flag `EXT_MEMORY_BUDGET` — prerrequisito da telemetria de VRAM ([[VS-05-telemetria-profiling|VS-05]], [[ADR-T1-telemetria-vulkan-vma|ADR-T1]]). Todas as alocações de imagem/buffer do motor passam por ele (ex.: depth buffer aqui, pools de chunks no streaming).
+Cria o allocator VMA com flag `EXT_MEMORY_BUDGET` — prerrequisito da telemetria de VRAM ([[VS-05-telemetria-profiling|VS-05]], [[ADR-T1-telemetria-vulkan-vma|ADR-T1]]). Todas as alocações de imagem/buffer do motor passam por ele (ex.: depth buffer aqui, pools de chunks no streaming).
 
 ### `create_depth_buffer` (`:397`) / `destroy_depth_buffer` (`:452`)
 
@@ -357,7 +371,7 @@ Cria as duas timelines via helper local `create_timeline`: gráfica com valor in
 
 ### `create_descriptor_layouts` (`:488`) / `destroy_descriptor_layouts` (`:573`)
 
-O contrato descriptor/push constant de todos os shaders (detalhado em [[sistema-engine-fundacao]] e [[ref-shaders]]):
+O passo que define o contrato descriptor/push constant de todos os shaders (detalhado em [[sistema-engine-fundacao]] e [[ref-shaders]]):
 
 1. **Valida limites do dispositivo** — `maxDescriptorSetStorageBuffers ≥ 22` e `maxPushConstantsSize ≥ 92`, senão `log.panicf` nominal (fatal).
 2. **Set 0**: 22 bindings — 20 `STORAGE_BUFFER` (compute/mesh/fragment) + bindings 8/9 `COMBINED_IMAGE_SAMPLER` (atlas) + binding 21 `UNIFORM_BUFFER_DYNAMIC` só fragment (realce, [[VS-20-gameplay-selecao-construcao-pulo|VS-20]]).
@@ -383,11 +397,13 @@ Por frame em voo: command pool `TRANSIENT` na família gráfica, um command buff
 
 ## Contratos transversais
 
+Para fechar, três regras que atravessam tudo o que você leu acima:
+
 - **Ordem de vida**: criação em `CreateEngine`, destruição em `DestroyEngine` na ordem inversa, `vkDeviceWaitIdle` em ambos os pontos de transição (destroy e recreate). Nenhum `destroy_*` pode falhar — não checam resultados; a pré-condição é a ordem.
 - **Fatal vs. recuperável**: init é sempre fatal; runtime só tem dois caminhos recuperáveis — frame pulado (`AcquireNextImage` → `CancelFrameReservation`) e recriação de swapchain (`AcquireNextImage`/`Present` → flag → `recreate_swapchain`).
 - **Sincronização por valor, não por objeto compartilhado mutável**: a única espera de CPU é `WaitTimelineSemaphore`; trocas main↔GPU e main↔worker usam os valores monotônicos das timelines (regras 1 e 3 do AGENTS.md quanto ao lote).
 
-## Rastreabilidade
+## Para ir mais fundo
 
 - Sistema: [[sistema-engine-fundacao]] · Macro: [[visao-geral]] · Spec: [[VS-00-fundacao-vulkan|VS-00]] · Telemetria sobre a fundação: [[VS-05-telemetria-profiling|VS-05]].
 - Módulos vizinhos: [[ref-main]] (entry point), [[ref-voxel-gpu]] (recursos sobre VMA), [[ref-shaders]] (o contrato Slang do set 0).

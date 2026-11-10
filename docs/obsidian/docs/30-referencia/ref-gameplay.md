@@ -2,12 +2,14 @@
 id: REF-GAMEPLAY
 titulo: "Referência: gameplay (mira, construção, pulo)"
 tipo: docs
-ultima_atualizacao: 2026-11-06
+ultima_atualizacao: 2026-11-09
 ---
 
 # Referência: `gameplay`
 
-Contratos struct-a-struct e proc-a-proc do módulo de gameplay: `src/engine/gameplay.odin` — mira central com realce no fragment, construção/remoção por clique (intake E1) e pulo. Contexto e porquê: [[sistema-edicao-eventos]] (intake E1, input) e [[sistema-mirror-fisica]] (raycast DDA, corpos do jogador); quadro macro: [[visao-geral]]. Genealogia: spec VS-20 (`docs/obsidian/especificacoes/VS-20-gameplay-selecao-construcao-pulo.md`), decisão ADR-G2 (`docs/obsidian/decisoes/ADR-G2-gameplay-selecao-construcao-pulo.md`).
+Este documento é a referência do módulo de gameplay — `src/engine/gameplay.odin`. Aqui você vai encontrar, um a um, cada struct e procedure do módulo: o que é, quem chama e em que ponto do frame, quais guardas rejeitam ação e que invariantes elas protegem. É a terceira parada sobre o mesmo assunto: primeiro leia [[sistema-edicao-eventos]] (como um clique vira edição via journal E1) e [[sistema-mirror-fisica]] (o raycast DDA e os corpos físicos sobre os quais o gameplay opera); o quadro macro está em [[visao-geral]]. Genealogia: spec VS-20 (`docs/obsidian/especificacoes/VS-20-gameplay-selecao-construcao-pulo.md`), decisão ADR-G2 (`docs/obsidian/decisoes/ADR-G2-gameplay-selecao-construcao-pulo.md`).
+
+Antes de começar, um aviso de desenho que vale para tudo o que segue:
 
 > **Dono das threads**: gameplay roda **inteiro na main**. Raycast e `voxel_get` leem o mirror sob `ve.mirror.mutex` (ver contenção BLK-41 em [[sistema-mirror-fisica]]); as edições saem pela única porta de produção da main, `ve_request_voxel_edit` (domínio `ve.edit.mutex`, consumo na worker — ver [[ref-edit-mirror]]). Nenhum estado do `GameplayManager` é compartilhado com outra thread.
 
@@ -24,7 +26,7 @@ Contratos struct-a-struct e proc-a-proc do módulo de gameplay: `src/engine/game
 
 #### `TargetHighlight` (`:17-20`)
 
-`{target_voxel: [3]i32, target_valid: u32}` — 16 B, espelhamento bit a bit de `TargetHighlight` em `common.slang:216` (REQ-GPL-02). Guardado por `#assert(size_of(TargetHighlight) == 16)`: qualquer mudança de layout quebre a compilação antes de chegar à GPU. É o payload do UBO dinâmico do binding 21 — ver [[ref-shaders]].
+`{target_voxel: [3]i32, target_valid: u32}` — 16 B, espelhamento bit a bit de `TargetHighlight` em `common.slang:216` (REQ-GPL-02). Guardado por `#assert(size_of(TargetHighlight) == 16)`: qualquer mudança de layout quebra a compilação antes de chegar à GPU. É o payload do UBO dinâmico do binding 21 — ver [[ref-shaders]].
 
 #### `GameplayManager` (`:24-34`)
 
@@ -52,12 +54,14 @@ No-op; não há recursos próprios (o UBO pertence a `voxel_gpu`).
 
 ## Mira e realce
 
+A mira central é a peça que alimenta tudo o mais: construção, remoção e o realce visual leem o *mesmo* resultado de raycast, tirado uma única vez por frame.
+
 #### `gameplay_update_target` (`:44`) — **main**, 1×/frame
 
-Chamada na main **após** `physics_tick` + `player_sync_camera` e **antes** do submit do frame (ordem exata em `main.odin:203-209`, REQ-GPL-01):
+Quem chama e por quê: a main, **após** `physics_tick` + `player_sync_camera` e **antes** do submit do frame (ordem exata em `main.odin:203-209`, REQ-GPL-01). A ordem importa: o raycast precisa ver o mundo já atualizado pela física do frame, e a coordenada do alvo precisa estar no UBO antes de o command buffer ser gravado.
 
-1. `physics_raycast(ve, origin, direction, GAMEPLAY_REACH)` — DDA sobre o mirror, sob `ve.mirror.mutex` (ver [[ref-physics-tracing]]). `origin`/`direction` vêm da câmera.
-2. Grava o resultado em `ve.gameplay.target` (snapshot do frame) e contabiliza `hit/miss/unknown`.
+1. `physics_raycast(ve, origin, direction, GAMEPLAY_REACH)` — o DDA sobre o mirror, sob `ve.mirror.mutex` (proc em `physics.odin`, ver [[ref-physics-tracing]]). `origin`/`direction` vêm da câmera.
+2. Grava o resultado em `ve.gameplay.target` (o snapshot do frame) e contabiliza `hit/miss/unknown`.
 3. Publica o realce: escreve `TargetHighlight` no slot `frame_index` do UBO mapeado (`target_highlight_ubo_mapped[frame_index * alignment]`). Slot `.HIT` → `target_valid = 1` + coordenada; demais → `target_valid = 0` (realce apagado).
 
 O fragment (`render.slang:282-283`) clareia o fragment cujo `floor(world_position)` igualar `target_voxel` — o desenho do realce é 100% GPU; a CPU só publica a coordenada.
@@ -66,13 +70,13 @@ O fragment (`render.slang:282-283`) clareia o fragment cujo `floor(world_positio
 
 #### `gameplay_clear_target` (`:64`)
 
-`ve.gameplay.target = {}` — invalida o alvo (REQ-GPL-07). Chamado pela main no handler de `TeleportTo` (`main.odin:156`): após teleportar câmera e corpo, o snapshot antigo ficaria stale até o próximo DDA; zerar evita clique/remoção num alvo que não é mais o exibido. O realce em si apaga no próximo `gameplay_update_target`.
+`ve.gameplay.target = {}` — invalida o alvo (REQ-GPL-07). Quem chama: a main, no handler do comando `TeleportTo` (`main.odin:156`). Por quê: após teleportar câmera e corpo, o snapshot antigo ficaria stale até o próximo DDA; zerar evita clique/remoção num alvo que não é mais o exibido. O realce em si apaga no próximo `gameplay_update_target`.
 
 ## Cliques (place / remove)
 
 #### `gameplay_mouse_press` (`:70`) — **main** (handler de `MouseButton`)
 
-Consome o snapshot `ve.gameplay.target` — nunca relê o mundo. Guardas rejeitadas somam `stats_noop` e retornam sem efeito.
+Quem chama: a main, despachando o evento `MouseButton` drenado do bus de eventos (ver [[sistema-edicao-eventos]]). O proc consome o snapshot `ve.gameplay.target` — **nunca relê o mundo**; é isso que garante que o jogador age exatamente sobre o voxel que vê realçado. Guardas rejeitadas somam `stats_noop` e retornam sem efeito.
 
 **`button == 0` — place** (`ZoneN("gameplay_place_block")`):
 1. `hit.result != .HIT` ou normal zero → noop.
@@ -91,16 +95,18 @@ Consome o snapshot `ve.gameplay.target` — nunca relê o mundo. Guardas rejeita
 
 #### `gameplay_jump` (`:114`) — **main** (callback de key press do SPACE)
 
-1. Guarda: `player == nil`, `!player.grounded` ou `player.frozen` → rejeitado (`stats_jumps_rejected`). Só pula quem está apoiado e livre.
+Quem chama: a main, no handler de `KeyPress` do SPACE. O que faz:
+
+1. Guarda: `player == nil`, `!player.grounded` ou `player.frozen` → rejeitado (`stats_jumps_rejected`). Só pula quem está apoiado e livre (o freeze é a política do solver para mundo desconhecido — ver [[sistema-mirror-fisica]]).
 2. Impulso único: `velocity.y = sqrt(2·|PHYSICS_GRAVITY|·JUMP_HEIGHT_VOXELS)` = `sqrt(2·24·1.5) ≈ 8,49 u/s` — cinemática invertida para a altura-alvo de 1,5 voxel, com a gravidade do solver ([[ref-physics-tracing]]). `stats_jumps += 1`.
 
-**Dedup do SPACE**: `gameplay_jump` roda **só no press**; o auto-repeat do GLFW é descartado pela main — `space_pressed` (`main.odin:21,525-534`) marca o press e só libera no release. Hold e auto-repeat não geram impulso extra (REQ-GPL-06). O ápice é amostrado por `player_track_jump_apex` (AC-04), ancorado em `stats_jumps_logged`.
+**Dedup do SPACE**: `gameplay_jump` roda **só no press**; o auto-repeat do GLFW é descartado pela main — `space_pressed` (`main.odin:21,525-534`) marca o press e só libera no release. Por quê: hold e auto-repeat não podem gerar impulso extra (REQ-GPL-06). O ápice é amostrado por `player_track_jump_apex` (AC-04), ancorado em `stats_jumps_logged`.
 
 ## Helpers
 
 #### `gameplay_aabb_intersects_voxel` (`:126`) — `proc "contextless"`
 
-Teste AABB-vs-voxel eixo a eixo (voxel = 1 unidade³ — regra 1 do AGENTS.md): há separação em qualquer eixo → não intersecta. Usado só pela guarda anti-autointerseção do place.
+Teste AABB-vs-voxel eixo a eixo (voxel = 1 unidade³ — regra 1 do AGENTS.md): há separação em qualquer eixo → não intersecta. Usado só pela guarda anti-autointerseção do place. É `contextless` porque roda no caminho de input da main, onde o contexto de runtime do Odin não é garantido (o mesmo motivo dos produtores contextless do bus de eventos, ver [[sistema-edicao-eventos]]).
 
 ## Contratos e invariantes (resumo)
 
@@ -110,10 +116,12 @@ Teste AABB-vs-voxel eixo a eixo (voxel = 1 unidade³ — regra 1 do AGENTS.md): 
 - Pulo é impulso no press, grounded e não-congelado; altura derivada de `JUMP_HEIGHT_VOXELS` e `PHYSICS_GRAVITY`.
 - Todo estado é da main; a única fronteira cross-thread é o intake do E1 (mutex) e as leituras de mirror (mutex) — nunca há write-write.
 
-## Cross-references
+## Para ir mais fundo
 
+- [[sistema-edicao-eventos]] — como o clique vira journal E1 (intake na main, pipeline na worker, feedback de rejeições).
+- [[sistema-mirror-fisica]] — raycast DDA, corpos AABB e a política de freeze do solver.
 - [[ref-main]] — ordem do frame, handlers de input, dedup do SPACE, rastreador de ápice.
 - [[ref-physics-tracing]] — `physics_raycast` (DDA), `PhysicsRayHit`, `PhysicsBody`, `PHYSICS_GRAVITY`, `physics_tick`.
 - [[ref-edit-mirror]] — `ve_request_voxel_edit`, coalescência, feedback do E1.
 - [[ref-voxel-gpu]] / [[ref-voxel-render]] / [[ref-shaders]] — UBO dinâmico do binding 21, offset por frame, `TargetHighlight` no Slang.
-- [[sistema-edicao-eventos]], [[sistema-mirror-fisica]], [[visao-geral]].
+- [[visao-geral]] — quadro macro do motor.

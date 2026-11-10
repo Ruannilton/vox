@@ -7,13 +7,17 @@ ultima_atualizacao: 2026-11-09
 
 # Referência: `voxel_gpu` — repositório de recursos GPU
 
-Módulo: `src/engine/voxel_gpu.odin` (package `engine`). Contém o acervo de buffers, imagens, pipelines e o descriptor set **shared** que alimenta todo o pipeline de voxels (worldgen, pack, edição, mesh, fragment). É o "inventário" do motor: ele não orquestra trabalho (isso é [[ref-voxel-engine-worker|voxel_engine/worker]]) nem desenha (isso é [[ref-voxel-render|voxel_render]]) — ele **cria, carrega e nomeia** os recursos.
+Este módulo é o **depósito de recursos GPU** do motor: o lugar onde todos os buffers, imagens, pipelines e o descriptor set da renderização de voxels são criados, carregados e nomeados. Ele não orquestra trabalho (isso é da worker — [[ref-voxel-engine-worker|voxel_engine/worker]], narrativa em [[sistema-streaming-mundo]]) nem desenha (isso é da render — [[ref-voxel-render|voxel_render]], narrativa em [[sistema-renderizacao]]). Ele é o inventário: se existe um handle Vulkan que o pipeline de voxels usa, foi aqui que ele nasceu.
 
-Contexto: [[visao-geral]], [[sistema-engine-fundacao]], [[sistema-renderizacao]], [[sistema-suporte]].
+Se você está lendo pela primeira vez, a ordem sugerida é [[visao-geral]] → [[sistema-renderizacao]] → [[sistema-suporte]] → este documento. Os três primeiros explicam *por que* esses recursos existem; aqui é a lista exata do que existe, binding por binding.
+
+Módulo: `src/engine/voxel_gpu.odin` (package `engine`).
 
 ---
 
 ## Constantes e dados built-in
+
+Antes dos buffers, três capacidades fixas e os quatro arrays de geometria embutida — os dados que alimentam o caminho de fallback (seção mais abaixo):
 
 | Símbolo | Valor | Papel |
 | --- | --- | --- |
@@ -24,51 +28,57 @@ Contexto: [[visao-geral]], [[sistema-engine-fundacao]], [[sistema-renderizacao]]
 | `BUILTIN_PLANT_VERTICES` | `[8][3]f32` | Planta built-in: 2 quads diagonais em cruz. |
 | `BUILTIN_PLANT_TRIANGLES` | `[4][4]u32` | 4 triângulos da planta; índice de face = `CULL_FACE_NEVER` (sempre desenhada, sem culling por face). |
 
+O que é um template de malha e por que a geometria vive como dicionário em vez de malha pronta, você já viu em [[sistema-renderizacao]] — aqui só registramos os dados embutidos que replicam os templates do `assets/blocks.json`.
+
 ---
 
 ## `VoxelGpu` — a struct central
 
-Instância global única `voxel_gpu: VoxelGpu`. Todos os campos são criados em `voxel_gpu_init` e destruídos em `voxel_gpu_destroy`.
+Uma instância global única, `voxel_gpu: VoxelGpu`, é criada em `voxel_gpu_init` e destruída em `voxel_gpu_destroy`. Pense nela como a ficha de estoque do depósito: um campo por recurso, um binding por buffer. Os tamanhos de todos os buffers derivam do `Config` (lido do `vox.ini` — a narrativa do dimensionamento está em [[sistema-suporte]], espec VS-08).
 
 ### Buffers
 
-| Campo | Binding | Uso / por que existe |
+Estes são os 21 bindings do descriptor set (o que um descriptor set é: a "tomada" Vulkan que conecta buffers e imagens aos shaders; um único set é compartilhado por todos os pipelines, escrito uma vez no init). Para cada buffer abaixo, a pergunta que importa é sempre a mesma: **quem escreve, quem lê, quando**.
+
+| Campo | Binding | Quem escreve / quem lê / quando |
 | --- | --- | --- |
-| `scratch` | 0 | Grid denso u32 de trabalho (`config.scratch_chunks × 32768`). Alvo do `generate_voxels` e fonte do `pack_chunk`. Layout **x-contíguo** (diferente do mirror y-contíguo — regra 7 do AGENTS.md). |
-| `generation_jobs` (host-mapped) | 1 | Um `ChunkGenerationJob` por chunk em geração; a CPU escreve e a compute consome. Mapeado (`generation_jobs_mapped`). |
-| `occupancy_pool` | 2 | Bitmask de ocupação por slot residente (`config.resident_slots × OCCUPANCY_WORDS_PER_CHUNK`). `TRANSFER_SRC/DST` — fonte de readback de debug e exportação. |
-| `material_plane_pool` | 3 | Planos de bits de paleta por slot (`MATERIAL_WORDS_PER_CHUNK` words). Codificação packed que o mesh shader decodifica. |
-| `chunk_headers` | 4 | Um `ChunkHeader` por slot (paleta, `plane_count`, flags). |
-| `special_voxel_records` | 5 | Registros de voxels especiais por slot (`SPECIAL_RECORDS_PER_CHUNK`). |
-| `block_registry` | 6 | 256 `BlockDefinition` (template de mesh, faces de albedo, flags). `TRANSFER_DST` — preenchido uma vez no init. |
-| `visible_chunks` (host-mapped) | 7 | Lista de chunks visíveis por frame em voo (`NUM_FRAMES_IN_FLIGHT × config.visible_capacity`); a CPU monta o frame e a compute consome. |
-| `mesh_templates` | 10 | 256 `MeshTemplate` (offsets de vértices/triângulos/UVs, `worst_case_tris`, flags). |
-| `template_vertices` | 11 | Pool de vértices dos templates (stride 16 B, `float4` std430). |
-| `template_triangles` | 12 | Pool de triângulos packed (`pack_template_triangle`: índices + face). |
-| `template_uvs` | 19 | Pool de UVs paralelo a `template_vertices`, indexado por `MeshTemplate.uv_offset` (VS-11). `TRANSFER_SRC` para o readback de validação (VS-12). |
-| `work_queue` | 17 | Fila de trabalho indireta por frame em voo (`NUM_FRAMES_IN_FLIGHT × config.work_queue_slot_words`). `INDIRECT_BUFFER` — consumida pelo draw mesh. |
-| `edit_jobs` (host-mapped) | 13 | `EditChunkJob` por flush (`NUM_FRAMES_IN_FLIGHT × MAX_EDIT_JOBS_PER_FLUSH`). |
-| `voxel_edits` (host-mapped) | 14 | Edições voxel a voxel (`MAX_EDITS_PER_FLUSH` por frame). |
-| `edit_results` (host-mapped) | 15 | Feedback por edição. `HOST_ACCESS_RANDOM` — a CPU lê o resultado **2 frames depois**. |
-| `mirror_export_ring` (host-mapped) | 16 | Ring de exportação denso u16 (`config.mirror_ring_slots × 32768`). 1 claim = 1 slot; só o handler de conclusão libera (regra 4). |
-| `mirror_heightmap_ring` (host-mapped) | 20 | Ring paralelo de heightmaps u16 (1.024 por slot, 2 KiB); **mesmo índice de slot** do ring denso (VS-13). |
-| `chunk_result_flags` (host-mapped) | 18 | Flags de resultado do pack por slot residente (VS-10). `HOST_ACCESS_RANDOM` — CPU lê após a timeline do lote (B1). |
-| `target_highlight_ubo` (host-mapped) | 21 | UBO dinâmico do realce de alvo (VS-20). `NUM_FRAMES_IN_FLIGHT` slots com stride `target_highlight_alignment` (≥ `minUniformBufferOffsetAlignment`); o offset do slot vem do bind por frame. |
+| `scratch` | 0 | Grid denso u32 de trabalho (`config.scratch_chunks × 32768`). O compute `generate_voxels` **escreve** a worldgen nele; o compute `pack_chunk` **lê** para compactar. Layout **x-contíguo** (diferente do mirror y-contíguo — regra 7 do AGENTS.md). |
+| `generation_jobs` (host-mapped) | 1 | Um `ChunkGenerationJob` por chunk em geração. A **CPU** (worker, ao montar o lote) escreve; a **compute** de geração consome. Host-mapped = mapeado na RAM, escrito por ponteiro direto (`generation_jobs_mapped`). |
+| `occupancy_pool` | 2 | Bitmask de ocupação por slot residente (`config.resident_slots × OCCUPANCY_WORDS_PER_CHUNK`). O **pack** escreve; builder e mesh shader leem. `TRANSFER_SRC/DST` — fonte de readback de debug e exportação. |
+| `material_plane_pool` | 3 | Planos de bits de paleta por slot (`MATERIAL_WORDS_PER_CHUNK` words). O **pack** escreve a codificação packed; o mesh shader decodifica. |
+| `chunk_headers` | 4 | Um `ChunkHeader` por slot (paleta, `plane_count`, flags). O **pack** escreve; todos os estágios seguintes leem. |
+| `special_voxel_records` | 5 | Registros de voxels especiais por slot (`SPECIAL_RECORDS_PER_CHUNK`). O **pack** escreve; consumidores de voxels especiais leem. |
+| `block_registry` | 6 | 256 `BlockDefinition` (template de mesh, faces de albedo, flags). Preenchido **uma vez no init** (por `upload_asset_registry` ou `upload_block_registry`). `TRANSFER_DST`. |
+| `visible_chunks` (host-mapped) | 7 | Lista de chunks visíveis por frame em voo (`NUM_FRAMES_IN_FLIGHT × config.visible_capacity`). A **CPU** monta o frame no publish; o builder da fila de trabalho consome. |
+| `mesh_templates` | 10 | 256 `MeshTemplate` (offsets de vértices/triângulos/UVs, `worst_case_tris`, flags). Preenchido **no init**; lido pelo mesh shader todo frame. |
+| `template_vertices` | 11 | Pool de vértices dos templates (stride 16 B, `float4` std430). Preenchido **no init**; lido pelo mesh shader. |
+| `template_triangles` | 12 | Pool de triângulos packed (`pack_template_triangle`: índices + face). Preenchido **no init**; lido pelo mesh shader. |
+| `template_uvs` | 19 | Pool de UVs paralelo a `template_vertices`, indexado por `MeshTemplate.uv_offset` (VS-11). Preenchido **no init**. `TRANSFER_SRC` para o readback de validação (VS-12). |
+| `work_queue` | 17 | Fila de trabalho indireta por frame em voo (`NUM_FRAMES_IN_FLIGHT × config.work_queue_slot_words`). O **builder** (compute `build_work_queue`) escreve; o draw mesh indireto consome (`INDIRECT_BUFFER`). Narrativa completa em [[sistema-renderizacao]]. |
+| `edit_jobs` (host-mapped) | 13 | `EditChunkJob` por flush (`NUM_FRAMES_IN_FLIGHT × MAX_EDIT_JOBS_PER_FLUSH`). A **CPU** grava no flush da worker; o compute de edição consome. |
+| `voxel_edits` (host-mapped) | 14 | Edições voxel a voxel (`MAX_EDITS_PER_FLUSH` por frame). A **CPU** grava no flush; o compute de edição consome. |
+| `edit_results` (host-mapped) | 15 | Feedback por edição. O compute de edição escreve; a **CPU lê o resultado 2 frames depois**. `HOST_ACCESS_RANDOM`. |
+| `mirror_export_ring` (host-mapped) | 16 | Ring de exportação denso u16 (`config.mirror_ring_slots × 32768`). O compute de geração escreve (a escrita **é** o readback — a ponte GPU→RAM de [[visao-geral]]); a worker lê para atualizar o mirror. 1 claim = 1 slot; só o handler de conclusão libera (regra 4). |
+| `mirror_heightmap_ring` (host-mapped) | 20 | Ring paralelo de heightmaps u16 (1.024 por slot, 2 KiB); **mesmo índice de slot** do ring denso (VS-13). Mesmo protocolo de quem escreve/lê acima. |
+| `chunk_result_flags` (host-mapped) | 18 | Flags de resultado do pack por slot residente (VS-10). O pack escreve; a **CPU lê após a timeline do lote** (B1). `HOST_ACCESS_RANDOM`. |
+| `target_highlight_ubo` (host-mapped) | 21 | UBO dinâmico do realce de alvo (VS-20). `NUM_FRAMES_IN_FLIGHT` slots com stride `target_highlight_alignment` (≥ `minUniformBufferOffsetAlignment`); a CPU grava o alvo a cada frame, e o offset do slot vem do bind por frame. |
 | `dummy_buffer` | — | Buffer de 16 B sem binding — placeholder para writes/binds que precisam de um handle válido. |
 
 ### Imagens e sampler
 
 | Campo | Binding | Papel |
 | --- | --- | --- |
-| `albedo_palette_image` (+ allocation/view) | 8 | `Texture2DArray` R8G8B8A8: uma camada por textura de albedo (ordem de definição no JSON) ou as camadas de paleta procedural do fallback (VS-12). Uso `SAMPLED | TRANSFER_DST | TRANSFER_SRC` (o `SRC` é para o readback de paridade, VS-21). |
+| `albedo_palette_image` (+ allocation/view) | 8 | `Texture2DArray` R8G8B8A8: uma camada por textura de albedo (ordem de definição no JSON) ou as camadas de paleta procedural do fallback (VS-12). Uso `SAMPLED | TRANSFER_DST | TRANSFER_SRC` (o `SRC` é para o readback de paridade, VS-21). Decodificação das PNGs e estilo NEAREST: [[sistema-suporte]]. |
 | `pbr_dummy_image` (+ allocation/view) | 9 | Textura 1×1 preta que ocupa o slot PBR do layout — o caminho de amostragem PBR existe sem custo real. |
-| `texture_sampler` | 8/9 | `NEAREST` sem mipmaps (texel nítido, `maxLod = 0`), `REPEAT` nos 3 eixos (VS-21, REQ-TEX-03). |
+| `texture_sampler` | 8/9 | `NEAREST` sem mipmaps (texel nítido, `maxLod = 0`), `REPEAT` nos 3 eixos (VS-21, REQ-TEX-03). O sampler (o objeto que diz à GPU *como* ler um texel) é único e serve aos dois bindings; a história visual dele está em [[sistema-suporte]]. |
 
 ### Vulkan "plumbing"
 
+O acervo da struct vai além de buffers: aqui moram os objetos que os shaders e a fila usam diretamente.
+
 | Campo | Papel |
 | --- | --- |
-| `descriptor_pool` / `descriptor_set` | Pool com `maxSets = 1` e o único descriptor set do módulo, compartilhado por todos os pipelines. |
+| `descriptor_pool` / `descriptor_set` | **Descriptor pool** é a reserva de memória de onde descriptor sets são alocados; aqui o pool tem `maxSets = 1` e existe exatamente **um** descriptor set, compartilhado por todos os pipelines. Um set só precisa porque todo shader do motor lê os mesmos buffers — um único ponto de ligação, escrito uma vez no init (detalhes na seção "Descriptor set" abaixo). |
 | `shader_module` | `voxel.spv` — entry points `generate_voxels` e `pack_chunk`. |
 | `edit_shader_module` | `edit.spv` — entry point `main`. |
 | `render_shader_module` | `render.spv` — entry points compute `build_work_queue`/`finalize_work_queue` e gráficos `build_brick_mesh`/`shade_voxel`. |
@@ -85,9 +95,11 @@ Instância global única `voxel_gpu: VoxelGpu`. Todos os campos são criados em 
 
 ## `voxel_gpu_init` — ordem e por quê
 
+O init é uma sequência deliberada — cada etapa só funciona porque a anterior já criou o que ela usa:
+
 1. **Command pool + buffers** (`config.batches_in_flight`, VS-08) — precisam existir antes de tudo porque os uploads de assets usam `compute_command_buffers[0]`.
 2. **Criação de todos os buffers** — tamanhos derivados do `Config` (VS-08); host-mapped onde a CPU escreve/lê diretamente. `target_highlight_alignment` = `max(256, minUniformBufferOffsetAlignment)`.
-3. **Upload de assets com fallback built-in** — se `voxel_assets.loaded` (VS-12): `upload_asset_templates` + `upload_asset_registry` + `upload_asset_textures`; senão: `upload_builtin_templates` + `upload_block_registry` + `upload_palette_textures`. Paridade total entre os dois caminhos.
+3. **Upload de assets com fallback built-in** — se `voxel_assets.loaded` (VS-12): `upload_asset_templates` + `upload_asset_registry` + `upload_asset_textures`; senão: `upload_builtin_templates` + `upload_block_registry` + `upload_palette_textures`. Paridade total entre os dois caminhos (seção abaixo).
 4. **Módulos de shader + pipelines** — assets antes, pipelines depois; `voxel_render_pipeline_create()` por último dos pipelines.
 5. **Descriptor pool/set** — pool com 3 `poolSizes` (STORAGE × `DESCRIPTOR_SET_BINDING_COUNT`, COMBINED_IMAGE_SAMPLER × 2, UNIFORM_BUFFER_DYNAMIC × 1) e writes (ver abaixo).
 6. **Telemetria de nomes** — `telemetry_name_object` em buffers e pipelines (VK_EXT_debug_utils, via [[ref-physics-tracing|telemetry]]).
@@ -95,31 +107,33 @@ Instância global única `voxel_gpu: VoxelGpu`. Todos os campos são criados em 
 
 ## `voxel_gpu_destroy` — ordem inversa
 
-Descriptor pool → pipelines (mesh, edit, finalize, build, pack, generate) → módulos de shader → free/destroy do command pool → sampler → views/imagens VMA → **todos os buffers na ordem inversa da criação** → zera a struct global. Invariante: nenhum trabalho em voo (chamado no shutdown do engine).
+Descriptor pool → pipelines (mesh, edit, finalize, build, pack, generate) → módulos de shader → free/destroy do command pool → sampler → views/imagens VMA → **todos os buffers na ordem inversa da criação** → zera a struct global. Invariante: nenhum trabalho em voo (chamado no shutdown do engine). Repare que no uso diário esse caminho nem roda — o motor faz fast-exit; o teardown completo é validado com `--full-teardown` (smokes/CI), como explica [[sistema-suporte]].
 
 ---
 
 ## Helper de buffer e staging/upload
+
+Nenhum buffer nasce de um `vk.CreateBuffer` solto: todos passam por estes helpers, que encapsulam a alocadora VMA (Vulkan Memory Allocator — quem gerencia as heaps de VRAM; introduzida em [[sistema-suporte]]). Duas ideias unem a tabela: **device-local** significa que só a GPU acessa de forma eficiente (a CPU precisa de staging), e **staging** é o padrão de upload em dois passos — a CPU escreve num buffer mapeado na RAM, depois um `CmdCopyBuffer` transfere para o buffer device-local.
 
 | Proc | Visibilidade | Contrato |
 | --- | --- | --- |
 | `gpu_buffer_create` | package (`gpu_buffer.odin`) | Cria `GpuBuffer` device-local via VMA (`usage = .AUTO`, sem flags). |
 | `gpu_buffer_destroy` | package | `vma.DestroyBuffer` + zera a struct; no-op se handle vazio. |
 | `gpu_buffer_create_host` | privada | Wrapper de `gpu_buffer_create_host_flags` com `HOST_ACCESS_SEQUENTIAL_WRITE | .MAPPED`. |
-| `gpu_buffer_create_host_flags` | privada | Cria buffer mapeado com flags VMA arbitrárias; retorna o ponteiro mapeado (`info.pMappedData`). |
+| `gpu_buffer_create_host_flags` | privada | Cria buffer mapeado com flags VMA arbitrárias; retorna o ponteiro mapeado (`info.pMappedData`). É assim que nascem os "host-mapped" da tabela de buffers. |
 | `upload_to_device_buffer` | privada | Staging host-mapped → `CmdCopyBuffer` → submit na fila compute → `DeviceWaitIdle`. Caminho síncrono de upload; usado no init e nos readbacks. |
 | `gpu_image_2d_array_create` | privada | `R8G8B8A8_UNORM`, 1 mip, `OPTIMAL`, uso `SAMPLED|TRANSFER_DST|TRANSFER_SRC`. Se as famílias graphics/compute diferirem, `sharingMode = .CONCURRENT` com as duas famílias. |
 | `gpu_image_2d_array_view_create` | privada | View `D2_ARRAY` sobre todas as camadas. |
 | `upload_to_device_image` | privada | Staging → barrier `UNDEFINED→TRANSFER_DST_OPTIMAL` → `CmdCopyBufferToImage` → barrier `→SHADER_READ_ONLY_OPTIMAL` → submit + `DeviceWaitIdle`. |
 | `load_shader_module` | privada | Lê arquivo `.spv` do disco e cria o `vk.ShaderModule`. |
 
-Todos os uploads/readbacks de debug usam `compute_command_buffers[0]` com `ONE_TIME_SUBMIT` e espera síncrona (`DeviceWaitIdle`/`QueueWaitIdle`) — código de init/validação, não de hot path.
+Todos os uploads/readbacks de debug usam `compute_command_buffers[0]` com `ONE_TIME_SUBMIT` e espera síncrona (`DeviceWaitIdle`/`QueueWaitIdle`) — código de init/validação, não de hot path. Nada disso acontece no meio de um frame.
 
 ---
 
 ## Upload de assets e fallback built-in
 
-Duas famílias mutuamente exclusivas, selecionadas por `voxel_assets.loaded` (VS-12):
+Aqui está a ponte entre "clonei o repo" e "criei meu primeiro bloco", narrada em [[sistema-suporte]]: se `assets/blocks.json` existir, o jogo sobe com ele; se não, sobe com dados embutidos — e os dois caminhos produzem **paridade total** (mesmos bindings, mesmos layouts, zero mudança de shader). A seleção é feita por `voxel_assets.loaded` (VS-12):
 
 **Assets (`assets/blocks.json` presente):**
 - `upload_asset_templates` — templates, vértices (stride 16), triângulos e UVs do JSON para os pools 10–12 e 19.
@@ -135,18 +149,20 @@ Duas famílias mutuamente exclusivas, selecionadas por `voxel_assets.loaded` (VS
 
 ## Descriptor set — writes por binding
 
-Único set, layout `app.descriptorSetLayout`, pool `maxSets = 1`. Escrita uma vez no init:
+Como anunciado na tabela de plumbing: **um único set**, layout `app.descriptorSetLayout`, pool `maxSets = 1`, escrito uma vez no init e compartilhado por todos os pipelines. Os writes dizem, binding a binding, qual recurso da struct acima ocupa cada "tomada":
 
 - **Bindings 0–7, 10–20**: `STORAGE_BUFFER`, `range = WHOLE_SIZE`, escritos em loop sobre `binding_buffers` (pulando 8/9 e 21).
 - **Binding 8**: `COMBINED_IMAGE_SAMPLER` com `albedo_palette_view` + sampler.
 - **Binding 9**: `COMBINED_IMAGE_SAMPLER` com `pbr_dummy_view` + sampler.
 - **Binding 21**: `UNIFORM_BUFFER_DYNAMIC`, `range = target_highlight_alignment` (stride do slot; o offset do frame vem do bind dinâmico no command buffer gráfico — VS-20).
 
-Um único `vk.UpdateDescriptorSets` aplica todas as writes. O layout e os bindings espelham [[ref-shaders|common.slang]], fonte única de verdade dos layouts.
+Um único `vk.UpdateDescriptorSets` aplica todas as writes. O layout e os bindings espelham [[ref-shaders|common.slang]], fonte única de verdade dos layouts — se um dia adicionar um buffer novo, os dois lados mudam juntos.
 
 ---
 
 ## Pipelines
+
+Um **pipeline** Vulkan é o objeto compilado que junta um shader a um estado fixo (layouts, formatos, modos de cull). Aqui ficam os seis do módulo — o que cada um faz no frame você já viu narrado passo a passo em [[sistema-renderizacao]]:
 
 | Pipeline | Módulo / entry point | Papel |
 | --- | --- | --- |
@@ -163,11 +179,11 @@ Todos os computes usam `app.computePipelineLayout` — o mesmo layout do descrip
 
 ## Debug readback e paridade
 
-Validações síncronas (staging + copy + wait) disparadas no init ou sob demanda. O **F7** (`key_handler` em `main.odin`) chama `debug_validate_run` + `debug_heights_parity` (VS-19, AC-04).
+Fecho da visita: como o depósito se audita. **Readback** é a operação inversa do staging — copiar um buffer device-local de volta para a RAM e inspecionar. Estas validações síncronas (staging + copy + wait) rodam no init ou sob demanda; o **F7** (`key_handler` em `main.odin`) chama `debug_validate_run` + `debug_heights_parity` (VS-19, AC-04). A regra de ouro: a CPU nunca reproduz o worldgen — a comparação é sempre packed×denso, ambos derivados do mesmo scratch GPU (C2).
 
 | Proc | Visibilidade | O que valida |
 | --- | --- | --- |
-| `debug_readback_validate` | privada | Escolhe um chunk concluído (preferência: página `MATERIALIZED` na faixa y ≤ 0) e faz dois readbacks. **(a)** `template_vertices` (+ `template_uvs` quando há assets) contra os dados-fonte (JSON ou built-ins — VS-12). **(b)** Header + occupancy + planos do slot; se a página do mirror está `MATERIALIZED`, decodifica o packed voxel a voxel (mesmo decode bit a bit de `tools/sim/pack_sim.py`) e compara com o grid denso u16 do mirror, incluindo o bit sólido (mirror exclui planta — VS-14). Sem página, só invariantes estruturais. Checa também o **invariante AR**: `palette[0] == 0`. A CPU nunca reproduz o worldgen — a comparação é sempre packed×denso, ambos derivados do mesmo scratch GPU (C2). |
+| `debug_readback_validate` | privada | Escolhe um chunk concluído (preferência: página `MATERIALIZED` na faixa y ≤ 0) e faz dois readbacks. **(a)** `template_vertices` (+ `template_uvs` quando há assets) contra os dados-fonte (JSON ou built-ins — VS-12). **(b)** Header + occupancy + planos do slot; se a página do mirror está `MATERIALIZED`, decodifica o packed voxel a voxel (mesmo decode bit a bit de `tools/sim/pack_sim.py`) e compara com o grid denso u16 do mirror, incluindo o bit sólido (mirror exclui planta — VS-14). Sem página, só invariantes estruturais. Checa também o **invariante AR**: `palette[0] == 0`. |
 | `debug_texture_parity` | package | Readback da `albedo_palette_image` (barrier `SHADER_READ_ONLY_OPTIMAL → TRANSFER_SRC_OPTIMAL → …` de volta) e comparação byte a byte com `voxel_assets.texture_pixels` (flip incluído — VS-21, AC-01/AC-04). Executada ao final de todo `voxel_gpu_init`. Sem assets, checagem estrutural apenas (pula). |
 | `debug_texture_validate` | package | Ponto de entrada público: apenas chama `debug_texture_parity`. |
 | `debug_validate_run` | package | Ponto de entrada público da validação packed×denso (a rotina é privada deste arquivo); usada pelo hook F7. |
@@ -179,7 +195,7 @@ Validações síncronas (staging + copy + wait) disparadas no init ou sob demand
 
 ## Telemetria de nomes
 
-Ao final do init, `telemetry_name_object` ([[ref-physics-tracing|telemetry.odin]], VK_EXT_debug_utils) nomeia os handles para o renderdoc/validation layer/Tracy GPU:
+Ao final do init, `telemetry_name_object` ([[ref-physics-tracing|telemetry.odin]], VK_EXT_debug_utils) nomeia os handles — é o que faz um frame aparecer legível no RenderDoc/Nsight e no Tracy GPU:
 
 - **Buffers**: `scratch_dense`, `occupancy_pool`, `material_plane_pool`, `chunk_headers`, `visible_chunks`, `work_queue`, `edit_jobs`, `voxel_edits`, `edit_results`, `mirror_export_ring`, `mirror_heightmap_ring`, `chunk_result_flags`, `template_uvs`, `target_highlight_ubo`.
 - **Pipelines**: `pipeline_generate`, `pipeline_pack`, `pipeline_apply_voxel_edits`, `pipeline_build_work_queue`, `pipeline_finalize_work_queue`, `pipeline_mesh_draw`.
@@ -195,3 +211,8 @@ Note que `generation_jobs`, `mesh_templates`, `template_vertices`, `template_tri
 - [[ref-voxel-render]] — criação/uso do `mesh_pipeline` e da fila de trabalho.
 - [[ref-assets-config-events]] — `voxel_assets`, `config` (dimensionamento VS-08).
 - [[ref-shaders]] — bindings 0–21 espelhados em `common.slang`.
+
+## Para ir mais fundo
+
+- [[visao-geral]] para o macro do motor, [[sistema-renderizacao]] para a narrativa dos passos por frame, [[sistema-suporte]] para assets/config/telemetria.
+- Genealogia: `../especificacoes/` (VS-08 para o dimensionamento, VS-12 para o fallback, VS-21 para texturas) e `../decisoes/`.

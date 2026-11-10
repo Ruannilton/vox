@@ -7,9 +7,13 @@ ultima_atualizacao: 2026-11-09
 
 # Referência — package main (`main.odin`, `camera.odin`, `utils.odin`)
 
-A camada mais externa da aplicação: ponto de entrada, loop principal, jogador (input → corpo físico → câmera), câmera livre e o utilitário de checagem Vulkan. Tudo aqui é orquestração — o trabalho real vive nos módulos `engine` (ver [[ref-engine]], [[ref-voxel-engine-worker]], [[ref-voxel-render]], [[ref-physics-tracing]]). Contexto macro: [[visao-geral]]; sistemas correspondentes: [[sistema-engine-fundacao]] (init/janela/swapchain), [[sistema-edicao-eventos]] (bus de eventos, journal E1), [[sistema-mirror-fisica]] (corpo do jogador e física).
+Bem-vindo à camada mais externa do motor. Este documento cobre o package `main` — o arquivo `main.odin`, que contém o ponto de entrada, o loop principal e o jogador (input → corpo físico → câmera), o arquivo `camera.odin`, com a câmera livre, e o arquivo `utils.odin`, com um único utilitário de checagem Vulkan.
+
+Antes de mergulhar, vale fixar uma ideia: **tudo aqui é orquestração**. Nenhum trabalho pesado acontece neste package — o init Vulkan, o streaming de chunks, o render e a física vivem nos módulos `engine`, documentados em [[ref-engine]], [[ref-voxel-engine-worker]], [[ref-voxel-render]] e [[ref-physics-tracing]]. Se você está chegando agora, leia primeiro [[visao-geral]] para o pipeline macro e [[sistema-engine-fundacao]] para entender init/janela/swapchain; os sistemas [[sistema-edicao-eventos]] (bus de eventos, journal E1) e [[sistema-mirror-fisica]] (corpo do jogador e física) dão o contexto das seções correspondentes abaixo.
 
 ## Constantes do jogador (`main.odin:25-29`)
+
+Estas constantes definem as medidas do jogador que todo o resto do package assume. Elas são lidas pelo solver de física (tamanho do corpo), pelas funções de movimento (velocidade) e pelo código que ancora a câmera nos olhos:
 
 | Constante | Valor | Papel |
 | --- | --- | --- |
@@ -23,6 +27,8 @@ Invariante: o corpo é criado com os pés `PLAYER_EYE_HEIGHT` abaixo da câmera 
 
 ## Estado global do package (`main.odin:13-23`)
 
+O package `main` mantém um punhado de variáveis globais — isto é de propósito: são o estado da aplicação inteira, acessado pelo loop principal e pelos handlers do bus de eventos. Cada uma abaixo já diz quem a lê e quem a escreve:
+
 - `camera: Camera` — a câmera da aplicação; a worker a recebe por cópia no pedido de frame.
 - `voxel_engine: ^engine.VoxelEngine` — handle global do motor (init em `main`, usado por todos os handlers).
 - `last_x, last_y: f64`, `first_cursor_event: bool` — estado do cursor para deltas de mouse; o primeiro evento após `CURSOR_DISABLED` só ressincroniza `last_x/last_y` sem aplicar delta (recentering do GLFW dispara posição defasada).
@@ -32,7 +38,7 @@ Invariante: o corpo é criado com os pés `PLAYER_EYE_HEIGHT` abaixo da câmera 
 
 ## `main :: proc()` (`main.odin:31`)
 
-Ponto de entrada. Sequência:
+Esta é a procedure de entrada — quem o sistema operacional chama ao iniciar o executável. Sua única função é montar o mundo na ordem certa (logging → config → assets → Vulkan → mundo → callbacks) e cair no loop principal. A sequência, passo a passo:
 
 1. **Logging**: `debug_paths_init(VERSION_STRING)` + arquivo em `engine.debug_log_path`; logger multi (console + arquivo); banner de versão.
 2. **Pré-janela**: `events_init` → `config_load` → `assets_load` (parsing/validação de assets antes da janela; ausência cai em fallback built-in — REQ-AST-06). Flags de replay/config são validadas fatalmente aqui ([[sistema-edicao-eventos]]).
@@ -48,7 +54,7 @@ Ponto de entrada. Sequência:
 
 ### Loop principal — fases por frame (`main.odin:181-424`)
 
-Cada iteração é uma zone Tracy `frame`; `free_all(context.temp_allocator)` abre o frame.
+Aqui é onde o jogo vive. Cada iteração desta área é uma zone Tracy `frame`, aberta com `free_all(context.temp_allocator)` — tudo alocado com o temp allocator dentro do frame é descartado de uma vez no próximo. As fases, na ordem em que acontecem:
 
 1. **`events_drain`** — `events_replay_feed(now)` + `events_drain()`: dreno único do bus (input + comandos de replay); `events_should_exit_after_replay` pode fechar a janela ([[sistema-edicao-eventos]]).
 2. **`engine_update`** — `engine.Update()` (telemetria/service de engine), `telemetry_service()`, depois:
@@ -80,6 +86,8 @@ Invariantes do loop: a main nunca espera uma rodada inteira da worker (renderiza
 
 ### Handlers registrados no bus (`main.odin:139-171`)
 
+O bus de eventos ([[sistema-edicao-eventos]]) é a fronteira entre input e estado: os callbacks GLFW só produzem eventos, e estas procedures são as únicas que consomem. A tabela diz, para cada tipo de evento, qual handler o atende e o que ele faz com o estado da aplicação:
+
 | Tipos | Handler | Efeito |
 | --- | --- | --- |
 | `KeyPress`, `KeyRelease` | `key_handler` | ESC→`CloseRequested` (registra o fechamento), F8/F9 telemetria, F7 validação debug (packed×denso + heights), SPACE→`gameplay_jump` com dedup de auto-repeat. |
@@ -91,22 +99,28 @@ Os callbacks GLFW (produtores) e os handlers (consumidores) vivem em lados opost
 
 ### Funções privadas do jogador
 
-- `update_camera_movement(delta_time)` (`main.odin:446`) — lê o conjunto de teclas pressionadas derivado do bus (`events_is_pressed`), aplica sprint, normaliza a diagonal (`×0.7071`), projeta o input na base horizontal do yaw (`forward = (cos yaw, 0, sin yaw)`, `right = (-sin yaw, 0, cos yaw)`) e **impõe** `velocity.x/z`. Contrato: input-driven — o solver integra o resto (gravidade, sweep, fricção).
+São as helpers que o loop principal e os handlers chamam para mover o jogador. Nenhuma é pública para outros módulos — toda a interação externa passa pelo bus:
+
+- `update_camera_movement(delta_time)` (`main.odin:446`) — chamada uma vez por frame durante `engine_update`. Lê o conjunto de teclas pressionadas derivado do bus (`events_is_pressed`), aplica sprint, normaliza a diagonal (`×0.7071`), projeta o input na base horizontal do yaw (`forward = (cos yaw, 0, sin yaw)`, `right = (-sin yaw, 0, cos yaw)`) e **impõe** `velocity.x/z`. Contrato: input-driven — o solver integra o resto (gravidade, sweep, fricção).
 - `player_track_jump_apex()` (`main.odin:477`) — amostra o ápice entre impulso e pouso; só abre a janela quando o corpo de fato deixou o chão.
 - `player_sync_camera()` (`main.odin:500`) — `camera.position = body.position + (hw, eye, hw)`; `target = position + direction`. É o único escritor da posição da câmera no caminho normal do frame.
 - `key_handler` / `mouse_handler` / `close_handler` — ver tabela acima.
 
 ## `Camera` e `camera_*` (`camera.odin`)
 
+Este módulo é dono do conceito de câmera: uma base ortonormal (position/direction/right/up) que o render usa para montar a view matrix. O jogador nunca a move diretamente — `player_sync_camera` (acima) posiciona ela a partir do corpo físico, e o mouse handler a gira via `camera_rotate`. O struct primeiro, depois as procedures que mantêm seus invariantes:
+
 `Camera :: struct` — câmera look-at com base ortonormal derivada: `position`, `rotation` (graus; **x: pitch, y: yaw, z: roll**), `fov`, `target`, `direction`, `up`, `right`. Invariante: `direction`/`right`/`up` são sempre ortonormais e derivados de `rotation` (via `camera_rotate`) ou de um alvo (via `camera_look_at`); `target = position + direction` sempre que a posição muda.
 
-- `camera_create(position, rotation, fov)` — constrói e normaliza a base chamando `camera_rotate(&c, {0,0,0})`.
+- `camera_create(position, rotation, fov)` — o construtor; chamado uma única vez no `main`. Constrói e normaliza a base chamando `camera_rotate(&c, {0,0,0})`.
 - `camera_view(c) -> mat4` — `mat4LookAt(position, target, up)`; a conversão para clip Vulkan (`GL_TO_VK_CLIP * projection`) é responsabilidade do chamador (`main`).
 - `camera_move(c, forward_amount, right_amount)` — desloca na base `direction`/`right` e rederiva `target`. Não usado no caminho do jogador (o movimento é pelo corpo físico).
 - `camera_look_at(c, target)` — aponta para um ponto fixo: rederiva `direction`, `right = normalize(cross(direction, up_world))`, `up = cross(right, direction)`. Não altera `rotation` (losango: `rotation` e a base podem divergir após este call — rotações subsequentes por `camera_rotate` usam `rotation`).
 - `camera_rotate(c, delta)` — aplica delta em graus a `rotation`, **clamp de pitch em ±89°** (evita gimbal na vertical), e rederiva `direction` (fórmula yaw/pitch esférica), `target`, `right`, `up`. Roll (`rotation.z`) é armazenado mas não entra na fórmula de `direction`. Chamado pelo mouse handler e por `camera_create`.
 
 ## Utilitários (`utils.odin`)
+
+O arquivo `utils.odin` tem uma única procedure — um guarda de falhas Vulkan para todo o package:
 
 - `vk_check(result, location := #caller_location)` — `log.panicf` em qualquer `vk.Result != .SUCCESS`. Usado em todos os call sites Vulkan do package main (command pool, CB, submit). Contrato: falha Vulkan é fatal, com o caller location no log.
 

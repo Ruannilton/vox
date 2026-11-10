@@ -7,15 +7,17 @@ ultima_atualizacao: 2026-11-09
 
 # Referência — physics, tracing, tracing_gpu, telemetry
 
-Três subsistemas de suporte do `engine`: o **solver de física de gameplay** (CPU, sobre o mirror C2 — [[sistema-mirror-fisica]]), o **instrumentação Tracy** (CPU e GPU, opt-in — [[sistema-suporte]]) e a **telemetria** (timestamps GPU, VRAM e export CSV/JSON). Contexto macro: [[visao-geral]]; visões de sistema: [[sistema-mirror-fisica]] (física), [[sistema-suporte]] (tracing/telemetria). Decisões: specs [[VS-19-fisica-solver-mirror]], [[VS-15-tracy-profiler]], [[VS-16-instrumentacao-detalhada]], [[VS-05-telemetria-profiling]].
+Você chegou à referência dos três subsistemas de suporte do `engine`. Se esta é a sua primeira visita, o caminho natural é ler antes as narrativas principais — [[sistema-mirror-fisica]] (o que é o mirror, por que a física é tri-state, como funciona o freeze e o fast-path de chão) e [[sistema-suporte]] (o que são Tracy e telemetria, por que o lifetime é manual, como os artefatos de debug são organizados). Este documento não repete essas histórias: ele entrega o contrato de cada procedimento e struct — quem chama, quando, e quais invariantes não podem ser quebrados. Contexto macro: [[visao-geral]]; genealogia: specs [[VS-19-fisica-solver-mirror]], [[VS-15-tracy-profiler]], [[VS-16-instrumentacao-detalhada]], [[VS-05-telemetria-profiling]].
 
-**Threads.** A física roda **somente na main** (`physics_tick` é chamada no loop principal, após o input de movimento e antes de `player_sync_camera`). Os pedidos de página que o solver coalesce (`pending_requests`) são drenados pela **worker**, sob `mirror.mutex`, em `physics_drain_requests` — o único ponto em que o solver toca o mundo por fora da main. Tracing GPU é gravado nos command buffers da main/worker e coletado nos pontos de espera já existentes. Telemetria: `telemetry_service` e `telemetry_snapshot` na main; `telemetry_collect_compute` na worker.
+Antes de começar, duas ideias de fio condutor. A **física** é o solver de gameplay (CPU, sobre o mirror C2) — roda somente na main. O **tracing** e a **telemetria** são instrumentação: o Tracy é opt-in por define de compilação (desligado, tudo vira no-op inline), e a telemetria é sempre compilada (liga/desliga em runtime).
+
+**Threads — quem chama o quê.** A física roda **somente na main**: `physics_tick` é chamada no loop principal, após o input de movimento (`update_camera_movement`) e antes de `player_sync_camera`. Os pedidos de página que o solver coalesce em `pending_requests` são drenados pela **worker**, sob `mirror.mutex`, em `physics_drain_requests` — o único ponto em que o solver toca o mundo por fora da main. O tracing GPU é gravado nos command buffers da main (fila gráfica) e da worker (compute) e coletado nos pontos de espera já existentes. A telemetria se divide assim: `telemetry_service` e `telemetry_snapshot` na main; `telemetry_collect_compute` na worker.
 
 ---
 
 ## 1. `physics.odin` — solver de corpos AABB (VS-19)
 
-Solver determinístico de gameplay sobre o mirror C2. Corpos são AABB de 1 voxel ou mais; algoritmo espelhado bit a bit por `tools/sim/physics_sim.py` (28 checks). Consulta **tri-state** ao mundo: `blocking/known/block_id` — página desconhecida **nunca** é presumida como ar (regra 2 do AGENTS.md se aplica à paleta; aqui, a ambiguidade congela o corpo).
+Determinístico, sobre o mirror C2. Corpos são AABB de 1 voxel ou mais; o algoritmo é espelhado bit a bit por `tools/sim/physics_sim.py` (28 checks). A consulta ao mundo é **tri-state** — `blocking/known/block_id` — e página desconhecida **nunca** é presumida como ar: a ambiguidade congela o corpo (a política completa está em [[sistema-mirror-fisica]]).
 
 ### Constantes (`physics.odin:15-23`)
 
@@ -51,7 +53,7 @@ Solver determinístico de gameplay sobre o mirror C2. Corpos são AABB de 1 voxe
 
 ### Ciclo de vida e tick (API pública, REQ-PHY-10)
 
-- `physics_init` / `physics_destroy` (`physics.odin:66-76`) — chamados por `voxel_engine_init`/destroy (main thread). Alocam os arrays dinâmicos e o map.
+- `physics_init` / `physics_destroy` (`physics.odin:66-76`) — chamados por `voxel_engine_init`/destroy na main thread. Alocam os arrays dinâmicos e o map.
 - `physics_body_create(ve, position, size, allow_step_up := true) -> PhysicsHandle` (`:80`) — recicla handle livre ou anexa; main thread.
 - `physics_body_remove(ve, handle)` (`:95`) — zera o slot e devolve o handle. Não desloca `bodies`.
 - `physics_body_get(ve, handle) -> ^PhysicsBody` (`:102`) — ponteiro direto; usado pelos hooks do jogador na main. Índice inválido → `nil`.
@@ -64,12 +66,12 @@ Solver determinístico de gameplay sobre o mirror C2. Corpos são AABB de 1 voxe
 ### Freeze e pedidos de página (REQ-PHY-06)
 
 - `physics_request_chunk(ve, coord)` (`:149`) — única proc que toca `mirror.mutex`: insere o pedido coalescido em `pending_requests`. Chamada por qualquer thread do solver (na prática, main; o raycast também).
-- **`physics_drain_requests(ve)`** (`:138`) — **chamada pela worker sob `mirror.mutex`** (em `mirror_update_bubble`): para cada pedido, se o chunk já está ativo, emite `mirror_request_page`; depois limpa o map. A main nunca drena.
-- `physics_unknown(ve, voxel)` (`:181`, privada) — incrementa `unknown_hits` e registra o pedido. `physics_step` compara `unknown_hits` antes/depois do passo: qualquer incremento **descarta o passo inteiro** e congela o corpo (`physics_freeze` zone): posição, velocidade e `grounded` revertem ao estado de entrada, `frozen = true`, `stats_frozen_frames += 1`. Não existe proc separada `physics_freeze_body` — o freeze é o bloco final de `physics_step` (`physics.odin:416-426`).
+- **`physics_drain_requests(ve)`** (`:138`) — **chamada pela worker sob `mirror.mutex`** (em `mirror_update_bubble`, no serviço do mundo da worker — ver [[ref-voxel-engine-worker]]): para cada pedido, se o chunk já está ativo, emite `mirror_request_page`; depois limpa o map. A main nunca drena.
+- `physics_unknown(ve, voxel)` (`:181`, privada) — incrementa `unknown_hits` e registra o pedido. `physics_step` compara `unknown_hits` antes/depois do passo: qualquer incremento **descarta o passo inteiro** e congela o corpo (zone `physics_freeze`): posição, velocidade e `grounded` revertem ao estado de entrada, `frozen = true`, `stats_frozen_frames += 1`. Não existe proc separada `physics_freeze_body` — o freeze é o bloco final de `physics_step` (`physics.odin:416-426`).
 
 ### Consulta ao mundo e primitivas privadas
 
-- `physics_voxel_query(ve, voxel) -> (blocking, known, block_id)` (`:156`) — wrapper sobre `voxel_get` + `block_is_blocking`.
+- `physics_voxel_query(ve, voxel) -> (blocking, known, block_id)` (`:156`) — wrapper sobre `voxel_get` + `block_is_blocking` (a API tri-state do mirror, introduzida em [[sistema-mirror-fisica]]).
 - `physics_aabb_voxels(pos, size) -> (lo, hi)` (`:163`, privada, `contextless`) — faixa de voxels coberta pela AABB com epsilon na fronteira superior.
 - `physics_aabb_free(ve, body, pos) -> bool` (`:189`, privada) — AABB inteiramente livre **e conhecida**; desconhecido congela o pedido e retorna false.
 - **`physics_sweep_axis(ve, body, axis, delta, contacts) -> (moved, blocked)`** (`:208`, privada) — coração do movimento: subdivide `delta` em passos de `|step| <= 0.4` (anti-tunneling), e para cada subpasso varre a AABB deslocada no eixo e calcula o **clamp** de contato mais restritivo (`c = voxel[axis] - size[axis]` subindo, `+1` descendo). Ao bloquear: move até o clamp, registra o voxel de contato, retorna `blocked = true`. Desconhecido aborta o subpasso com `blocked = true` **sem** contato — quem chama distingue pelo tamanho da lista de contatos.
@@ -86,7 +88,7 @@ Solver determinístico de gameplay sobre o mirror C2. Corpos são AABB de 1 voxe
 
 ### Raycast DDA (REQ-PHY-08/09)
 
-**`physics_raycast(ve, origin, direction, max_distance) -> PhysicsRayHit`** (`:433`, zone `physics_raycast`) — Amanatides & Woo sobre o mirror, resultado tri-state. Contratos: `max_distance > 0` e direção não nula, caso contrário retorna `.MISS` **sem percorrer a grade** (rejeição definida). Direção é normalizada internamente. A primeira célula testada é a da origem (origem dentro de voxel bloqueante → `.HIT` com `normal = {0,0,0}` e `distance = 0`). Página ausente/em readback **antes** do limite → `.UNKNOWN` com `unknown_chunk` e pedido coalescido — nunca `.MISS`. Percorre até `max_distance`, retornando `.MISS` caso atravesse apenas ar.
+**`physics_raycast(ve, origin, direction, max_distance) -> PhysicsRayHit`** (`:433`, zone `physics_raycast`) — Amanatides & Woo (o algoritmo de travessia de grid voxel a voxel, apresentado em [[sistema-mirror-fisica]]) sobre o mirror, resultado tri-state. Contratos: `max_distance > 0` e direção não nula, caso contrário retorna `.MISS` **sem percorrer a grade** (rejeição definida). Direção é normalizada internamente. A primeira célula testada é a da origem (origem dentro de voxel bloqueante → `.HIT` com `normal = {0,0,0}` e `distance = 0`). Página ausente/em readback **antes** do limite → `.UNKNOWN` com `unknown_chunk` e pedido coalescido — nunca `.MISS`. Percorre até `max_distance`, retornando `.MISS` caso atravesse apenas ar.
 
 ### Hooks do jogador (package main)
 
@@ -101,7 +103,9 @@ O solver não conhece o jogador; a main o dirige por handles:
 
 ## 2. `tracing.odin` — wrapper opt-in do Tracy (VS-15)
 
-Único módulo que importa o package `tracy` (vendored em `vendor/tracy/`). `TRACY_ENABLE :: #config(TRACY_ENABLE, false)` — com `false` (padrão de `run.bat`) **nada do Tracy é importado** e toda a API compila para no-op inline; ligado via `-define:TRACY_ENABLE=true` (`run_tracy.bat`).
+Este é o único módulo que importa o package `tracy` (vendored em `vendor/tracy/`). `TRACY_ENABLE :: #config(TRACY_ENABLE, false)` — com `false` (padrão de `run.bat`) **nada do Tracy é importado** e toda a API compila para no-op inline; ligado via `-define:TRACY_ENABLE=true` (`run_tracy.bat`). O panorama de quando usar Tracy versus telemetria está em [[sistema-suporte]] — aqui é o contrato de cada proc.
+
+Uma **zone** Tracy é um intervalo nomeado no timeline do profiler (um "começou/agora terminou" com nome e localização no código). É o bloco básico de instrumentação CPU; abaixo você verá que ela tem um dono único do `defer` de fechamento.
 
 - **`ZoneN(name, active := true)` / `Zone(name := "")`** (`tracing.odin:37-55`) — zonas CPU com par deferido único: chama `ZoneBegin` e é a única dona do `defer ZoneEnd` (`@(deferred_out=zone_end)`); delegar a `tracy.ZoneN/Zone` com defer próprio emitia dois `ZoneEnd` por zone ("zone ended twice"). Profundidade de callstack de `TRACY_CALLSTACK` (REQ-CPU-02, `run_tracy.bat` passa 10).
 - `zone_end(ctx)` — `defer` interno; não chamar diretamente.
@@ -113,7 +117,7 @@ O solver não conhece o jogador; a main o dirige por handles:
 
 ### Lifetime manual (BLK-37)
 
-A lib Tracy é compilada com `TRACY_MANUAL_LIFETIME` + `TRACY_DELAYED_INIT`: o profiler **nasce só em `TracingStartup`** (`tracing.odin:103`), chamado pela main **depois** do init Vulkan/GLFW — o client Tracy ativo desde o CRT init conflitava com `vkCreateComputePipelines` (hang). Consequências:
+A lib Tracy é compilada com `TRACY_MANUAL_LIFETIME` + `TRACY_DELAYED_INIT`: o profiler **nasce só em `TracingStartup`** (`tracing.odin:103`), chamado pela main **depois** do init Vulkan/GLFW — o client Tracy ativo desde o CRT init conflitava com `vkCreateComputePipelines` (hang). O porquê completo está em [[sistema-suporte]]; as consequências contratuais são:
 - Nenhuma API Tracy pode ser usada no intervalo de init Vulkan/GLFW (o `GetProfiler` asserta com profiler não iniciado).
 - `TracingStartup` também sobe os contextos GPU (`tracing_gpu_init`) e anuncia os locks rastreados (`tracing_locks_init`) — VS-16.
 - **`TracingShutdown(full_teardown := true)`** — com `full_teardown`, primeiro `tracing_gpu_shutdown` (drena as zonas GPU restantes com a GPU ociosa) e depois `ShutdownProfiler`. A main usa `full_teardown = false` no fast-exit (`TracingShutdown(false)` + `os.exit(0)`), pois não há teardown Vulkan; o defer completo cobre o caminho `--full-teardown`. O defer fica **antes** do destroy do voxel engine porque a worker (que emite zones) é encerrada dentro dele.
@@ -129,7 +133,7 @@ A lib Tracy é compilada com `TRACY_MANUAL_LIFETIME` + `TRACY_DELAYED_INIT`: o p
 
 ## 3. `tracing_gpu.odin` — zonas GPU do Tracy (VS-16)
 
-Zonas GPU sobre **query pools Vulkan dedicadas** (REQ-GPU-01/02/03), independentes das pools de telemetria (VS-05). Com `TRACY_ENABLE=false` tudo é no-op e **nenhuma query pool é criada**.
+Zonas GPU sobre **query pools Vulkan dedicadas** (REQ-GPU-01/02/03), independentes das pools de telemetria (VS-05). Uma **query pool** é o reservatório de "slots" de consulta do Vulkan que um command buffer preenche — o mesmo conceito já apresentado com a telemetria em [[sistema-suporte]]; aqui, um **timestamp** é uma consulta do tipo TIMESTAMP cuja leitura devolve o relógio interno da GPU naquele ponto do pipeline. Cada zona GPU = dois timestamps (início/fim) + um par de chamadas `GpuZoneBegin/End` no Tracy. Com `TRACY_ENABLE=false` tudo é no-op e **nenhuma query pool é criada**.
 
 ### Constantes e layout do ring (`tracing_gpu.odin:13-27`)
 
@@ -162,7 +166,7 @@ Cada zona usa **2 slots em par** (begin/end) alocados sequencialmente; o slot 0 
 
 ## 4. `telemetry.odin` — telemetria (VS-05)
 
-Timestamps GPU por operação, amostragem de heaps VRAM (budget VMA) e export para arquivo. **Sempre compilada** (independe do Tracy); ligada/desligada em runtime por `TELEMETRY_DEFAULT_ENABLED` (default `true`) + `telemetry_toggle` (F8). Com `times_available == false` (sem suporte de timestamp), tudo vira no-op exceto CSV de zeros.
+Timestamps GPU por operação, amostragem de heaps VRAM (budget VMA) e export para arquivo. **Sempre compilada** (independe do Tracy); ligada/desligada em runtime por `TELEMETRY_DEFAULT_ENABLED` (default `true`) + `telemetry_toggle` (F8). Com `times_available == false` (sem suporte de timestamp), tudo vira no-op exceto CSV de zeros. Se você ainda não leu [[sistema-suporte]], é lá que a telemetria é apresentada (query pool, timestamp, o que entra no CSV/JSON); aqui são os contratos.
 
 ### Constantes e structs (`telemetry.odin:12-50`)
 
@@ -204,10 +208,10 @@ Saída em `bin/debug/<version>/telemetry/` — diretório montado por `debug_pat
 - **Tracing GPU**: `zone_begin` pode omitir (`max(u16)`); o caller deve propagar o `query_id` opaco. O ring nunca cruza o slot de sync nem o fim físico do pool.
 - **Telemetria**: `results_mutex` protege `last_times_us` (leitores: service/snapshot; escritor: publish_pair). `gfx_slot_submitted` deve ser marcado pela renderização após o primeiro submit do slot, sob pena de violar o VUID 09401. Telemetria e tracing GPU usam pools **separadas** — não reutilizar uma na outra.
 
-## Ver também
+## Para ir mais fundo
 
-- [[sistema-mirror-fisica]] — modelo de dados do mirror e ciclo do solver.
-- [[sistema-suporte]] — Tracy, telemetria e versionamento no contexto do motor.
+- [[sistema-mirror-fisica]] — modelo de dados do mirror e ciclo do solver (narrativa principal da física).
+- [[sistema-suporte]] — Tracy, telemetria e versionamento no contexto do motor (narrativa principal da instrumentação).
 - [[ref-voxel-engine-worker]] — worker, `mirror_update_bubble` (drain de pedidos) e coleta compute.
 - [[ref-voxel-render]] — onde `tracing_gpu_record_context` e os timestamps gráficos são gravados.
 - Specs: [[VS-19-fisica-solver-mirror]], [[VS-15-tracy-profiler]], [[VS-16-instrumentacao-detalhada]], [[VS-05-telemetria-profiling]].
