@@ -1,0 +1,535 @@
+package engine
+	constants
+		ACQUIRE_TIMEOUT_NS :: 100_000_000
+		ALBEDO_PALETTE_LAYERS :: 256
+		ALBEDO_PALETTE_LAYER_SIZE :: 16
+			VS-21 correção: era 4 — com o sampler NEAREST, a UV por face e a
+			minificação extrema dos blocos distantes (visão 22), a paleta 4×4×256
+			causava DEVICE_LOST reproduzível no caminho built-in (5/5; com 16×16,
+			estável 3/3). 16×16 é o padrão dos assets reais; camada = cor sólida.
+
+		ASSETS_DEFAULT_PATH :: "assets/blocks.json"
+		BLOCK_DEFINITION_FLAG_NON_SOLID :: 2
+			VS-14 (emenda 2026-11-07): bit 1 — bloco ocupa o voxel mas não é sólido
+			(planta). Espelha common.slang.
+
+		BLOCK_DEFINITION_FLAG_TRANSPARENT :: 1
+			VS-14 (REQ-PLT-01): bit 0 de BlockDefinition.flags — bloco com recorte
+			alpha (folhagem); o fragment descarta albedo.a < 0.5. Espelha common.slang.
+
+		BLOCK_REGISTRY_CAPACITY :: 256
+		BRICKS_PER_CHUNK :: 1024
+		BUILTIN_CUBE_TRIANGLES :: [12][4]u32{{0, 1, 2, 1}, {0, 2, 3, 1}, {4, 6, 5, 0}, {4, 7, 6, 0}, {8, 9, 10, 2}, {8, 10, 11, 2}, {12, 13, 14, 3}, {12, 14, 15, 3}, {16, 17, 18, 4}, {16, 18, 19, 4}, {20, 21, 23, 5}, {20, 23, 22, 5}}
+		BUILTIN_CUBE_VERTICES :: [24][3]f32{{0, 0, 0}, {0, 0, 1}, {0, 1, 1}, {0, 1, 0}, {1, 0, 0}, {1, 0, 1}, {1, 1, 1}, {1, 1, 0}, {0, 1, 1}, {1, 1, 1}, {1, 1, 0}, {0, 1, 0}, {0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {0, 0, 1}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}, {0, 0, 0}, {0, 1, 0}, {1, 0, 0}, {1, 1, 0}}
+			VS-21 correção: 24 vértices (4 por face) com UVs [0,1]² por face — a
+			projeção planar da VS-11 deixava U constante nas faces ±X e V constante
+			nas ±Z (listra de uma coluna de texel esticada nas laterais).
+
+		BUILTIN_PLANT_TRIANGLES :: [4][4]u32{{0, 1, 2, CULL_FACE_NEVER}, {0, 2, 3, CULL_FACE_NEVER}, {4, 5, 6, CULL_FACE_NEVER}, {4, 6, 7, CULL_FACE_NEVER}}
+		BUILTIN_PLANT_VERTICES :: [8][3]f32{{0, 0, 0}, {1, 0, 1}, {1, 1, 1}, {0, 1, 0}, {1, 0, 0}, {0, 0, 1}, {0, 1, 1}, {1, 1, 0}}
+		CHUNK_FLAG_EMPTY :: 1
+		CHUNK_FLAG_PALETTE_OVERFLOW :: 2
+		CHUNK_SIZE :: 32
+		CHUNK_VOXEL_COUNT :: CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE
+		COARSE_WORDS_PER_CHUNK :: 2
+		CONFIG_BUDGET_MARGIN_DEN :: 10
+		CONFIG_BUDGET_MARGIN_NUM :: 9
+			Margem de segurança do budget device-local (REQ-CFG-04).
+
+		CONFIG_DEFAULT_PATH :: "vox.ini"
+		CULL_FACE_NEVER :: 7
+		DESCRIPTOR_SET_BINDING_COUNT :: 22
+		EDIT_FLUSH_INTERVAL_MS :: 100.0
+			Limites do flush. MAX_EDITS_PER_CHUNK_PER_FLUSH também é usado pelo shader
+			(arrays groupshared) — espelhar com o common.slang.
+
+		EDIT_RESULT_APPLIED :: 0
+			Códigos de resultado (espelham o Slang; lidos de edit_results 2 frames após o flush).
+
+		EDIT_RESULT_NOOP :: 1
+		EDIT_RESULT_REJECTED_OVERFLOW :: 3
+		EDIT_RESULT_REJECTED_PALETTE_FULL :: 2
+		EVENT_QUEUE_CAPACITY :: 4096
+		GAMEPLAY_BLOCK_PLACE_ID :: u32(3)
+		GAMEPLAY_REACH :: f32(12.0)
+		JUMP_HEIGHT_VOXELS :: f32(1.5)
+		MATERIAL_PLANE_COUNT_MAXIMUM :: 8
+		MATERIAL_WORDS_PER_CHUNK :: MATERIAL_PLANE_COUNT_MAXIMUM * BRICKS_PER_CHUNK
+		MAX_ASSET_TEXTURE_DIM :: 256
+		MAX_EDITS_PER_CHUNK_PER_FLUSH :: 1024
+		MAX_EDITS_PER_FLUSH :: 4096
+		MAX_EDIT_JOBS_PER_FLUSH :: 256
+		MAX_TEMPLATE_TRIANGLES :: 24
+		MAX_TEMPLATE_VERTICES :: 32
+		MESH_TEMPLATE_CAPACITY :: 256
+		MESH_TRIANGLE_MAXIMUM :: 192
+		MESH_VERTEX_MAXIMUM :: 256
+		MIRROR_PAGE_FACTOR_DEN :: 2
+		MIRROR_PAGE_FACTOR_NUM :: 3
+			Fator de folga do pool de páginas do mirror (REQ-CFG-02).
+
+		NEIGHBOR_OFFSETS :: [6]ChunkCoordinate{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}
+			Ordem igual a FACE_NORMALS no common.slang (+X,-X,+Y,-Y,+Z,-Z).
+
+		NEIGHBOR_SLOT_INVALID :: max(u32)
+			--- Renderização
+			VS-08: capacidades da fila/visíveis não são constantes de compilação — vêm
+			do Config (config.odin), derivadas dos raios do INI.
+
+		NO_TEMPLATE_UV_OFFSET :: 0xFFFFFFFF
+		NUM_FRAMES_IN_FLIGHT :: 2
+		NUM_SWAP_CHAIN_IMAGES :: NUM_FRAMES_IN_FLIGHT + 1
+		OCCUPANCY_WORDS_PER_CHUNK :: 2 * BRICKS_PER_CHUNK + COARSE_WORDS_PER_CHUNK + SUBDIVISION_WORDS_PER_CHUNK
+		PALETTE_SIZE_MAXIMUM :: 256
+		PHYSICS_DEFAULT_FRICTION :: 0.6
+			Defaults documentados (REQ-PHY-01): blocking deriva da solidez do tipo;
+			hittable = true para qualquer bloco não-ar; fricção/restituição neutras.
+
+		PHYSICS_DEFAULT_RESTITUTION :: 0.0
+		PHYSICS_FIXED_DT :: 1.0 / 60.0
+		PHYSICS_FLAG_BLOCKING :: 1
+			VS-19 (REQ-PHY-01): tabela física exclusivamente CPU-side — o std430 de
+			BlockDefinition (48 B) NÃO muda e nenhuma propriedade física vai ao shader.
+
+		PHYSICS_FLAG_CLIMBABLE :: 4
+		PHYSICS_FLAG_HITTABLE :: 2
+		PHYSICS_FLAG_LIQUID :: 8
+		PHYSICS_FRICTION_DAMPING :: f32(10.0)
+		PHYSICS_GRAVITY :: f32(-24.0)
+		PHYSICS_GROUND_EPS :: f32(0.0001)
+		PHYSICS_HANDLE_INVALID :: PhysicsHandle(max(u32))
+		PHYSICS_MAX_FRAME_DT :: f32(0.25)
+		PHYSICS_MAX_STEPS_PER_FRAME :: 5
+		PHYSICS_MAX_SUBSTEP :: f32(0.4)
+		PHYSICS_STEP_UP_HEIGHT :: f32(1.0)
+		PHYSICS_TERMINAL_VELOCITY :: f32(-60.0)
+		PUSH_CONSTANTS_SIZE :: 92
+		PUSH_CONSTANT_STAGES_GRAPHICS :: vk.ShaderStageFlags{.MESH_EXT, .FRAGMENT}
+		REQUIRED_DEVICE_EXTENSIONS :: []cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME, vk.EXT_MESH_SHADER_EXTENSION_NAME, vk.EXT_SHADER_OBJECT_EXTENSION_NAME, vk.EXT_MEMORY_BUDGET_EXTENSION_NAME}
+		SLOT_INDEX_INVALID :: max(u32)
+			VS-10 (REQ-VRT-01): registro EMPTY não possui slot de GPU.
+
+		SOLID_WORD_BASE :: SUBDIVISION_WORD_BASE + SUBDIVISION_WORDS_PER_CHUNK
+		SPECIAL_RECORDS_PER_CHUNK :: 256
+		STREAMING_SLICE_BUDGET_MS :: 6.0
+		STREAMING_TICK_INTERVAL :: 64
+		SUBDIVISION_WORDS_PER_CHUNK :: 64
+		SUBDIVISION_WORD_BASE :: BRICKS_PER_CHUNK + COARSE_WORDS_PER_CHUNK
+		TARGET_HIGHLIGHT_TINT :: 1.4
+		TELEMETRY_COMPUTE_QUERY_COUNT :: 8
+		TELEMETRY_CSV_INTERVAL_MS :: 500.0
+		TELEMETRY_DEFAULT_ENABLED :: true
+		TELEMETRY_GFX_QUERY_COUNT :: 16
+		TELEMETRY_OPERATION_COUNT :: 7
+		TEMPLATE_FLAG_HAS_FLUSH_FACES :: 1
+		TEXTURE_FACE_TO_SLOT :: [6]int{2, 3, 4, 5, 1, 0}
+			VS-21 (REQ-TEX-04): ordena as faces do objeto para albedo_faces[6] na
+			ordem FACE_NORMALS (+X=right, -X=left, +Y=top, -Y=bottom, +Z=front,
+			-Z=back). String vira o objeto com as 6 faces iguais.
+
+		TRACING_GPU_CALIB_SLOT :: 0
+		TRACING_GPU_CONTEXT_COMPUTE :: 1
+		TRACING_GPU_CONTEXT_COUNT :: 2
+		TRACING_GPU_CONTEXT_GRAPHICS :: 0
+		TRACING_GPU_RING_MARGIN :: 64
+		TRACING_GPU_RING_SIZE :: 4096
+			Ring por contexto: cada zona usa 2 slots (begin/end) alocados em par;
+			o slot 0 é reservado para a calibração inicial e o último para o
+			gpu_time_sync periódico.
+
+		TRACING_GPU_SYNC_INTERVAL :: 60
+		TRACING_GPU_SYNC_SLOT :: TRACING_GPU_RING_SIZE - 1
+		TRACING_GPU_ZONE_SLOT_FIRST :: 2
+		TRACING_GPU_ZONE_SLOT_LIMIT :: TRACING_GPU_RING_SIZE - 1
+		TRACY_ENABLE :: #config(TRACY_ENABLE, false)
+		TRIANGLE_POOL_CAPACITY :: 1024
+		UV_POOL_CAPACITY :: 1024
+		VERTEX_POOL_CAPACITY :: 1024
+			Pools de templates têm capacidade fixa (buffers criados em voxel_gpu_init).
+
+		VOXELS_PER_BRICK :: 32
+		WORK_QUEUE_APPEND_COUNT_WORD :: 0
+		WORK_QUEUE_INDIRECT_X_WORD :: 2
+		WORK_QUEUE_OVERFLOW_WORD :: 1
+		WORK_QUEUE_STATE_WORDS :: 8
+
+	variables
+		active_ve: ^VoxelEngine 
+		app: VoxEngine 
+		config: Config 
+		config_path: string 
+		debug_log_path: string 
+		events: struct {t0: f64, queue: [EVENT_QUEUE_CAPACITY]Event, head, tail: int, overflow_count: u64, overflow_warned: bool, pressed: map[i32]bool, scheduled_release: map[i32]f64, handlers: map[EventType]proc(Event), record_enabled: bool, record_path: string, record_file: ^os.File, replay_path: string, replay_events: []Event, replay_cursor: int, replay_hold_until: f64, replay_dispatched: u64, replay_skipped: u64, replay_finished: bool, replay_finish_time: f64, exit_after_replay: bool} 
+		events_output_directory: string 
+		full_teardown: bool 
+		telemetry: Telemetry 
+		telemetry_output_directory: string 
+		tracing_queue_lock: TracingLock 
+		tracing_results_lock: TracingLock 
+		tracy_output_directory: string 
+		voxel_assets: VoxelAssets 
+		voxel_gpu: VoxelGpu 
+		voxel_physics: [BLOCK_REGISTRY_CAPACITY]PhysicsDefinition 
+			VS-19 (REQ-PHY-01): tabela física por id, paralela ao registry std430.
+
+
+	procedures
+		AcquireFrameResource :: proc() -> ^FrameResource {...} /* engine:engine.odin!3560 */
+		AcquireNextImage :: proc() -> (frame: SwapChainFrameData, ok: bool) {...} /* engine:engine.odin!2885 */
+		AppInfo :: proc(text: string) {...} /* engine:tracing.odin!2198 */
+		CancelFrameReservation :: proc() {...} /* engine:engine.odin!4316 */
+		ConfigSummary :: proc() -> string {...} /* engine:config.odin!1721 */
+			VS-15 (REQ-TRC-04): resumo da config efetiva para o AppInfo do Tracy.
+
+		CreateEngine :: proc(width: u32 = 800, height: u32 = 600) {...} /* engine:engine.odin!1535 */
+		DestroyEngine :: proc() {...} /* engine:engine.odin!2182 */
+		FrameMark :: proc() {...} /* engine:tracing.odin!1800 */
+		Message :: proc(text: string) {...} /* engine:tracing.odin!2102 */
+		PlotInt :: proc(name: cstring, value: i64) {...} /* engine:tracing.odin!1881 */
+		Present :: proc() {...} /* engine:engine.odin!3640 */
+		SetThreadName :: proc(name: cstring) {...} /* engine:tracing.odin!2000 */
+		TracingIsConnected :: proc() -> bool {...} /* engine:tracing.odin!2304 */
+		TracingShutdown :: proc(full_teardown := true) {...} /* engine:tracing.odin!3139 */
+		TracingStartup :: proc() {...} /* engine:tracing.odin!3000 */
+			VS-15 (BLK-37): com a lib em TRACY_MANUAL_LIFETIME + TRACY_DELAYED_INIT o
+			profiler nasce só aqui — depois do init Vulkan/GLFW, que conflitava com o
+			client Tracy ativo desde o CRT init (hang em vkCreateComputePipelines).
+			Só chamar com TRACY_ENABLE ligado e fora do intervalo nenhuma API Tracy
+			pode ser usada (GetProfiler asserta com o profiler não iniciado).
+			VS-16: o startup também sobe os contextos GPU (tracing_gpu_init) e
+			anuncia os locks rastreados; só o teardown completo coleta as zonas GPU
+			restantes antes de descer o profiler.
+
+		Update :: proc() {...} /* engine:engine.odin!2547 */
+		WaitTimelineSemaphore :: proc() -> u64 {...} /* engine:engine.odin!4497 */
+		Zone :: proc(name: string = "", active := true) -> (ctx: ZoneCtx) {...} /* engine:tracing.odin!1698 */
+		ZoneN :: proc(name: string, active := true) -> (ctx: ZoneCtx) {...} /* engine:tracing.odin!1581 */
+		assets_load :: proc() {...} /* engine:voxel_assets.odin!3835 */
+			Carga + validação (REQ-AST-06). Ausente → loaded = false (fallback).
+
+		block_is_blocking :: proc(block_id: u32) -> bool {...} /* engine:voxel_assets.odin!5739 */
+			VS-19 (REQ-PHY-01): o bitmask `solid` filtra candidatos; a semântica de
+			bloqueio vem da tabela física (planta ocupa o voxel sem bloquear).
+
+		block_is_hittable :: proc(block_id: u32) -> bool {...} /* engine:voxel_assets.odin!5879 */
+		block_is_solid :: proc(block_id: u32) -> bool {...} /* engine:voxel_assets.odin!5342 */
+			VS-14 (emenda 2026-11-07): solidez é propriedade do tipo de bloco. Com
+			assets, consulta o registry carregado; sem assets, a regra built-in
+			(ids 1..3 sólidos, 4 = planta não-sólida).
+
+		calculate_squared_distance :: proc(a, b: ChunkCoordinate) -> i64 {...} /* engine:voxel_engine.odin!3694 */
+		chunk_coordinate_from_world :: proc(position: [3]f32) -> ChunkCoordinate {...} /* engine:voxel_engine.odin!18017 */
+		compute_worst_case_tris :: proc(packed_triangles: []u32) -> u32 {...} /* engine:voxel_types.odin!8575 */
+			Pior-caso de triângulos para qualquer direção de câmera: nunca culpados +,
+			por eixo, max(tris na face+, tris na face-).
+
+		config_load :: proc() {...} /* engine:config.odin!2302 */
+			Carga do INI + defaults + derivações + validação (REQ-CFG-01..03); erros
+			fatais saem sem criar janela.
+
+		config_validate_machine :: proc() {...} /* engine:config.odin!3166 */
+			Validação de máquina (REQ-CFG-04): requerido × budget device-local × 0,9.
+			Roda após create_vma_allocator e antes de qualquer provisionamento.
+
+		debug_heights_parity :: proc(ve: ^VoxelEngine) {...} /* engine:voxel_mirror.odin!11395 */
+			VS-19 (AC-04): varredura heights × bitmask em todas as páginas
+			MATERIALIZED — heights[x|z<<5] deve ser o topo SÓLIDO derivado do bitmask.
+
+		debug_paths_init :: proc(version: string) {...} /* engine:debug_paths.odin!194 */
+		debug_texture_parity :: proc() {...} /* engine:voxel_gpu.odin!31667 */
+			VS-21 (AC-01/AC-04): readback da paleta albedo e comparação pixel a pixel
+			com texture_pixels (já flipado). Executado ao final do init, com o device
+			ocioso — prova que a orientação pós-flip sobrevive ao upload. Sem assets
+			(fallback de paleta procedural) a checagem é estrutural apenas.
+
+		debug_texture_validate :: proc() {...} /* engine:voxel_gpu.odin!34600 */
+			VS-21 (REQ-TEX-09): ponto de entrada público da validação de textura.
+
+		debug_validate_run :: proc(ve: ^VoxelEngine) {...} /* engine:voxel_gpu.odin!34812 */
+			VS-19 (AC-04): ponto de entrada público da validação packed×denso (a
+			rotina em si é privada deste arquivo); usada pelo hook de debug F7.
+
+		edit_enqueue :: proc(ve: ^VoxelEngine, request: VoxelEditRequest) {...} /* engine:voxel_edit.odin!2476 */
+		edit_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {...} /* engine:voxel_edit.odin!8076 */
+		edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {...} /* engine:voxel_edit.odin!3098 */
+		edit_update :: proc(ve: ^VoxelEngine, frame_index: u32) {...} /* engine:voxel_edit.odin!7788 */
+		events_destroy :: proc() {...} /* engine:events.odin!4290 */
+		events_drain :: proc() {...} /* engine:events.odin!5342 */
+		events_emit :: proc(type: EventType, payload: EventPayload) {...} /* engine:events.odin!4921 */
+			Emissão fora de callback (cursor de replay, handlers): timestamp e empurra.
+
+		events_init :: proc() {...} /* engine:events.odin!2847 */
+		events_is_pressed :: proc(key: i32) -> bool {...} /* engine:events.odin!5214 */
+		events_push_now :: proc(type: EventType, payload: EventPayload) {...} /* engine:events.odin!4632 */
+			Empurra um evento na fila. Contextless: pode ser chamado de callbacks "c".
+
+		events_register :: proc(types: []EventType, handler: proc(Event)) {...} /* engine:events.odin!5093 */
+		events_replay_feed :: proc(now: f64) {...} /* engine:events.odin!6358 */
+			Alimenta a fila com os eventos do replay devidos até `now` (REQ-EVT-05:
+			Wait segura o cursor; nada com t < hold_until é despachado).
+
+		events_replay_is_finished :: proc() -> bool {...} /* engine:events.odin!7499 */
+		events_set_t0 :: proc() {...} /* engine:events.odin!4176 */
+			Chamado no fim da inicialização, antes do primeiro PollEvents (REQ-EVT-07).
+
+		events_should_exit_after_replay :: proc() -> bool {...} /* engine:events.odin!7585 */
+		events_time_now :: proc() -> f64 {...} /* engine:events.odin!4786 */
+		flip_rows :: proc(pixels: []u8, width, height: int) {...} /* engine:voxel_assets.odin!6160 */
+			VS-21 (REQ-TEX-02): inverte as linhas de um buffer RGBA8 (stride w·4),
+			trocando y com height−1−y. Dupla aplicação restaura a entrada.
+
+		floor_div_i32 :: proc(value, divisor: i32) -> i32 {...} /* engine:voxel_engine.odin!3890 */
+		gameplay_aabb_intersects_voxel :: proc(body_min, body_size: [3]f32, voxel: [3]i32) -> bool {...} /* engine:gameplay.odin!4555 */
+		gameplay_clear_target :: proc(ve: ^VoxelEngine) {...} /* engine:gameplay.odin!2259 */
+			Teleporte invalida o alvo até o próximo DDA (REQ-GPL-07).
+
+		gameplay_destroy :: proc(ve: ^VoxelEngine) {...} /* engine:gameplay.odin!1292 */
+		gameplay_init :: proc(ve: ^VoxelEngine) {...} /* engine:gameplay.odin!1207 */
+		gameplay_jump :: proc(ve: ^VoxelEngine, player: ^PhysicsBody) {...} /* engine:gameplay.odin!4056 */
+			Pulo de 1,5 bloco (REQ-GPL-06): impulso único no press, só grounded e não
+			congelado; release/hold/auto-repeat não pulam (a main dedup auto-repeat).
+
+		gameplay_mouse_press :: proc(ve: ^VoxelEngine, button: i32, player: ^PhysicsBody) {...} /* engine:gameplay.odin!2489 */
+			Clique: 0 = esquerdo (colocar pedra), 1 = direito (remover). Consome o
+			snapshot do frame — o mesmo exibido pelo realce (REQ-GPL-04/05/07).
+
+		gameplay_update_target :: proc(ve: ^VoxelEngine, frame_index: u32, origin, direction: [3]f32) {...} /* engine:gameplay.odin!1494 */
+			Publica o alvo do frame no UBO do slot do frame (REQ-GPL-01/07): chamado
+			na main após physics_tick + player_sync_camera, antes do submit.
+
+		gpu_buffer_create :: proc(size: vk.DeviceSize, usage: vk.BufferUsageFlags) -> (buffer: GpuBuffer) {...} /* engine:gpu_buffer.odin!194 */
+		gpu_buffer_destroy :: proc(buffer: ^GpuBuffer) {...} /* engine:gpu_buffer.odin!706 */
+		mirror_bit_test :: proc(mask: []u32, index: u32) -> bool {...} /* engine:voxel_mirror.odin!653 */
+		mirror_column_ground :: proc(ve: ^VoxelEngine, world_x, world_z, y_from: i32) -> (ground_y: i32, ok: bool) {...} /* engine:voxel_mirror.odin!5860 */
+		mirror_forget_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: ChunkRecord) {...} /* engine:voxel_mirror.odin!2940 */
+		mirror_height_get :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate, x, z: u32) -> (ok: bool, height: u16) {...} /* engine:voxel_mirror.odin!6950 */
+			VS-13 (REQ-MIR-04): altura do sólido mais alto da coluna em O(1).
+			ok = false se a página está ausente/em readback (tri-state preservado);
+			height = 0xFFFF significa coluna sem sólido.
+
+		mirror_journal_apply :: proc(ve: ^VoxelEngine, chunk: ChunkCoordinate, world_voxel: [3]i32, block_id: u32) {...} /* engine:voxel_mirror.odin!4065 */
+		mirror_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {...} /* engine:voxel_mirror.odin!10957 */
+		mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, batch_timeline_value: u64) {...} /* engine:voxel_mirror.odin!7317 */
+		mirror_page_acquire :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) -> ^MirrorChunkPage {...} /* engine:voxel_mirror.odin!821 */
+		mirror_page_fill_empty :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, page: ^MirrorChunkPage) {...} /* engine:voxel_mirror.odin!2248 */
+			VS-10 (REQ-VRT-04): um chunk EMPTY tem conteúdo worldgen conhecido (ar
+			puro): a página é preenchida com zeros e o journal do E1 é replayado por
+			cima — correta por construção, sem leitura GPU (o registro não tem slot).
+
+		mirror_reconcile_rejection :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, rejected: VoxelEditRequest) {...} /* engine:voxel_mirror.odin!4643 */
+		mirror_request :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {...} /* engine:voxel_mirror.odin!2716 */
+		mirror_service_retries :: proc(ve: ^VoxelEngine) {...} /* engine:voxel_mirror.odin!1459 */
+		mirror_update_bubble :: proc(ve: ^VoxelEngine, camera_chunk: ChunkCoordinate) {...} /* engine:voxel_mirror.odin!10187 */
+		pack_template_triangle :: proc(v0, v1, v2, cull_face: u32) -> u32 {...} /* engine:voxel_types.odin!8263 */
+			Triângulo packed em u32: bits [0..8) v0 | [8..16) v1 | [16..24) v2 | [24..27) face de culling.
+
+		pack_voxel_edit :: proc(voxel_index: u32, block_id: u32) -> u32 {...} /* engine:voxel_types.odin!8018 */
+			Edição packed em u32: voxel_index (15 bits, layout denso x|z<<5|y<<10) | block_id<<16.
+
+		physics_body_create :: proc(ve: ^VoxelEngine, position, size: [3]f32, allow_step_up := true) -> PhysicsHandle {...} /* engine:physics.odin!2720 */
+		physics_body_get :: proc(ve: ^VoxelEngine, handle: PhysicsHandle) -> ^PhysicsBody {...} /* engine:physics.odin!3417 */
+		physics_body_remove :: proc(ve: ^VoxelEngine, handle: PhysicsHandle) {...} /* engine:physics.odin!3185 */
+		physics_destroy :: proc(ve: ^VoxelEngine) {...} /* engine:physics.odin!2492 */
+		physics_drain_requests :: proc(ve: ^VoxelEngine) {...} /* engine:physics.odin!4864 */
+			Drena os pedidos coalescidos na worker (chamada sob mirror.mutex pela
+			worker em mirror_update_bubble — REQ-PHY-06).
+
+		physics_init :: proc(ve: ^VoxelEngine) {...} /* engine:physics.odin!2254 */
+		physics_init_builtin :: proc() {...} /* engine:voxel_assets.odin!6782 */
+			Fallback built-in (REQ-PHY-01): paridade semântica com o caminho do JSON —
+			ids 1..3 bloqueantes e atingíveis, planta (4) não-bloqueante e atingível,
+			fricção/restituição nos defaults documentados.
+
+		physics_raycast :: proc(ve: ^VoxelEngine, origin, direction: [3]f32, max_distance: f32) -> PhysicsRayHit {...} /* engine:physics.odin!15437 */
+			Distância máxima obrigatória (> 0) e direção não nula; caso contrário o
+			resultado é MISS sem percorrer a grade (rejeição definida).
+
+		physics_request_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {...} /* engine:physics.odin!5155 */
+		physics_tick :: proc(ve: ^VoxelEngine, frame_dt: f32) {...} /* engine:physics.odin!3704 */
+			Tick do acumulador (REQ-PHY-02): avança o estado somente em passos fixos.
+
+		physics_voxel_query :: proc(ve: ^VoxelEngine, voxel: [3]i32) -> (blocking: bool, known: bool, block_id: u16) {...} /* engine:physics.odin!5425 */
+		task_matches :: proc(task: GenerationTask, coord: ChunkCoordinate, record: ChunkRecord) -> bool {...} /* engine:voxel_engine.odin!4070 */
+		telemetry_begin_label :: proc(cmd: vk.CommandBuffer, name: cstring) {...} /* engine:telemetry.odin!3879 */
+		telemetry_collect_compute :: proc(ring_index: int) {...} /* engine:telemetry.odin!6255 */
+		telemetry_collect_graphics :: proc(frame_index: u32) {...} /* engine:telemetry.odin!5335 */
+		telemetry_destroy :: proc() {...} /* engine:telemetry.odin!3390 */
+		telemetry_end_label :: proc(cmd: vk.CommandBuffer) {...} /* engine:telemetry.odin!4119 */
+		telemetry_init :: proc() {...} /* engine:telemetry.odin!1472 */
+		telemetry_name_object :: proc(object: u64, type: vk.ObjectType, name: cstring) {...} /* engine:telemetry.odin!4317 */
+			Nomeia um objeto Vulkan para as capturas (buffers, pipelines, pools).
+
+		telemetry_reset_pool :: proc(cmd: vk.CommandBuffer, pool: vk.QueryPool, query_count: u32) {...} /* engine:telemetry.odin!5122 */
+		telemetry_service :: proc() {...} /* engine:telemetry.odin!6854 */
+		telemetry_snapshot :: proc() {...} /* engine:telemetry.odin!7809 */
+		telemetry_timestamp_begin :: proc(cmd: vk.CommandBuffer, pool: vk.QueryPool, query: u32) {...} /* engine:telemetry.odin!4698 */
+		telemetry_timestamp_end :: proc(cmd: vk.CommandBuffer, pool: vk.QueryPool, query: u32) {...} /* engine:telemetry.odin!4910 */
+		telemetry_toggle :: proc() {...} /* engine:telemetry.odin!3727 */
+		tracing_gpu_collect_compute :: proc() {...} /* engine:tracing_gpu.odin!6998 */
+		tracing_gpu_collect_graphics :: proc() {...} /* engine:tracing_gpu.odin!6767 */
+		tracing_gpu_init :: proc() {...} /* engine:tracing_gpu.odin!1491 */
+		tracing_gpu_record_context :: proc(cmd: vk.CommandBuffer, context_index: u8) {...} /* engine:tracing_gpu.odin!4315 */
+			Uma vez por command buffer que grava zonas do contexto: aplica os resets
+			pendentes de faixas já coletadas e, a cada TRACING_GPU_SYNC_INTERVAL
+			frames, grava o timestamp de re-sync.
+
+		tracing_gpu_shutdown :: proc() {...} /* engine:tracing_gpu.odin!3608 */
+		tracing_gpu_zone_begin :: proc(cmd: vk.CommandBuffer, context_index: u8, name: string, loc := #caller_location) -> u16 {...} /* engine:tracing_gpu.odin!5267 */
+			Aloca o par de slots e emite gpu_zone_begin. Retorna o queryId (slot de
+			begin) ou max(u16) quando a zona foi omitida (ring sob pressão).
+
+		tracing_gpu_zone_end :: proc(cmd: vk.CommandBuffer, context_index: u8, query_id: u16) {...} /* engine:tracing_gpu.odin!6408 */
+		tracing_locks_init :: proc() {...} /* engine:tracing.odin!4170 */
+		tracing_mutex_lock :: proc(m: ^sync.Mutex, lock: ^TracingLock) {...} /* engine:tracing.odin!4442 */
+		tracing_mutex_unlock :: proc(m: ^sync.Mutex, lock: ^TracingLock) {...} /* engine:tracing.odin!4679 */
+		validate_template :: proc(vertices: [][3]f32, packed_triangles: []u32) -> bool {...} /* engine:voxel_types.odin!8981 */
+		validate_template_uvs :: proc(template_index: int, uvs: [][2]f32) -> bool {...} /* engine:voxel_types.odin!9658 */
+			VS-11 (REQ-UV-04a): validação de carga do pool de UVs — mesma filosofia do
+			voxel unitário da VS-02 (validate_template): UVs, quando presentes, devem
+			estar em [0,1]²; a sentinela é interna ao mesh shader e nunca aparece num
+			template. Erro nomeia o índice do template e o vértice offending.
+
+		ve_request_voxel_edit :: proc(ve: ^VoxelEngine, world_voxel: [3]i32, block_id: u32) {...} /* engine:voxel_edit.odin!921 */
+		ve_request_voxel_edits_in_box :: proc(ve: ^VoxelEngine, min_corner, max_corner: [3]i32, block_id: u32) {...} /* engine:voxel_edit.odin!2796 */
+		ve_retry_empty_edits :: proc(ve: ^VoxelEngine) {...} /* engine:voxel_edit.odin!1734 */
+			VS-10 (REQ-VRT-04): retenta a materialização de edições cujo chunk ainda
+			está EMPTY (pool esgotado na solicitação). No-op de ar-em-ar é removido.
+
+		visible_set_add :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {...} /* engine:voxel_engine.odin!17456 */
+		voxel_engine_destroy :: proc(ve: ^VoxelEngine) {...} /* engine:voxel_engine.odin!5339 */
+		voxel_engine_init :: proc() -> ^VoxelEngine {...} /* engine:voxel_engine.odin!4330 */
+		voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {...} /* engine:voxel_engine.odin!10689 */
+		voxel_engine_request_frame :: proc(ve: ^VoxelEngine, frame_value: u64, frame_index: u32, camera_chunk: ChunkCoordinate) {...} /* engine:voxel_engine.odin!9504 */
+		voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {...} /* engine:voxel_engine.odin!6364 */
+		voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {...} /* engine:voxel_engine.odin!12729 */
+		voxel_engine_wait_published :: proc(ve: ^VoxelEngine, frame_value: u64, camera_chunk: ChunkCoordinate) -> u32 {...} /* engine:voxel_engine.odin!9868 */
+		voxel_get :: proc(ve: ^VoxelEngine, world_voxel: [3]i32) -> (sample: VoxelSample, ok: bool) {...} /* engine:voxel_mirror.odin!5214 */
+		voxel_gpu_destroy :: proc() {...} /* engine:voxel_gpu.odin!19849 */
+		voxel_gpu_init :: proc() {...} /* engine:voxel_gpu.odin!4182 */
+		voxel_is_solid :: proc(ve: ^VoxelEngine, world_voxel: [3]i32) -> (solid: bool, ok: bool) {...} /* engine:voxel_mirror.odin!5682 */
+		voxel_render_pipeline_create :: proc() {...} /* engine:voxel_render.odin!176 */
+		voxel_render_prepare :: proc(cmd: vk.CommandBuffer, vp: matrix[4, 4]f32, camera_position: [3]f32, visible_count: u32, frame_index: u32, edit_job_count: u32) {...} /* engine:voxel_render.odin!2860 */
+		voxel_render_record :: proc(cmd: vk.CommandBuffer, vp: matrix[4, 4]f32, camera_position: [3]f32, visible_count: u32, frame_index: u32) {...} /* engine:voxel_render.odin!8095 */
+		worker_thread_process :: proc(worker_thread: ^thread.Thread) {...} /* engine:voxel_worker.odin!157 */
+		zone_end :: proc(ctx: ZoneCtx) {...} /* engine:tracing.odin!686 */
+
+	types
+		BlockDefinition :: struct {mesh_template_index: u32, pbr_texture_index: u32, flags: u32, albedo_faces: [6]u32, rotation: u32, padding_2: u32, padding_3: u32, emission_color: [3]f32, base_roughness: f32, base_metallic: f32, padding_4: u32, padding_5: u32, padding_6: u32}
+			80 B — espelha o Slang byte a byte (verificável por offset_of e pela
+			reflection do slangc). VS-21 (REQ-TEX-05, revisão VS-00/VS-02):
+			albedo_texture_index + paddings viram albedo_faces[6] (camada por face,
+			ordem FACE_NORMALS: +X,-X,+Y,-Y,+Z,-Z). Correção 2026-11-09: float3 tem
+			alinhamento 16 no Slang — sem colocar emission_color num offset múltiplo
+			de 16 e o size múltiplo de 16 (stride de array), o shader lia o registry
+			desalinhado (regressão de renderização: flags/mesh/albedo_faces lixo).
+
+		ChunkCoordinate :: [3]i32
+		ChunkGenerationJob :: struct {chunk_world_origin: [3]i32, storage_slot_index: u32, mirror_ring_slot: i32, padding: [3]u32}
+			32 B (múltiplo de 16) — espelha o Slang.
+
+		ChunkHeader :: struct {palette_size: u32, plane_count: u32, special_voxel_count: u32, flags: u32, palette: [PALETTE_SIZE_MAXIMUM]u32, refcount: [PALETTE_SIZE_MAXIMUM]u32}
+			2.064 B — espelha o Slang (16 B escalares + 1 KiB paleta + 1 KiB refcounts).
+
+		ChunkRecord :: struct {state: ChunkState, storage_slot_index: u32, generation: u32}
+		ChunkState :: enum {GENERATING, CACHED, RENDERABLE, EMPTY}
+		Config :: struct {radius_vision: u32, radius_generation: u32, radius_unload: u32, radius_simulation: u32, chunks_per_batch: u32, batches_in_flight: u32, visible_capacity: u32, resident_slots: u32, scratch_chunks: u32, mirror_pages: u32, mirror_ring_slots: u32, work_item_capacity: u32, work_queue_slot_words: u32, provisioned_device_bytes: u64}
+		DepthBuffer :: struct {vkImage: vk.Image, vkImageView: vk.ImageView, vmaAllocation: vma.Allocation, format: vk.Format}
+		DeviceFeatureChain :: struct {base: vk.PhysicalDeviceFeatures, v11: vk.PhysicalDeviceVulkan11Features, v12: vk.PhysicalDeviceVulkan12Features, v13: vk.PhysicalDeviceVulkan13Features, v14: vk.PhysicalDeviceVulkan14Features, shader_object: vk.PhysicalDeviceShaderObjectFeaturesEXT, mesh_shader: vk.PhysicalDeviceMeshShaderFeaturesEXT}
+		EditChunkJob :: struct {storage_slot_index: u32, first_edit: u32, edit_count: u32, padding: u32}
+			16 B — espelha o Slang (ring de jobs de edição, binding 13).
+
+		EditManager :: struct {mutex: sync.Mutex, queue: [dynamic]VoxelEditRequest, lookup: map[[3]i32]int, pending: map[ChunkCoordinate][dynamic]VoxelEditRequest, last_flush: time.Tick, force_next_flush: bool, staged_jobs: [dynamic]EditChunkJob, staged_edits: [dynamic]u32, ring_counts: [NUM_FRAMES_IN_FLIGHT]EditRingCounts, stats_applied: u64, stats_noop: u64, stats_rejected: u64, stats_deferred: u64}
+		EditRingCounts :: struct {job_count: u32, edit_count: u32}
+		Event :: struct {t: f64, type: EventType, payload: EventPayload}
+		EventPayload :: union {KeyPayload, MouseMovePayload, MouseButtonPayload, Vec3fPayload, Vec3iPayload, WaitPayload, struct {}}
+		EventType :: enum {KeyPress, KeyRelease, MouseMove, MouseButton, CloseRequested, TeleportTo, LookAt, AddBlock, RemoveBlock, Wait, ToggleTelemetry, TelemetrySnapshot}
+		FrameResource :: struct {vkCommandPool: vk.CommandPool, vkCommandBuffer: vk.CommandBuffer, vkAcquireSemaphore: vk.Semaphore}
+		GameplayManager :: struct {target: PhysicsRayHit, stats_target_hit: u64, stats_target_miss: u64, stats_target_unknown: u64, stats_edits: u64, stats_noop: u64, stats_jumps: u64, stats_jumps_rejected: u64, stats_jumps_logged: u64}
+		GenerationTask :: struct {coordinate: ChunkCoordinate, storage_slot_index: u32, generation: u32, mirror_ring_slot: i32, export_only: bool}
+		GpuBuffer :: struct {handle: vk.Buffer, allocation: vma.Allocation, size: vk.DeviceSize}
+		GpuTracingContext :: struct {query_pool: vk.QueryPool, period_ns: f32, record_pos: u64, collect_pos: u64, reset_pos: u64, frames_since_sync: u32, sync_pending: bool, omitted_logged: bool}
+		KeyPayload :: struct {key: i32, scancode: i32, duration: f64}
+		MeshTemplate :: struct {vertex_offset: u32, vertex_count: u32, triangle_offset: u32, triangle_count: u32, worst_case_tris: u32, flags: u32, uv_offset: u32, padding_1: u32}
+			32 B std430 — espelha o Slang. VS-11 (REQ-UV-02): uv_offset no lugar de um
+			padding — offset no pool template_uvs (binding 19); NO_TEMPLATE_UV_OFFSET
+			marca template sem pool de UVs (mesh shader emite a sentinela).
+
+		MirrorChunkPage :: struct {coord: ChunkCoordinate, edit_seq: u32, state: MirrorPageState, ring_slot: i32, pending: [dynamic]VoxelEditRequest, applied_log: [dynamic]VoxelEditRequest, rejected_log: [dynamic]VoxelEditRequest, solid: [CHUNK_VOXEL_COUNT / 32]u32, ids: [CHUNK_VOXEL_COUNT]u16, heights: [CHUNK_SIZE * CHUNK_SIZE]u16}
+		MirrorManager :: struct {mutex: sync.Mutex, pool: []MirrorChunkPage, free_pages: [dynamic]u32, pages: map[ChunkCoordinate]^MirrorChunkPage, ring: []MirrorRingEntry, stats_pages_live: int, stats_pool_misses: u64, stats_ring_misses: u64}
+		MirrorPageState :: enum u8 {PENDING_READBACK, MATERIALIZED}
+			Bolha de simulação independente da bolha de render. VS-08: raio e tamanhos
+			dos pools/rings do mirror vêm do Config (config.odin).
+
+		MirrorRingEntry :: struct {used: bool, coord: ChunkCoordinate, generation: u32}
+		MouseButtonPayload :: struct {button: i32, press: bool}
+		MouseMovePayload :: struct {dx, dy: f32}
+		PhysicsBody :: struct {position: [3]f32, size: [3]f32, velocity: [3]f32, grounded: bool, frozen: bool, allow_step_up: bool}
+		PhysicsDefinition :: struct {flags: u32, friction: f32, restitution: f32}
+		PhysicsHandle :: distinct u32
+		PhysicsManager :: struct {bodies: [dynamic]PhysicsBody, free_handles: [dynamic]PhysicsHandle, accumulator: f32, dropped_steps: u64, pending_requests: map[ChunkCoordinate]struct {}, stats_steps: u64, stats_contacts: u64, stats_voxels: u64, stats_frozen_frames: u64, unknown_hits: u64}
+		PhysicsRayHit :: struct {result: PhysicsRayResult, voxel: [3]i32, block_id: u16, distance: f32, normal: [3]i32, unknown_chunk: ChunkCoordinate}
+		PhysicsRayResult :: enum u8 {HIT, MISS, UNKNOWN}
+		PresentationInfo :: struct {vkSwapChain: vk.SwapchainKHR, swapChainImageCount: u32, width, height: u32, frames: []SwapChainFrameData, format: vk.Format, imageIndex: u32}
+		QueueTuple :: struct {queue: vk.Queue, familyIndex: u32}
+		QueueType :: enum {Graphics, Compute, Transfer}
+		RetiringComputeSlot :: struct {storage_slot_index: u32, release_timeline_value: u64}
+		RetiringSlot :: struct {storage_slot_index: u32, release_frame_value: u64}
+		SpecialVoxelRecord :: struct {voxel_index: u32, shape_and_orientation: u32, block_identifier: u32}
+		StreamingCursor :: struct {center: ChunkCoordinate, offsets: [dynamic]ChunkCoordinate, position: int, pending_unload: [dynamic]ChunkCoordinate, center_initialized: bool}
+		SubmittedBatch :: struct {compute_timeline_value: u64, tasks: [dynamic]GenerationTask}
+		SwapChainFrameData :: struct {vkPresentSemaphore: vk.Semaphore, image: vk.Image, image_view: vk.ImageView}
+		TargetHighlight :: struct {target_voxel: [3]i32, target_valid: u32}
+			16 B — espelha TargetHighlight do common.slang (REQ-GPL-02).
+
+		Telemetry :: struct {enabled: bool, times_available: bool, timestamp_period_ns: f64, gfx_pools: [NUM_FRAMES_IN_FLIGHT]vk.QueryPool, gfx_slot_submitted: [NUM_FRAMES_IN_FLIGHT]bool, compute_pools: [dynamic]vk.QueryPool, results_mutex: sync.Mutex, last_times_us: [TELEMETRY_OPERATION_COUNT]f64, heap_count: u32, heaps: [vk.MAX_MEMORY_HEAPS]TelemetryHeapSample, csv_file: ^os.File, last_csv_tick: time.Tick}
+		TelemetryHeapSample :: struct {used_bytes: u64, budget_bytes: u64, block_bytes: u64, allocation_bytes: u64, block_count: u32, allocation_count: u32}
+		TelemetryOperation :: enum {Generate, Pack, ApplyEdits, BuildWorkQueue, FinalizeWorkQueue, MeshDraw, FrameTotal}
+		TracingLock :: struct {}
+		Vec3fPayload :: struct {v: [3]f32}
+		Vec3iPayload :: struct {v: [3]i32, block_id: u32}
+		VisibleChunk :: struct {chunk_world_origin: [3]i32, storage_slot_index: u32, neighbor_slots: [6]u32, padding: [2]u32}
+			48 B — espelha o Slang
+
+		VoxEngine :: struct {runtimeContext: runtime.Context, glfwWindow: glfw.WindowHandle, windowWidth, windowHeight: u32, vkInstance: vk.Instance, vkDebugMessenger: vk.DebugUtilsMessengerEXT, vkSurface: vk.SurfaceKHR, vkPhysicalDevice: vk.PhysicalDevice, vkDevice: vk.Device, queues: [QueueType]QueueTuple, presentation: PresentationInfo, vmaAllocator: vma.Allocator, depthBuffer: DepthBuffer, frameData: [NUM_FRAMES_IN_FLIGHT]FrameResource, timelineSemaphore: vk.Semaphore, computeTimelineSemaphore: vk.Semaphore, currentTimelineValue: u64, nextTimelineValue: u64, descriptorSetLayout: vk.DescriptorSetLayout, graphicsPipelineLayout: vk.PipelineLayout, computePipelineLayout: vk.PipelineLayout, validationLayersEnabled: bool, swapchainNeedsRecreate: bool, deltaTime: f64, lastFrameTime: f64, currentTime: f64, tick: u64, frameIndex: u32}
+		VoxelAssets :: struct {loaded: bool, templates: []MeshTemplate, vertices: [][4]f32, triangles: []u32, uvs: [][2]f32, registry: [BLOCK_REGISTRY_CAPACITY]BlockDefinition, block_names: []string, texture_pixels: []u8, texture_width: u32, texture_height: u32, texture_layers: u32, layer_of: map[string]int, stats_textures_decoded: u64, stats_texture_bytes: u64, stats_decode_ms: f64}
+		VoxelEditRequest :: struct {world_voxel: [3]i32, block_id: u32}
+		VoxelEngine :: struct {active_chunks: map[ChunkCoordinate]ChunkRecord, free_storage_slots: [dynamic]u32, retiring_slots: [dynamic]RetiringSlot, retiring_compute_slots: [dynamic]RetiringComputeSlot, slot_generations: []u32, last_camera_chunk: ChunkCoordinate, streaming_cursor: StreamingCursor, visible_set: [dynamic]ChunkCoordinate, visible_membership: map[ChunkCoordinate]int, visible_set_camera: ChunkCoordinate, visible_set_initialized: bool, update_appended_tasks: int, slots_starved: bool, first_update: bool, highest_completed_compute_value: u64, empty_chunks_active: int, slots_saved_total: u64, last_empty_log_time: time.Tick, edit: EditManager, mirror: MirrorManager, physics: PhysicsManager, gameplay: GameplayManager, queue_mutex: sync.Mutex, queue_condition: sync.Cond, pending_tasks: [dynamic]GenerationTask, pending_export_tasks: [dynamic]GenerationTask, submitted_batches: [dynamic]SubmittedBatch, priority_camera_chunk: ChunkCoordinate, worker_stop_requested: u32, worker: ^thread.Thread, frame_mutex: sync.Mutex, frame_condition: sync.Cond, requested_frame: u64, published_frame: u64, requested_frame_index: u32, requested_camera_chunk: ChunkCoordinate, published_frame_index: u32, published_visible_count: u32, published_compute_value: u64, published_camera_chunk: ChunkCoordinate, world_revision: u64, published_revision: u64, has_published: bool, publish_bump: u64, consumed_publish_bump: u64}
+		VoxelGpu :: struct {scratch: GpuBuffer, generation_jobs: GpuBuffer, generation_jobs_mapped: [^]ChunkGenerationJob, occupancy_pool: GpuBuffer, material_plane_pool: GpuBuffer, chunk_headers: GpuBuffer, special_voxel_records: GpuBuffer, block_registry: GpuBuffer, visible_chunks: GpuBuffer, visible_chunks_mapped: [^]VisibleChunk, mesh_templates: GpuBuffer, template_vertices: GpuBuffer, template_triangles: GpuBuffer, template_uvs: GpuBuffer, work_queue: GpuBuffer, edit_jobs: GpuBuffer, edit_jobs_mapped: [^]EditChunkJob, voxel_edits: GpuBuffer, voxel_edits_mapped: [^]u32, edit_results: GpuBuffer, edit_results_mapped: [^]u32, mirror_export_ring: GpuBuffer, mirror_export_ring_mapped: [^]u16, mirror_heightmap_ring: GpuBuffer, mirror_heightmap_ring_mapped: [^]u16, chunk_result_flags: GpuBuffer, chunk_result_flags_mapped: [^]u32, target_highlight_ubo: GpuBuffer, target_highlight_ubo_mapped: [^]u8, target_highlight_alignment: vk.DeviceSize, dummy_buffer: GpuBuffer, albedo_palette_image: vk.Image, albedo_palette_allocation: vma.Allocation, albedo_palette_view: vk.ImageView, pbr_dummy_image: vk.Image, pbr_dummy_allocation: vma.Allocation, pbr_dummy_view: vk.ImageView, texture_sampler: vk.Sampler, descriptor_pool: vk.DescriptorPool, descriptor_set: vk.DescriptorSet, shader_module: vk.ShaderModule, edit_shader_module: vk.ShaderModule, render_shader_module: vk.ShaderModule, generation_pipeline: vk.Pipeline, packing_pipeline: vk.Pipeline, build_work_queue_pipeline: vk.Pipeline, finalize_work_queue_pipeline: vk.Pipeline, edit_pipeline: vk.Pipeline, mesh_pipeline: vk.Pipeline, compute_command_pool: vk.CommandPool, compute_command_buffers: []vk.CommandBuffer}
+		VoxelPushConstants :: struct {view_projection_matrix: matrix[4, 4]f32, camera_position: [3]f32, visible_chunk_offset: u32, batch_job_offset: u32, edit_job_offset: u32, visible_chunk_capacity: u32}
+			92 B — casar com o pipeline layout da VS-00 (88 B + visible_chunk_capacity, REQ-CFG-06).
+
+		VoxelSample :: struct {block_id: u16, solid: bool}
+			Amostra de consulta tri-state (gameplay).
+
+		WaitPayload :: struct {seconds: f64}
+		ZoneCtx :: struct {}
+		asset_tex_dim :: struct {name: string, width: int, height: int}
+		assets_json_block :: struct {id: i64, name: string, mesh: string, transparent: bool, solid: Maybe(bool), physics: json.Value, texture: json.Value}
+		assets_json_doc :: struct {meshes: []assets_json_mesh, textures: []assets_json_texture, blocks: []assets_json_block}
+		assets_json_mesh :: struct {name: string, vertices: [][3]f64, triangles: [][3]i64, cull_tags: []i64, uvs: [][2]f64}
+		assets_json_texture :: struct {name: string, path: string}
+
+
+	fullpath:
+		D:/Dev/projects/vox/src/engine/
+	files:
+		config.odin
+		debug_paths.odin
+		engine.odin
+		engine_vukan.odin
+		events.odin
+		gameplay.odin
+		gpu_buffer.odin
+		physics.odin
+		telemetry.odin
+		tracing.odin
+		tracing_gpu.odin
+		types.odin
+		voxel_assets.odin
+		voxel_edit.odin
+		voxel_engine.odin
+		voxel_gpu.odin
+		voxel_mirror.odin
+		voxel_render.odin
+		voxel_types.odin
+		voxel_worker.odin

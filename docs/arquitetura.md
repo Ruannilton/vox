@@ -1,0 +1,230 @@
+# Motor de Voxels Next-Gen
+
+## Arquitetura Data-Driven com Vulkan 1.4, Compute Assíncrono e Mesh Shaders
+
+**Versão 3.0 — novembro de 2026** · incorpora a edição de voxels (E1) e o mirror CPU-side (C2)
+
+**Resumo executivo:** este motor inverte o paradigma clássico. Para renderizar, a CPU não sabe o que há dentro de um bloco — ela apenas orquestra onde os dados devem ir. A geometria não é armazenada em memória; ela é fabricada instantaneamente no silício da placa de vídeo, usando Task/Mesh Shaders que leem dicionários de blocos e templates de malha. A v3.0 completa o desenho com o verso dessa moeda: tudo que não é desenho — física, IA de NPCs, ferramentas, persistência — passa a ter onde morar, num mirror CPU-side do mundo (C2). As duas pontas deixam de ser cópias que precisam se reconciliar: a verdade é a função de geração mais o journal de edições (E1), e GPU e RAM são views materializadas dessa mesma fonte. Dois princípios continuam governando tudo: **GPU-driven** (a GPU decide o que existe e o que é desenhado) e **data-driven** (geometria e materiais são dados, não código).
+
+## 1. Visão geral do pipeline (macro)
+
+O trabalho é dividido estritamente entre a CPU (orquestração e estado) e a GPU (força bruta, geração procedural e montagem de geometria). A ponte entre os dois mundos é um par de **timeline semaphores** — um para a fila de computação, outro para a fila gráfica.
+
+```
+Thread Principal (streaming de chunks, draw, journal de edições E1)
+        │  fila de prioridade
+        ▼
+Worker Thread (lotes de até 16 chunks — B4)
+        │
+        ▼
+Timeline Semaphores (Vulkan 1.4) — Compute + Gráfica: aposentadoria dual de slots (B1)
+        │ geração de dados                │ desenho do frame
+        ▼                                 ▼
+Compute Shaders (async) ──ocupação+paleta──▶ Task / Mesh Shaders
+Generate → Scratch → Pack: paleta,          Culling hierárquico + geometria
+ocupação, coarse e subdivisão;              on-the-fly via templates (Caminho B)
+export denso u16 (C2)                               ▲
+        │ readback (pós-timeline)                   │
+        ▼                                           │
+Ring de staging → Mirror RAM (C2)          apply_voxel_edits (E1)
+ring host-visible → ChunkPages             flush do journal a 100 ms, no command
+(bolha de simulação)                       buffer do frame, antes do render pass
+```
+
+*Figura 1 — Pipeline macro v3.0: CPU orquestra, GPU fabrica; o journal de edições (E1) alimenta o frame, e o mirror CPU (C2) recebe o grid denso por readback.*
+
+**O que mudou na v3.0:** dois novos fluxos cruzam o pipeline. O journal de edições da thread principal é flushado em lotes e aplicado por um compute shader no command buffer do frame, antes do render pass (E1) — a edição aparece na malha no mesmo frame. E o compute de geração ganhou uma saída secundária: o grid denso de IDs que alimenta, por readback assíncrono, o mirror do mundo em RAM (C2). Permanecem da v2.0: a worker thread submete lotes reais de até 16 chunks por `vkQueueSubmit2` (B4) e o ciclo de vida dos slots é blindado contra corridas (B1, detalhado na Etapa 2).
+
+## 2. Etapa 1: Chunk streaming incremental (histerese + cursor VS-17)
+
+O jogador movimenta a câmera e o mundo precisa carregar. Para evitar que blocos apareçam e desapareçam na borda da visão (efeito sanfona), aplicamos histerese com três zonas de raio: **Visão (8)** — o que é desenhado; **Geração (9)** — o que existe em memória; **Descarga (10)** — o que é devolvido ao pool. Desde a VS-08 esses raios (e os lotes do worker) vêm de `vox.ini` com provisionamento runtime — ver o Manual Técnico §10.
+
+**Fila de prioridade + orçamento incremental + ownership worker:** a VS-17 substitui a varredura síncrona por um cursor persistente com fatias de ~6 ms. Na VS-18 a worker é a única dona de `active_chunks`: streaming, completions/B1, mirror, E1 e visibilidade rodam nela. O publish ocorre sob demanda por cruzamento, revisão de mundo ou bump de keepalive; entre mudanças a main reutiliza o último publish compatível sem esperar. O handoff carrega centro, contagem e snapshot de compute, com staleness de dois frames e reuse do ring guardado pela timeline gráfica.
+
+**Novo na v3.0 — duas bolhas independentes:** à bolha de render acima soma-se a bolha de simulação do mirror CPU (Etapa 7), centrada nos agentes ativos e com raio próprio. Um chunk pode existir na VRAM sem existir na RAM (horizonte distante) e vice-versa (uma sala atrás da câmera onde um NPC está).
+
+**Física de gameplay sobre o mirror (VS-19, ADR-F1):** o primeiro consumidor autoritativo da bolha de simulação é o solver de física CPU-side (`physics.odin`), executado na thread principal em passos fixos (1/60 s, teto de 5 passos/frame). Corpos AABB varrem o mundo eixo a eixo sobre o bitmask `solid` + tabela `PhysicsDefinition` (CPU-only, carregada do `blocks.json`), com sliding, step-up e grounded recalculado por contato; o apoio em terreno aberto usa o `ChunkPage.heights` como fast-path com fallback ao sweep, e as 1.024 colunas passam a ser **medidas do bitmask na materialização** (o ring de export do binding 20 permanece apenas como reserva futura). O desconhecido nunca é ar: o corpo congela sem deslocamento parcial e coalesce o pedido de página para a worker; o raycast DDA (tri-state hit/miss/unknown) decide atingibilidade pela tabela, alcançando plantas não-sólidas. Detalhes no Manual Técnico §13.
+
+**Interação de gameplay sobre o solver (VS-20, ADR-G2):** a mira central (DDA origem câmera/direção view, 12 u) roda uma vez por frame na main após física/câmera e publica o voxel-alvo num UBO dinâmico de 16 B (binding 21, fragment); o realce é um tint por `floor(world_position)` no `shade_voxel`, bit a bit inerte sem alvo. Cliques consomem o mesmo snapshot (esquerdo coloca pedra id 3 em `hit+normal` com guardas de destino/AABB do jogador; direito remove o hit) pelo intake E1, e SPACE aplica impulso de 1,5 bloco ao corpo grounded — tudo via bus da VS-07, sem callback GLFW executando física/edição. Detalhes no Manual Técnico §14.
+
+**Texturas por face e orientação corrigida (VS-21, ADR-T5):** decode via stb_image (RGBA8) com flip explícito de linhas validado por readback de paridade, sampler NEAREST sem mipmaps e registry de blocos de 72 B com `albedo_faces[6]` em ordem FACE_NORMALS — o fragment escolhe a camada pelo eixo dominante da normal mundial (empate Y→X→Z), o que permite dados como grama de topo verde e laterais de terra sem código novo. Detalhes no Manual Técnico §15.
+
+**Bolhas e slots (B5 absorvida pela VS-08):** os slots de chunk deixaram de ser um teto fixo de 4.096 e passam a ser derivados em runtime (VS-08, emendada 2026-11-06: `resident_slots = ⌈|esfera(unload)| × 1,05⌉` — era `|esfera(generation)|`, o que esgotava o pool estruturalmente, pois o conjunto vivo inclui CACHED até o raio de unload + transitório de aposentadoria B1; 4.378 com os defaults de `vox.ini`) — a bolha de geração cabe no pool por construção.
+
+**Chunks vazios virtuais (VS-10, ADR-V1, 2026-11-06):** chunk que conclui a geração composto só de ar deixa de ocupar slot, de ser publicado e de despachar builder — vira um registro `EMPTY` no map de chunks, sem slot (`storage_slot_index` inválido), custando só índice na CPU. O pack exporta as flags de cada chunk num buffer host-visible minúsculo (`chunk_result_flags`, binding 18) e o handler de conclusão (já ordenado pela timeline, B1) devolve o slot ao pool no instante da conclusão quando `CHUNK_FLAG_EMPTY` e não há edições pendentes. Edição em chunk `EMPTY` materializa o chunk (aloca slot + geração + pendência do E1, com retry por frame se o pool estiver seco); ar-em-ar é no-op. No terreno atual ~metade da bolha de visão é ar puro (medido: 9,5–11 mil chunks `EMPTY` com vision=20 em câmera alta, readback da fila caindo de ~3,9 mil para 1.911 itens por frame).
+
+## 3. Etapa 2: A ponte (Vulkan 1.4 Sync)
+
+A submissão de trabalho usa **timeline semaphores** e o `vkQueueSubmit2`. Em vez de bloquear a CPU esperando a placa, usamos frames em voo num sistema de anel: lotes de compute são despachados e incrementam um valor na linha do tempo; a worker lê esse valor para saber quando um chunk pode sair de GENERATING para CACHED. Na fila gráfica, a GPU só lê blocos cuja fabricação já foi sinalizada. No handoff VS-18, o submit usa o `published_compute_value` do publish consumido, não um valor global mais novo, e a reescrita do ring só ocorre após `vkGetSemaphoreCounterValue` confirmar o uso de duas frames atrás.
+
+### 3.1 Correção B1 — ciclo de vida dos slots
+
+**O defeito original:** ao descarregar um chunk ainda em geração, seu slot voltava de imediato ao pool livre enquanto a GPU podia ter um lote de compute em voo escrevendo nele — e, pior, um chunk recriado na mesma coordenada herdava o slot e era promovido indevidamente (problema ABA). A solução combina três mecanismos:
+
+- **Geração por slot (anti-ABA):** cada alocação incrementa um contador de geração; conclusões só são aceitas se coordenada, slot e geração baterem.
+- **Claim atômico:** a worker publica o lote submetido no mesmo trecho crítico em que retira a tarefa da fila — toda tarefa está em exatamente um dos dois conjuntos, nunca em ambos.
+- **Aposentadoria dual:** slots de chunks em GENERATING são liberados contra a timeline de compute do lote que os referencia; slots CACHED/RENDERABLE aposentam pela timeline gráfica (Figura 2).
+
+```
+UNLOADED → GENERATING → CACHED ⇄ RENDERABLE
+              │            (entra no raio de visão → RENDERABLE;
+              │             sai do raio/histerese → CACHED)
+              ├─ descarregar em GENERATING: aposentadoria pela timeline de COMPUTE
+              └─ descarregar em CACHED/RENDERABLE: aposentadoria pela timeline GRÁFICA
+```
+
+*Figura 2 — Máquina de estados com aposentadoria dual (B1).*
+
+## 4. Etapa 3: Geração e compactação (GPU Compute)
+
+Quando a GPU recebe o lote, ela opera em duas fases via Compute Shaders, transformando matemática procedural num formato binário compacto. A primeira fase (**generate**) materializa um scratch denso temporário de 131 KB por chunk (1 uint por voxel); a segunda (**pack**) comprime tudo nas estruturas definitivas do slot. Na v3.0 o generate ganha uma terceira saída, condicionada à bolha de simulação: o **export denso u16** que alimenta o mirror CPU (Figura 3).
+
+```
+1. Generate (ruído procedural) → Scratch denso (131 KB — 1 uint/voxel) → 2. Pack (128 threads/chunk)
+                                              │                             │
+                                              └──▶ Export u16: grid denso y-major (C2, só bolha de simulação)
+                                                   Fases do pack:
+                                                   A  ocupação do brick + presença de blocos + custo geométrico pior-caso (Caminho B)
+                                                   B1/B2  coarse cells + scan de prefixo (popcount) → ranking da paleta sem busca linear
+                                                   B3  paleta no header — INVARIANTE: slot 0 = AR; overflow → SpecialVoxelRecord
+                                                   C  planos de material (índice = rank + 1) + bits de subdivisão por brick
+```
+
+*Figura 3 — Fluxo generate → scratch → pack, com as fases do pack completo (B3) e a ramificação de export denso (C2).*
+
+**Correção B3 — pack completo:** o pack shader era um esboço; agora implementa quatro fases reais. A paleta é montada por ranking de prefixo popcount — cada voxel descobre seu índice em O(1), sem busca linear. Duas invariantes:
+
+- **O slot 0 da paleta é sempre AR.** Sem isso, voxels de ar decodificariam como o primeiro bloco sólido e o mesh shader desenharia geometria no céu. Capacidade efetiva: 255 tipos + AR.
+- **Overflow vira dado, não corrupção:** chunks com mais de 255 tipos recebem a flag `CHUNK_FLAG_PALETTE_OVERFLOW` e preservam os excedentes como SpecialVoxelRecords (degradam para ar na renderização — seguro por construção).
+
+**Caminho B — custo geométrico por brick:** como cada voxel pode ter uma malha customizada, o pack também soma o custo pior-caso de geometria de cada brick e grava 2 bits de subdivisão por brick na região de ocupação (Etapa 4).
+
+## 5. Etapa 4: Culling e geometria on-the-fly (mesh shading)
+
+No loop gráfico, enviamos um único comando: `vkCmdDrawMeshTasksEXT`. Daqui em diante não há CPU, vertex buffers ou index buffers.
+
+### 5.1 O task shader (o filtro)
+
+Cada workgroup de 128 threads avalia um chunk visível: células grossas vazias descartam 512 voxels de uma vez; bricks vazios morrem na word de ocupação. O task shader lê os bits de subdivisão gravados pelo pack e despacha 1, 2 ou 4 mesh groups por brick, conforme o custo geométrico — bricks leves (cubos) seguem em grupos de 32 voxels; bricks com malhas complexas (escadas, móveis) usam grupos de 16 ou 8, garantindo o orçamento de hardware de **256 vértices / 192 triângulos por grupo por construção**, e não por sorte.
+
+### 5.2 O mesh shader (a usina) e o Caminho B
+
+**Correção B2 — fronteiras:** leituras que cruzam a borda do chunk são redirecionadas à ocupação real dos 6 vizinhos (publicada por frame pela CPU). Faces internas entre chunks sólidos não são mais emitidas em dobro. Como a geometria é refeita a cada frame, um vizinho ainda em geração é tratado como ar e a face some sozinha no frame em que ele concluir — sem dirty flags. Desde a VS-10, vizinhos no estado `EMPTY` (chunk de ar virtual, sem slot) publicam `NEIGHBOR_SLOT_INVALID` — que o shader já trata como ar — com resultado visual idêntico ao chunk de ar com slot.
+
+**Culling de frustum (VS-06, ADR-B11):** o builder da fila de trabalho deriva os 6 planos do frustum (Gribb-Hartmann) da `view_projection_matrix` já presente nos push constants — a mesma matriz que leva `clip_position` no mesh shader. Em dois níveis: early-out do chunk (AABB 32³ fora → o workgroup inteiro retorna sem ler ocupação) e por brick (AABB 4×2×4 fora → nenhum item), com teste conservador de p-vertex na ordem vazio → frustum → oclusão. Sem push constants novos e sem nenhum pixel alterado para geometria visível.
+
+**Caminho B — templates de malha:** a geometria deixou de ser um switch hardcoded (CUBO/PLANTA) e virou dado. Uma tabela global de templates em SSBO descreve, para cada tipo de bloco, vértices e triângulos. Cada triângulo carrega uma tag de culling: colado numa face do voxel (some quando o vizinho é sólido ou a câmera está atrás) ou interior (nunca culpado). O cubo e a planta são apenas os templates 1 e 2; mods registram novos sem tocar nos shaders.
+
+**Regra do voxel unitário:** todo voxel ocupa exatamente 1 unidade³; os vértices de um template vivem em [0,1]³ — validado no carregamento. Se um objeto precisa de mais espaço (porta, cama, mesa), ele é dividido em múltiplos voxels, cada um com seu template-parte. Orientações (0°/90°/180°/270°) são um campo de rotação do bloco, não IDs novos.
+
+## 6. Etapa 5: Orientação a dados e PBR (fragment)
+
+Para o jogo não ser engessado, o motor é data-driven: durante o loading, a CPU lê os mods e envia à GPU um SSBO (Dicionário Global) com textura, rugosidade, template de malha e propriedades de luz de cada bloco — ao lado da tabela de templates, que segue o mesmo princípio: geometria também é dado.
+
+Desde a **VS-12 (ADR-A1)** esse data-driven deixou de ser promessa: `assets/blocks.json` (versionado na raiz, copiado para `bin/assets` pelo `run.bat`) define **objetos de malha** reaproveizáveis (vértices/triângulos/cull_tags/UVs), **objetos de textura** (PNG única por bloco) e **blocos** com referências por nome; o carregador (`src/engine/voxel_assets.odin`, parse `core:encoding/json`, decode `core:image/png`) formata tudo nos contratos atuais do pipeline (`MeshTemplate` 32 B + pools, `BlockDefinition` 48 B, registry) e o upload GPU decide no init: JSON presente → templates/registry definidos + `Texture2DArray` de albedo com uma camada por textura (ordem de definição); ausente → warning + built-ins (cubo/planta) + paleta procedural (paridade total com builds anteriores, verificada pixel a pixel). Validações (bounds [0,1]³/[0,1]², ≤32v/≤24t, cull_tags 0..5|7, ids 1..255 sem duplicatas nem 0 — AR, contrato do worldgen ids 1–3, dimensões uniformes ≤256×256, capacidades 256) rodam **antes** de `CreateEngine` (erro fatal sem janela) e têm espelho offline em `tools/sim/assets_check.py`.
+
+O albedo é amostrado por **UVs por vértice** vindas dos templates de malha (VS-11, ADR-U1): cada template pode carregar um pool de UVs (`template_uvs`, binding 19, paralelo a `template_vertices`) e o mesh shader escreve a UV no `MeshVertex` (`TEXCOORD0`); o fragment amostra a camada `albedo_texture_index` por UV quando presente. Template sem pool de UVs emite a sentinela `(-1,-1)` e o fragment cai no **mapeamento triplanar** (projeção pela posição mundo — o caminho original da VS-02, mantido como fallback para mods procedurais sem unwrap). A normal continua extraída por derivadas de tela (`dFdx`/`dFdy`), o que funciona para qualquer malha. Com a paleta de cores sólidas as duas rotas produziam imagem idêntica (paridade verificada pixel a pixel na VS-11). **Limitação conhecida (B7):** o sombreamento atual é Lambert + emissão; as texturas PBR (roughness/metallic) já chegam à GPU mas ainda não são amostradas — o dummy PBR de 1×1 acompanha ambos os caminhos. **Questão aberta:** semântica de UV sob rotação yaw (unwraps precisam ser simétricos à rotação ou exigir templates por rotação).
+
+## 7. Etapa 6: Edição de voxels (E1) — novo na v3.0
+
+Quebrar um bloco, construir uma parede, abrir um túnel: toda alteração do mundo, de qualquer origem (input do jogador, IA, física, script), vira uma única chamada — `request_voxel_edit(world_voxel, block_id)`. Daí nasce o **journal de edições**: um stream append-only com dedup «última escrita vence» por voxel, flushado em lotes a cada 100 ms (configurável; 0 = todo frame, e um flag força o flush imediato para ações de latência mínima).
+
+**Aplicação no mesmo frame:** o flush agrupa as edições por chunk (lotes de 16B por chunk; edições packed em u32) e despacha o compute `apply_voxel_edits` no próprio command buffer do frame, antes do render pass, com barreira COMPUTE → TASK|MESH. Como a malha é refeita on-the-fly a cada frame, a geometria já nasce refletindo a edição — não existe dirty flag nem re-mesh assíncrono, e o culling de fronteira (B2) se ajusta sozinho porque o vizinho lê a ocupação ao vivo.
+
+- **Paleta dinâmica com refcount:** o header do chunk ganhou um contador de referência por entrada de paleta (256 × u8). Uma edição que introduz um bloco novo aloca um slot livre por CAS; a que remove o último voxel de um tipo libera o slot (reciclagem preguiçosa com tombstones). A invariante do B3 é preservada: o slot 0 (AR) nunca é reciclado.
+- **Tetos de segurança:** 4.096 edições por flush, 256 chunks por flush, 1.024 edições por chunk por flush — o excedente espera o próximo ciclo. Chunks em geração não participam do lote (preserva o B1); suas edições ficam pendentes e reintegram quando o chunk conclui.
+- **Feedback:** um ring de resultados (lido 2 frames depois) reporta edições aplicadas, no-ops e rejeições — chunks em overflow de paleta são somente-leitura e rejeitam com código próprio. É esse canal que o mirror (Etapa 7) usa para reconciliar.
+- **Journal mantém o heightmap (VS-13):** a aplicação dual no mirror (mesma sequência do flush, Etapa 7) atualiza, por edição, o campo `ChunkPage.heights` — colocar sólido acima do topo da coluna sobe a altura; remover o bloco do topo rescanza a coluna (32 leituras do bitmask) para o novo topo; demais casos não tocam o campo. O `apply_voxel_edits` da GPU não mantém heightmap (C2: o ring só alimenta o materialize; o journal é a verdade).
+
+## 8. Etapa 8: Input intermediado por eventos, gravação e replay (VS-07) — novo na v3.0
+
+Toda interação usuário↔aplicação é intermediada por um **bus de eventos** (`src/engine/events.odin`): os callbacks GLFW (teclado, mouse, botões, fechamento da janela) são produtores puros — sem contexto de runtime, sem alocação, sem efeitos — que apenas empurram eventos tipados numa fila anel de 4.096 entradas. Uma vez por frame, após `glfw.PollEvents()`, o loop principal **drena** a fila: grava cada evento em **JSONL** (`bin/events/events_<timestamp>.jsonl`, flush por linha — crash não corrompe o arquivo) e despacha aos handlers registrados por tipo.
+
+- **Tempo de emissão relativo:** todo evento carrega `t = glfw.GetTime() − t0` (t0 fixado no fim da inicialização); eventos de um mesmo dreno compartilham o `t` do dreno.
+- **Polling eliminado:** o conjunto de teclas pressionadas é estado derivado de `KeyPress`/`KeyRelease`; o movimento WASD (SHIFT ×8, diagonal normalizada, `speed × deltaTime`) consome esse estado. Rotação de câmera sai do handler de `MouseMove` (delta, sensibilidade 0.07).
+- **Comandos no mesmo pipeline:** `TeleportTo`, `LookAt`, `AddBlock`, `RemoveBlock` (journal E1), `ToggleTelemetry`, `TelemetrySnapshot` e `Wait` são eventos como quaisquer outros — gravam e replayam igual.
+- **Replay best-effort 1×:** `--replay <arquivo.jsonl>` carrega e valida o arquivo antes de criar a janela (ausente/ilegível ou JSON inválido na linha 1 = fatal, exit ≠ 0); um cursor ordenado por `t` despacha os devidos a cada frame. `KeyPress{duration}` agenda o `KeyRelease` em `t + duration`; `Wait{seconds}` segura o cursor. Linha inválida ou tipo desconhecido é pulada com warning e contagem no sumário — nunca fatal. `--exit-after-replay` fecha a aplicação ao fim do stream; `--record`/`--no-record` controlam a gravação (default ligada, inclusive durante replay, sempre com o tempo da sessão corrente). O validador `tools/sim/events_check.py` verifica qualquer arquivo (schema por tipo, `t` monotônico).
+
+## 9. Etapa 7: Mirror CPU-side (C2) — novo na v3.0
+
+**Motivação:** pathfinding de NPCs, física, colisão de câmera, ferramentas de debug e serialização de save precisam responder «que bloco há em (x,y,z)?» na CPU — sem stall de readback e sem entender o formato packed da GPU (bitmask + paleta + planos, ótimo para culling, péssimo para consulta pontual). O C2 mantém uma segunda materialização do mundo em RAM, otimizada para leitura, atualizada pelo mesmo journal que alimenta a GPU.
+
+**O princípio que evita a dupla autoridade:** nem a VRAM nem a RAM são «a verdade». A verdade é o worldgen (semente/função) mais o journal de edições, append-only. GPU e CPU são views materializadas dessa fonte — a primeira no formato packed de render, a segunda num grid denso de consulta (Figura 4). Como ambas aplicam exatamente a mesma sequência de edições (mesma ordenação, mesmo dedup), elas convergem por construção; um contador de versão por chunk (`edit_seq`) permite verificar isso em build de debug.
+
+```
+              A VERDADE: worldgen (semente/função) + JOURNAL de edições
+              append-only · dedup última-escrita-vence · ordenado por chunk
+                │ edições: flush E1 (100 ms)        │ edições: aplicação imediata
+                ▼                                    ▼
+   View de RENDER — VRAM (GPU)          View de GAMEPLAY — RAM (CPU)
+   slot packed: ocupação+planos+        ChunkPage: grid denso u16 + bitmask solid
+   paleta+coarse · slots derivados de   ~500 chunks ≈ 34 MiB · bolha de simulação ·
+   ⌈|esfera(unload)|×1,05⌉ (4.378 nos     formato otimizado p/ consulta voxel(x,y,z)
+   defaults) · bolha de render ·        ▲
+   formato otimizado p/ culling e mesh          │ readback: export u16 → ring host-visible
+                └──────── Compute generate (GPU) ┘ → memcpy + replay do journal pendente
+                    produz o grid denso + o formato packed
+   mesma sequência de edições nos dois lados → convergência por construção (edit_seq paritário)
+```
+
+*Figura 4 — Dupla materialização: a verdade é worldgen + journal; GPU e RAM derivam views independentes, em formatos e bolhas próprios.*
+
+**Formato da página:** cada chunk espelhado ocupa uma ChunkPage de ~70,1 KiB (Figura 5; emenda VS-13 2026-11-07, era 68,1 KiB): grid denso de 32³ u16 (ID de bloco direto — sem paleta na RAM, o que elimina toda divergência de paleta e faz a query de ponto custar um único load), mais um bitmask de sólidos de 4 KiB derivado do dicionário de blocos, que responde a consulta mais frequente de todas («ocupa espaço?») testando 32 voxels por load, mais o **heightmap da coluna** (VS-13): 1.024 u16 de 2 KiB, índice z-contíguo `x | z<<5`, guardando o y do sólido mais alto de cada coluna (`0xFFFF` = coluna vazia) — a altura do chão vira consulta O(1) e o journal do E1 o mantém (colocar acima do topo sobe; remover o topo rescanza 32 leituras; demais casos inalterados). A indexação do grid denso é **y-major**, de modo que uma coluna vertical inteira são 64 bytes contíguos — uma linha de cache.
+
+```
+ChunkPage — 32³ voxels · total ≈ 70,1 KiB · alinhada a 64 B · alocada em pool de tamanho fixo
+┌ Header — 64 B: coord[3], edit_seq, state, pending
+├ Bitmask solid — 4 KiB ([1024] u32, 1 bit/voxel, derivado do BlockDefinition)
+├ heights — 2 KiB ([1024] u16, índice z-contíguo x|z<<5, y do topo sólido; 0xFFFF = vazia) [VS-13]
+└ ids — 64 KiB ([32768] u16, grid denso y-major, block ID direto, sem paleta)
+Índice y-major: idx = y | z<<5 | x<<10 → coluna vertical = 64 B contíguos (1 linha de cache)
+
+Estados: PENDING_READBACK → (timeline + memcpy + replay pending) → MATERIALIZED → (saiu da bolha) → EVICTED
+```
+
+*Figura 5 — Layout da ChunkPage e sua máquina de estados.*
+
+**Como a página nasce:** o compute de geração escreve o grid denso como saída secundária; após o signal da timeline do lote, uma cópia assíncrona o traz para um ring de staging host-visible; na confirmação, um memcpy o instala numa página do pool e as edições que chegaram enquanto isso são reaplicadas do journal — a página só então abre para leitura. Latência típica de 1–3 frames; o export é condicionado à bolha de simulação, então chunks do horizonte nunca pagam o custo.
+
+> **Nota de implementação (2026-11-03):** a versão final no código simplificou esse fluxo — o generate escreve **direto num ring host-visible de 64 slots × 64 KiB (4 MiB), binding 16** (a escrita do shader É o readback), sem `export_pool` device-local nem `vkCmdCopyBuffer`. Requer `storageBuffer16BitAccess`.
+
+**Bolhas independentes:** a bolha de render (slots de VRAM derivados de `⌈|esfera(unload)| × 1,05⌉` — emenda VS-08 2026-11-06, era generation; raio de visão configurável) e a bolha de simulação (~500 chunks nos defaults, ~34 MiB de RAM) têm centros e raios próprios e nunca disputam recursos. A consulta é **tri-state**: `voxel_get` retorna o dado, ou «desconhecido» (página ausente ou em readback) — a política sobre o desconhecido (esperar, replanar, assumir ar ou sólido) é de cada consumidor, não do mirror, que apenas expõe o gancho `mirror_request` para puxar páginas sob demanda.
+
+**Reconciliação:** a única divergência possível é a rejeição de edição pela GPU (chunk em overflow de paleta, somente-leitura). O mirror aplica otimisticamente; quando o ring de feedback do E1 reporta a rejeição (2 frames depois), a página é revertida por replay do journal sem aquela edição. Caminho raro, código simples.
+
+**Decisões descartadas:** ler o device-local direto via Resizable BAR (latência de PCIe em queries de gameplay — inviável) e regenerar o mundo na CPU a partir da semente (exigiria determinismo bit-exato de ponto flutuante entre CPU e GPU — não existe).
+
+## 10. Registro de correções e recursos desta versão
+
+| ID | Tipo | Descrição | Status |
+|---|---|---|---|
+| B1 | bug crítico | Ciclo de vida de slots: geração por slot anti-ABA, claim atômico, aposentadoria dual | Corrigido |
+| B2 | bug alto | Faces entre chunks em dobro: neighbor_slots no VisibleChunk | Corrigido |
+| B3 | bug alto | pack_chunk era stub: 4 fases + ranking popcount + paleta slot 0 = AR | Corrigido |
+| B4 | bug médio | Worker submetia 1 chunk/submit: lotes de até 16 por vkQueueSubmit2 | Corrigido |
+| B9 | bug alto | generate_voxels cobria só 8192/32768 voxels: numthreads(8,8,8), job = thread_id.z/32 | Corrigido |
+| Caminho B | recurso | Templates de malha data-driven em SSBO + subdivisão de brick | Implementado |
+| Culling de frustum | recurso | Planos Gribb-Hartmann na GPU no builder: early-out de chunk + por brick (VS-06/ADR-B11) | Implementado |
+| E1 | recurso | Edição de voxels bufferizada com flush no command buffer do frame | Implementado |
+| C2 | recurso | Mirror CPU-side: ChunkPage denso u16 y-major + ring host-visible | Implementado |
+| Eventos | recurso | Bus de eventos de input/comando com gravação JSONL e replay 1× (VS-07) | Implementado |
+| E1 | correção | Flush do journal não era mais chamado (removido com os testes em 6897431) e `last_flush`/`force_next_flush` eram consumidos pelo ring write todo frame, matando o gating de 100 ms; restaurado via `edit_update` no loop | Corrigido |
+| VS-10 | otimização | Chunks vazios virtuais: estado `EMPTY` sem slot, feedback do pack por binding 18, liberação imediata do slot na conclusão, edição materializa com retry | Implementado |
+| B5 | backlog | Raio de geração > slots — **absorvida pela VS-08** (slots derivados da esfera de unload ×1,05 — emenda 2026-11-06) | Absorvida |
+| B6 | bug médio | Plantas sem alpha-test; CULL_MODE_NONE — **VS-14** (Opção A da ADR-P1): cutout por discard condicional à flag `transparente` (`BlockDefinition.flags` bit 0, limiar 0.5), pipeline inalterada; bloco planta (id 4) no JSON com spawn por wang hash (x,z) 10% | Corrigido |
+| B7 | backlog | PBR não amostrado (só Lambert + emissão) | Pendente |
+| B8 | backlog | Overflow int32 em calculate_squared_distance | Pendente |
+
+O índice consolidado dos itens futuros (bugs, não-escopos de specs e consequências de ADRs) é mantido em **docs/obsidian/tracking/backlog.md**.
+
+Detalhes de implementação, estruturas de memória e contratos de carga estão no documento companheiro: **Manual Técnico do Motor de Voxels**.
+
+## 11. Observabilidade (telemetria VS-05 + Tracy VS-15/VS-16)
+
+Duas camadas independentes e complementares, ambas aditivas ao pipeline (nenhuma altera sincronização, ordem de submits ou comportamento):
+
+- **VS-05 (base):** telemetria Vulkan/VMA em `src/engine/telemetry.odin` — labels `EXT_debug_utils` nas passagens das duas filas, timestamps GPU com query pools (leitura assíncrona nunca bloqueante), budgets de VRAM por heap (`VK_EXT_memory_budget`), série temporal CSV (500 ms) e snapshot JSON sob demanda (F9) em `bin/telemetry/`. Destino: arquivos; funciona com ou sem Tracy.
+- **VS-15/VS-16 (Tracy, opt-in):** zones de CPU por fim de escopo, sub-zones nas etapas de update/worker/render/eventos, `FrameMark`, nomes de thread, `AppInfo`, plots e lock tracking de `queue_mutex`/`results_mutex`. `run_tracy.bat` ativa `TRACY_ENABLE=true` e call stacks de profundidade 10; o default não depende da lib. Zonas nunca cruzam threads. O client usa lifetime manual: o profiler sobe após o init Vulkan e desce após o join do worker.
+- **VS-16 (GPU):** `tracing_gpu.odin` anuncia contexto 0 para gráfica e 1 para compute. Query pools dedicadas de 4.096 timestamps por contexto alimentam `generate`, `pack`, `apply_edits`, `build_work_queue`, `finalize_work_queue` e `draw_mesh`, sem compartilhar slots com a VS-05. Begin/end usam IDs distintos; emits seguem a fila serial com lock interno do `TracyVulkan.hpp`. Coleta usa disponibilidade nos waits existentes; apenas slots coletados são resetados/reutilizados e pressão omite zonas. Calibração inicial usa `timestampPeriod` e há re-sync a cada 60 coletas.
+
+Interfaces de instrumentação: `src/engine/tracing.odin` (CPU, locks e lifetime) e `src/engine/tracing_gpu.odin` (GPU); com o define desligado toda a API compila para no-op e nenhuma pool de tracing é criada.

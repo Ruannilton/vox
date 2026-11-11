@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+file="src/version.odin"
+warn() {
+    echo "pre-commit: versionamento nao atualizado: $1" >&2
+    exit 0
+}
+
+# --- Atualização de Versão ---
+[ -f "$file" ] || warn "arquivo ausente"
+build=$(sed -n -E 's/.*VERSION_BUILD :: ([0-9]+).*/\1/p' "$file" | head -n 1)
+case "$build" in
+    ''|*[!0-9]*) warn "VERSION_BUILD invalido" ;;
+esac
+next=$((build + 1)) || warn "falha ao calcular proximo build"
+temporary="$file.tmp"
+sed -E "s/VERSION_BUILD :: [0-9]+/VERSION_BUILD :: $next/; s/VERSION_STRING :: \"[0-9]+\.[0-9]+\.[0-9]+\"/VERSION_STRING :: \"0.1.$next\"/" "$file" > "$temporary" || warn "falha ao gerar arquivo"
+mv "$temporary" "$file" || warn "falha ao substituir arquivo"
+git add -- "$file" || warn "falha no git add"
+
+# --- Geração de Documentação ---
+echo "pre-commit: gerando documentacao da engine e modulo principal..."
+
+# Garante que o diretório de destino exista
+mkdir -p docs/reference
+
+# Gera os arquivos texto com a documentação do Odin
+odin doc src/engine/ > docs/reference/engine.txt
+odin doc src/ > docs/reference/main.txt
+
+# Adiciona a documentação gerada ao commit atual
+git add docs/reference/engine.txt docs/reference/main.txt || echo "pre-commit: aviso - falha ao adicionar documentacao no git" >&2
+
+echo "pre-commit: finalizado com sucesso."

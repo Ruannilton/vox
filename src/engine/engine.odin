@@ -1,59 +1,65 @@
 package engine
 
-import "core:os"
-
-import glm "core:math/linalg/glsl"
-import vma "shared:vma"
-import vk "vendor:vulkan"
-
-
 import "base:runtime"
 import "core:c"
 import "core:log"
+import "core:os"
+import glm "core:math/linalg/glsl"
+import vma "shared:vma"
 import "vendor:glfw"
-
+import vk "vendor:vulkan"
 
 NUM_FRAMES_IN_FLIGHT :: 2
 NUM_SWAP_CHAIN_IMAGES :: NUM_FRAMES_IN_FLIGHT + 1
-
+ACQUIRE_TIMEOUT_NS :: 100_000_000 // 100 ms
 
 VoxEngine :: struct {
-	runtimeContext:            runtime.Context,
+	runtimeContext: runtime.Context,
 
 	// glfw
 	glfwWindow:                glfw.WindowHandle,
 	windowWidth, windowHeight: u32,
 
 	// vulkan
-	vkInstance:                vk.Instance,
-	vkDebugMessenger:          vk.DebugUtilsMessengerEXT,
-	vkSurface:                 vk.SurfaceKHR,
-	vkPhysicalDevice:          vk.PhysicalDevice,
-	vkDevice:                  vk.Device,
-	queues:                    [QueueType]QueueTuple,
-	presentation:              PresentationInfo,
-	vmaAllocator:              vma.Allocator,
-	depthBuffer:               DepthBuffer,
-	frameData:                 [NUM_FRAMES_IN_FLIGHT]FrameResource,
+	vkInstance:               vk.Instance,
+	vkDebugMessenger:         vk.DebugUtilsMessengerEXT,
+	vkSurface:                vk.SurfaceKHR,
+	vkPhysicalDevice:         vk.PhysicalDevice,
+	vkDevice:                 vk.Device,
+	queues:                   [QueueType]QueueTuple,
+	presentation:             PresentationInfo,
+	vmaAllocator:             vma.Allocator,
+	depthBuffer:              DepthBuffer,
+	frameData:                [NUM_FRAMES_IN_FLIGHT]FrameResource,
 
 	// sync
-	timelineSemaphore:         vk.Semaphore,
-	currentTimelineValue:      u64,
-	nextTimelineValue:         u64,
+	timelineSemaphore:        vk.Semaphore,
+	computeTimelineSemaphore: vk.Semaphore,
+	currentTimelineValue:     u64,
+	nextTimelineValue:        u64,
+
+	// descriptors
+	descriptorSetLayout:      vk.DescriptorSetLayout,
+	graphicsPipelineLayout:   vk.PipelineLayout,
+	computePipelineLayout:    vk.PipelineLayout,
+
+	// estado
+	validationLayersEnabled:  bool,
+	swapchainNeedsRecreate:   bool,
 
 	// time
-	deltaTime:                 f64,
-	lastFrameTime:             f64,
-	currentTime:               f64,
-	tick:                      u64,
-	frameIndex:                u32,
+	deltaTime:                f64,
+	lastFrameTime:            f64,
+	currentTime:              f64,
+	tick:                     u64,
+	frameIndex:               u32,
 }
 
 app: VoxEngine
 
-CreateEngine :: proc(widht: u32 = 800, height: u32 = 600) {
+CreateEngine :: proc(width: u32 = 800, height: u32 = 600) {
 	app = {
-		windowWidth       = widht,
+		windowWidth       = width,
 		windowHeight      = height,
 		runtimeContext    = context,
 		deltaTime         = 0.0,
@@ -63,24 +69,30 @@ CreateEngine :: proc(widht: u32 = 800, height: u32 = 600) {
 		nextTimelineValue = NUM_FRAMES_IN_FLIGHT + 1,
 	}
 
-	initGlfw()
+	init_glfw()
 	create_vulkan_instance()
 	create_vulkan_surface()
 	create_vulkan_device()
 	create_vma_allocator()
+	config_validate_machine()
 	create_swap_chain()
 	create_depth_buffer()
 	create_sync_objects()
 	create_frame_data()
+	create_descriptor_layouts()
+	telemetry_init()
 	log.info("Engine created successfully")
 }
 
 DestroyEngine :: proc() {
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+	telemetry_destroy()
+	destroy_descriptor_layouts()
 	destroy_frame_data()
 	destroy_sync_objects()
 	destroy_depth_buffer()
-	destroy_vma_allocator()
 	destroy_swap_chain()
+	destroy_vma_allocator()
 	destroy_vulkan_device()
 	destroy_vulkan_surface()
 	destroy_vulkan_instance()
@@ -99,20 +111,32 @@ Update :: proc() {
 	app.nextTimelineValue += 1
 }
 
-AcquireNextImage :: proc() -> SwapChainFrameData {
+AcquireNextImage :: proc() -> (frame: SwapChainFrameData, ok: bool) {
+	if app.swapchainNeedsRecreate {
+		if !recreate_swapchain() {
+			return {}, false
+		}
+	}
+
 	image_index: u32
-	vk_check(
-		vk.AcquireNextImageKHR(
-			app.vkDevice,
-			app.presentation.vkSwapChain,
-			max(u64),
-			app.frameData[app.frameIndex].vkAcquireSemaphore,
-			0,
-			&image_index,
-		),
+	result := vk.AcquireNextImageKHR(
+		app.vkDevice,
+		app.presentation.vkSwapChain,
+		ACQUIRE_TIMEOUT_NS,
+		app.frameData[app.frameIndex].vkAcquireSemaphore,
+		0,
+		&image_index,
 	)
+	if result == .TIMEOUT || result == .NOT_READY {
+		return {}, false
+	}
+	if result == .ERROR_OUT_OF_DATE_KHR || result == .SUBOPTIMAL_KHR {
+		app.swapchainNeedsRecreate = true
+		return {}, false
+	}
+	vk_check(result)
 	app.presentation.imageIndex = image_index
-	return app.presentation.frames[image_index]
+	return app.presentation.frames[image_index], true
 }
 
 AcquireFrameResource :: proc() -> ^FrameResource {
@@ -121,37 +145,46 @@ AcquireFrameResource :: proc() -> ^FrameResource {
 
 Present :: proc() {
 	image_index := app.presentation.imageIndex
-	swapChainFrame := &app.presentation.frames[image_index]
-	presentQueue := app.queues[QueueType.Graphics].queue
+	swapchain_frame := &app.presentation.frames[image_index]
+	present_queue := app.queues[QueueType.Graphics].queue
 	present_info := vk.PresentInfoKHR {
 		sType              = .PRESENT_INFO_KHR,
 		waitSemaphoreCount = 1,
-		pWaitSemaphores    = &swapChainFrame.vkPresentSemaphore,
+		pWaitSemaphores    = &swapchain_frame.vkPresentSemaphore,
 		pSwapchains        = &app.presentation.vkSwapChain,
 		pImageIndices      = &image_index,
 		swapchainCount     = 1,
 	}
-	vk_check(vk.QueuePresentKHR(presentQueue, &present_info))
+	result := vk.QueuePresentKHR(present_queue, &present_info)
+	if result == .ERROR_OUT_OF_DATE_KHR || result == .SUBOPTIMAL_KHR {
+		app.swapchainNeedsRecreate = true
+	} else {
+		vk_check(result)
+	}
+}
+
+CancelFrameReservation :: proc() {
+	app.frameIndex = (app.frameIndex + NUM_FRAMES_IN_FLIGHT - 1) % NUM_FRAMES_IN_FLIGHT
+	app.currentTimelineValue -= 1
+	app.nextTimelineValue -= 1
 }
 
 WaitTimelineSemaphore :: proc() -> u64 {
 	signal_value := app.currentTimelineValue
-	waitValue := signal_value - NUM_FRAMES_IN_FLIGHT
-
+	wait_value := signal_value - NUM_FRAMES_IN_FLIGHT
 
 	wait_info := vk.SemaphoreWaitInfo {
 		sType          = .SEMAPHORE_WAIT_INFO,
 		semaphoreCount = 1,
 		pSemaphores    = &app.timelineSemaphore,
-		pValues        = &waitValue,
+		pValues        = &wait_value,
 	}
 	vk_check(vk.WaitSemaphores(app.vkDevice, &wait_info, max(u64)))
 	return signal_value
 }
 
 @(private)
-initGlfw :: proc() {
-
+init_glfw :: proc() {
 	glfw.SetErrorCallback(proc "c" (error: i32, description: cstring) {
 		context = app.runtimeContext
 		log.errorf("GLFW Error {}: {}", error, description)
@@ -159,7 +192,6 @@ initGlfw :: proc() {
 
 	if !glfw.Init() do log.panic("Failed to initialize GLFW")
 	glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
-
 
 	app.glfwWindow = glfw.CreateWindow(
 		c.int(app.windowWidth),
@@ -173,15 +205,13 @@ initGlfw :: proc() {
 		log.panic("Failed to create GLFW window")
 	}
 
-
 	glfw.SetFramebufferSizeCallback(
 		app.glfwWindow,
 		proc "c" (window: glfw.WindowHandle, width, height: i32) {
 			context = app.runtimeContext
 			app.windowWidth = u32(width)
 			app.windowHeight = u32(height)
-			destroy_swap_chain()
-			create_swap_chain()
+			app.swapchainNeedsRecreate = true
 		},
 	)
 
@@ -189,11 +219,24 @@ initGlfw :: proc() {
 }
 
 @(private)
+recreate_swapchain :: proc() -> bool {
+	width, height := glfw.GetFramebufferSize(app.glfwWindow)
+	if width == 0 || height == 0 {
+		return false
+	}
+	app.swapchainNeedsRecreate = false
+	vk_check(vk.DeviceWaitIdle(app.vkDevice))
+	destroy_depth_buffer()
+	destroy_swap_chain()
+	create_swap_chain()
+	create_depth_buffer()
+	return true
+}
+
+@(private)
 vk_check :: proc(result: vk.Result, exp := #caller_expression, location := #caller_location) {
 	if result != .SUCCESS {
 		log.panicf("Vulkan failure: {} ({})", result, exp, location = location)
-	} else {
-		//	log.info(" Success:", exp, location = location)
 	}
 }
 
