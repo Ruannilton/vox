@@ -25,14 +25,15 @@ package engine
 		BIOME_MIN_HEIGHT :: 1
 			Clamps documentados (REQ-BIO-01/03).
 
-		BIOME_NOISE_OP_ADD :: 0
+		BIOME_NOISE_OP_ADD :: u32(0)
 			Operação da camada: +amplitude (vales preservados) ou −amplitude (ravinas).
 
-		BIOME_NOISE_OP_SUBTRACT :: 1
-		BIOME_NOISE_TYPE_CELLULAR :: 2
-		BIOME_NOISE_TYPE_PERLIN :: 1
-		BIOME_NOISE_TYPE_SIMPLEX :: 0
+		BIOME_NOISE_OP_SUBTRACT :: u32(1)
+		BIOME_NOISE_TYPE_CELLULAR :: u32(2)
+		BIOME_NOISE_TYPE_PERLIN :: u32(1)
+		BIOME_NOISE_TYPE_SIMPLEX :: u32(0)
 			Tipo de ruído (espelha o FastNoiseLite usado pelo kernel).
+			u32 explícito: biomes_parse_enum asserção .(u32) nos argumentos variádicos.
 
 		BLOCK_DEFINITION_FLAG_NON_SOLID :: 2
 			VS-14 (emenda 2026-11-07): bit 1 — bloco ocupa o voxel mas não é sólido
@@ -239,7 +240,7 @@ package engine
 		assets_load :: proc() {...} /* engine:voxel_assets.odin!3835 */
 			Carga + validação (REQ-AST-06). Ausente → loaded = false (fallback).
 
-		biomes_load :: proc() {...} /* engine:voxel_biomes.odin!4933 */
+		biomes_load :: proc() {...} /* engine:voxel_biomes.odin!5041 */
 			Carga + validação (REQ-BIO-01). Ausente ou inválido → fatal (sem fallback:
 			o kernel de geração data-driven (VS-22-IMPL-03) passa a exigir as tabelas).
 

@@ -29,13 +29,14 @@ BIOME_DEFAULT_HUMIDITY_FREQUENCY :: f32(0.002)
 BIOME_DEFAULT_SUBSURFACE_DEPTH :: 8
 
 // Tipo de ruído (espelha o FastNoiseLite usado pelo kernel).
-BIOME_NOISE_TYPE_SIMPLEX :: 0
-BIOME_NOISE_TYPE_PERLIN :: 1
-BIOME_NOISE_TYPE_CELLULAR :: 2
+// u32 explícito: biomes_parse_enum asserção .(u32) nos argumentos variádicos.
+BIOME_NOISE_TYPE_SIMPLEX :: u32(0)
+BIOME_NOISE_TYPE_PERLIN :: u32(1)
+BIOME_NOISE_TYPE_CELLULAR :: u32(2)
 
 // Operação da camada: +amplitude (vales preservados) ou −amplitude (ravinas).
-BIOME_NOISE_OP_ADD :: 0
-BIOME_NOISE_OP_SUBTRACT :: 1
+BIOME_NOISE_OP_ADD :: u32(0)
+BIOME_NOISE_OP_SUBTRACT :: u32(1)
 
 // BiomeDefinition.flags: bit 0 — o bioma permite spawn de plantas (VS-14).
 BIOME_FLAG_PERMITE_PLANTAS :: 1
