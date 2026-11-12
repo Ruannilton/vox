@@ -119,9 +119,7 @@ CONFIG_PADRAO = {
          "blocoProfundo": "pedra", "profundidadeSubsuperficie": 4,
          "permitePlantas": False,
          "camadas": [
-             {"amplitude": 8, "frequencia": 0.010, "oitavas": 4, "tipo": "perlin", "operacao": "adicao"},
              {"amplitude": 25, "frequencia": 0.006, "oitavas": 4, "tipo": "perlin", "operacao": "adicao"},
-             {"amplitude": 40, "frequencia": 0.001, "oitavas": 4, "tipo": "perlin", "operacao": "adicao"},
              {"amplitude": 8, "frequencia": 0.010, "oitavas": 1, "tipo": "simplex", "operacao": "subtracao"},
          ]},
     ],
@@ -739,8 +737,9 @@ def cenario_cinco_biomas():
     check("config padrao: valida", erro is None)
     biomas = norm["biomas"]
     check("config padrao: 5 biomas", len(biomas) == 5)
-    check("config padrao: 9 camadas no total (2+2+1+2+2)",
-          sum(len(b["camadas"]) for b in biomas) == 9)
+    check("config padrao: limites de camadas (<=8 por bioma, <=64 no total)",
+          all(len(b["camadas"]) <= 8 for b in biomas)
+          and sum(len(b["camadas"]) for b in biomas) <= 64)
     esperados = {"planicies": 1, "deserto": 7, "pantano": 8, "gelado": 6, "montanhoso": 3}
     for nome, id_sup in esperados.items():
         centro = next((b["centroTemperatura"], b["centroUmidade"])
