@@ -36,17 +36,16 @@ As ADRs registram decisões do GOAL e decisões ainda pendentes. `aceita` signif
 | ADR-F1 | [[ADR-F1-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aceita` | VS-00, VS-13, VS-19 |
 | ADR-G2 | [[ADR-G2-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aceita` | VS-00, VS-20 |
 | ADR-T5 | [[ADR-T5-texturas-stb-face|Texturas — stb_image, flip Y, nearest e topo por face]] | `pendente` | VS-02, VS-12, VS-21 |
-| ADR-B12 | [[ADR-B12-biomas-data-driven|Biomas procedurais data-driven no kernel de geração]] | `pendente` | VS-22 |
+| ADR-B12 | [[ADR-B12-biomas-data-driven|Biomas procedurais data-driven no kernel de geração]] | `aceita` | VS-22 |
 
 ## Resumo
 
-- 31 decisões registradas: 29 aceitas e 2 pendentes.
+- 31 decisões registradas: 30 aceitas e 1 pendente.
 - ADR-T5 aguarda ratificação do mantenedor.
-- ADR-B12 (recomendação: Opção A — classificação climática contínua data-driven) bloqueia a aprovação da VS-22.
 - Nenhuma decisão representa, por si só, implementação concluída ou validação verificada.
 
 ## Bloqueios
 
-ADR-T5 bloqueia a aprovação da VS-21. ADR-B12 bloqueia a aprovação da VS-22. As demais escolhas foram incorporadas às suas specs.
+ADR-T5 bloqueia a aprovação da VS-21. As demais escolhas foram incorporadas às suas specs.
 
 Novas decisões devem usar [[modelo-decisao|o modelo de ADR]], receber um ID único e ser adicionadas a este índice, ao painel de status e ao grafo quando bloquearem uma spec.

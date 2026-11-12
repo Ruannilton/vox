@@ -2,7 +2,7 @@
 id: ADR-B12
 titulo: Biomas procedurais data-driven no kernel de geração
 tipo: decisao
-status: pendente
+status: aceita
 specs_afetadas: [VS-22]
 ultima_atualizacao: 2026-11-12
 ---
@@ -39,7 +39,7 @@ A composição do terreno é hardcoded no `generate_voxels` (dois ruídos fixos,
 
 ## Decisão
 
-Pendente. Recomendação registrada: **Opção A** — é a única que elimina os paredões por construção (continuidade climática + blending limitado a 0,5), mantém a geração 100% na GPU (onde o pipeline já vive) e preserva o determinismo exigido pelo streaming/mirror.
+**Opção A — aceita e ratificada pelo mantenedor em 2026-11-12.** A composição do terreno passa a ser data-driven no kernel de geração: classificação climática contínua (eixos temperatura/umidade), ecótono com blending limitado a 0,5, domain warping e early-out de ALU — a única opção que elimina os paredões por construção e preserva o determinismo exigido pelo streaming/mirror. Config padrão aprovada com 5 biomas (planícies, deserto, pantano, gelado, montanhoso) usando blocos existentes, sem vegetação.
 
 ## Consequências
 
@@ -51,3 +51,4 @@ Pendente. Recomendação registrada: **Opção A** — é a única que elimina o
 ## Histórico
 
 - 2026-11-12 — Decisão registrada como pendente; bloqueia a aprovação da [[VS-22-biomas-procedurais|VS-22]] até a ratificação do mantenedor.
+- 2026-11-12 — **Opção A ratificada pelo mantenedor**; spec VS-22 aprovada e tarefas de implementação destravadas.

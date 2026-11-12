@@ -2,7 +2,7 @@
 id: VS-22
 titulo: Biomas procedurais data-driven na geração
 tipo: especificacao
-status_spec: rascunho
+status_spec: aprovada
 status_implementacao: nao-iniciada
 status_validacao: nao-iniciada
 depende_de:
@@ -10,8 +10,7 @@ depende_de:
   - VS-12
   - VS-13
   - VS-14
-bloqueada_por:
-  - ADR-B12
+bloqueada_por: []
 requisitos: [REQ-BIO-01, REQ-BIO-02, REQ-BIO-03, REQ-BIO-04, REQ-BIO-05, REQ-SIM-11]
 ultima_atualizacao: 2026-11-12
 ---
@@ -39,7 +38,16 @@ A estratégia matemática segue o documento de referência do mantenedor (`arqui
   - **`global`:** `semente` (u32), `forcaDistorcao` (float ≥ 0), `limiarTransicao` (float > 0), frequências climáticas (`frequenciaTemperatura`, `frequenciaUmidade`, floats > 0) e `offsetMundial` (float2, default 0).
   - **`biomas`** (1..16): `nome`, `centroTemperatura` e `centroUmidade` (floats em [−1, 1]), `alturaBase` (float, clampada a [1, 32767]), `blocoSuperficie`, `blocoSubsuperficie` e `blocoProfundo` — **nomes** de blocos do registry global (VS-12), sendo `blocoProfundo` opcional (default = `blocoSubsuperficie`), `profundidadeSubsuperficie` (uint, default 8 — quantos voxels abaixo do topo usam o subsolo; abaixo disso entra o fundo), `permitePlantas` (bool, default `false`) e `camadas` (0..8): `{amplitude, frequencia, oitavas (1..8), tipo ("simplex" | "perlin" | "cellular"), operacao ("adicao" | "subtracao")}`.
 - Limites fixos de buffer: máx. **16 biomas** e máx. **64 camadas no total**; violação → recusa na carga com log de erro fatal (sem fallback silencioso), mesmo padrão de rejeição da VS-12. Campos ausentes usam os defaults acima; `camadas` vazio é permitido (bioma plano em `alturaBase`).
-- A config padrão entregue reproduz o mundo atual como 1 bioma (grama/terra/pedra, `profundidadeSubsuperficie = 8`, `permitePlantas = true`, altura base 32 com as duas camadas atuais equivalentes), preservando o comportamento observado.
+- **Config padrão aprovada (2026-11-12):** 5 biomas usando apenas blocos existentes no `assets/blocks.json`, sem vegetação (`permitePlantas = false` em todos — vegetação fica para trabalho posterior):
+  | Bioma | Centro (T, H) | alturaBase | Superfície | Subsolo | Fundo | prof. | Camadas de ruído |
+  | --- | --- | ---: | --- | --- | --- | ---: | --- |
+  | planicies | ( 0.3,  0.2) | 32 | grama | terra | pedra | 8 | simplex ×10 @0,010 · perlin ×5 @0,010 |
+  | deserto   | ( 0.8, −0.7) | 34 | sand | sand | sand | 4 | simplex ×6 @0,008 · perlin ×2 @0,020 |
+  | pantano   | ( 0.5,  0.8) | 30 | podzol | terra | terra | 8 | simplex ×2 @0,006 |
+  | gelado    | (−0.8,  0.0) | 36 | snow | ice | pedra | 4 | perlin fBm ×8 @0,012 (3 oitavas) · simplex ×3 @0,030 |
+  | montanhoso| (−0.1, −0.3) | 40 | pedra | pedra | pedra | 4 | perlin fBm ×25 @0,006 (4 oitavas) · simplex subtração ×8 @0,010 (ravinas) |
+  
+  Globais: `limiarTransicao = 0.15`, `forcaDistorcao = 24`, `frequenciaTemperatura = 0.001`, `frequenciaUmidade = 0.002`, `offsetMundial = (0, 0)`; a `semente` fica a critério da implementação (registrada no histórico ao fixar o valor).
 
 ### Classificação climática e ecótono (REQ-BIO-02)
 
@@ -77,7 +85,7 @@ A estratégia matemática segue o documento de referência do mantenedor (`arqui
 - Arquivo `assets/biomes.json` + schema/defaults/validação + loader (padrão VS-12) e buffers/bindings (REQ-BIO-01, REQ-BIO-05).
 - Reescrita data-driven do trecho de terreno do `generate_voxels` (classificação, blending, composição de altura, seleção de blocos) preservando a estrutura do kernel e o export VS-13 (REQ-BIO-02/03/04).
 - Simulação `tools/sim/biomes_sim.py` (REQ-SIM-11).
-- Config padrão equivalente ao mundo atual (REQ-BIO-01).
+- Config padrão aprovada: 5 biomas (planícies, deserto, pantano, gelado, montanhoso) com blocos existentes, sem vegetação (REQ-BIO-01).
 - Atualização de `docs/arquitetura.md`, manual técnico, tracking e frontmatter.
 - Validação: regeneração bit a bit, screenshots de ecótono, métricas de telemetria de geração, smoke test com validation layers.
 
@@ -159,11 +167,11 @@ generation_jobs → generate_voxels (AGORA COM: warp → clima (T,H) → primár
 
 ## Tarefas da especificação
 
-- [ ] Vincular os requisitos (REQ-BIO-01..05, REQ-SIM-11) ao GOAL (Etapa 3 da arquitetura).
-- [ ] Definir escopo, não escopo e interfaces (schema JSON, structs std430, bindings 22–24).
-- [ ] Cobrir sucesso, dados-limite e concorrência.
-- [ ] Definir validação para cada critério de aceitação.
-- [ ] Ratificar a ADR-B12 e obter aprovação da spec.
+- [x] Vincular os requisitos (REQ-BIO-01..05, REQ-SIM-11) ao GOAL (Etapa 3 da arquitetura).
+- [x] Definir escopo, não escopo e interfaces (schema JSON, structs std430, bindings 22–24).
+- [x] Cobrir sucesso, dados-limite e concorrência.
+- [x] Definir validação para cada critério de aceitação.
+- [x] Ratificar a ADR-B12 e obter aprovação da spec. — ADR-B12 **ratificada (Opção A)** e spec **aprovada** pelo mantenedor em 2026-11-12, com a config padrão fixada em 5 biomas (planícies, deserto, pantano, gelado, montanhoso) sem vegetação.
 
 ## Tarefas de implementação
 
@@ -177,11 +185,9 @@ Só entram na fila após a aprovação desta spec e a ratificação da ADR-B12. 
 
 ## Questões abertas
 
-- Limites (16 biomas / 8 camadas por bioma / 64 camadas totais) são propostas iniciais para caber em buffers modestos — o mantenedor confirma na aprovação.
-- Config padrão: reproduzir o mundo atual como bioma único (paridade visual) ou já entregar 2–3 biomas de exemplo (melhor demonstração do ecótono, muda o mundo padrão)? **Assumido:** bioma único paridade + exemplo comentado de segundo bioma no JSON.
-- Mundo misto após troca de config: aceito como comportamento (só chunks novos) — confirmar na aprovação.
-- A semente é global da config (não há seed por mundo persistida hoje) — OK por ora (não escopo).
+- Nenhuma bloqueante. Resolvidas na aprovação (2026-11-12): limites (16 biomas / 8 camadas por bioma / 64 camadas totais) **confirmados**; config padrão = **5 biomas sem vegetação** (o campo `permitePlantas` permanece no schema para trabalho futuro, mas fica `false` em todos os biomas entregues); mundo misto após troca de config **aceito** (só chunks novos); semente **global da config** (não há seed por mundo persistida hoje).
 
 ## Histórico
 
 - 2026-11-12 — Rascunho elaborado a partir do documento do mantenedor (geração procedural de biomas em compute shaders: eixos climáticos, ecótono, domain warping, early-out), adaptado ao pipeline de geração existente, com a adição pedida de blocos de superfície/subsolo/fundo configuráveis por bioma via JSON; ADR-B12 registrada como pendente (bloqueia a aprovação).
+- 2026-11-12 — **ADR-B12 ratificada (Opção A) e spec aprovada** pelo mantenedor; bloqueio removido. Config padrão fixada em 5 biomas usando blocos existentes (grama/terra/pedra/sand/podzol/snow/ice): planícies, deserto, pantano, gelado e montanhoso — sem vegetação (`permitePlantas = false` em todos; vegetação em trabalho posterior); limites de buffer confirmados (16 biomas / 8 camadas / 64 totais). Tarefas VS-22-IMPL-01..05 destravadas.
