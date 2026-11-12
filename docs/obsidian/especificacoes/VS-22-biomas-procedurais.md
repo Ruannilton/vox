@@ -45,16 +45,19 @@ A estratégia matemática segue o documento de referência do mantenedor (`arqui
   | deserto   | ( 0.8, −0.7) | 34 | sand | sand | sand | 4 | simplex ×6 @0,008 · perlin ×2 @0,020 |
   | pantano   | ( 0.5,  0.8) | 30 | podzol | terra | terra | 8 | simplex ×2 @0,006 |
   | gelado    | (−0.8,  0.0) | 36 | snow | ice | pedra | 4 | perlin fBm ×8 @0,012 (3 oitavas) · simplex ×3 @0,030 |
-  | montanhoso| (−0.1, −0.3) | 40 | pedra | pedra | pedra | 4 | perlin fBm ×25 @0,006 (4 oitavas) · simplex subtração ×8 @0,010 (ravinas) |
+  | montanhoso| (−0.1, −0.3) | 40 | pedra | pedra | pedra | 4 | perlin fBm ×8 @0,010 + ×25 @0,006 + ×40 @0,001 (4 oitavas cada) · simplex subtração ×8 @0,010 (ravinas) |
   
   Globais: `limiarTransicao = 0.15`, `forcaDistorcao = 24`, `frequenciaTemperatura = 0.001`, `frequenciaUmidade = 0.002`, `offsetMundial = (0, 0)`; a `semente` fica a critério da implementação (registrada no histórico ao fixar o valor).
 
 ### Classificação climática e ecótono (REQ-BIO-02)
 
 - Por **coluna** (x, z) — nunca por voxel: a posição horizontal sofre *domain warping* (dois desvios independentes de ruído × `forcaDistorcao`), depois amostra temperatura e umidade com ruído de baixíssima frequência (`frequenciaTemperatura`/`frequenciaUmidade`), resultando num ponto (T, H) ∈ [−1, 1]².
-- Bioma **primário** = menor distância euclidiana de (T, H) ao centro do bioma; **secundário** = segunda menor. Comportamento de empate determinístico: desempate pelo menor índice de bioma (mesmo critério de ordenação estável da busca).
-- **Early-out:** se `distSec − distPrim > limiarTransicao`, avalia-se apenas o primário (o secundário nem entra no somatório de ruído — economia de ALU).
-- **Ecótono:** caso contrário, altura = `lerp(alturaPrimaria, alturaSecundaria, smoothstep(limiarTransicao, 0, distSec − distPrim) × 0.5)` — o peso do secundário nunca passa de 0,5 (bioma nunca é "dobrado" pelo vizinho).
+- Bioma **primário** = menor distância euclidiana de (T, H) ao centro do bioma (desempate por menor índice). As distâncias de **todos** os biomas são usadas no blending abaixo.
+- **Blending normalizado multiclique (generalização do ecótono):** para cada bioma `i`, `diff_i = d_i − d_prim`; se `diff_i ≤ limiarTransicao`, o bioma participa com peso bruto `s_i = smoothstep(limiarTransicao, 0, diff_i)` — o primário participa sempre com `s = 1` (smoothstep em 0). Altura final = `Σ(s_i × altura_i) / Σ(s_i)`. Consequências:
+  - **Early-out por bioma:** a pilha de ruído de um bioma só é avaliada se `s_i > 0` — no interior profundo de um bioma (todos os `diff_i > limiar`), só o primário é avaliado, como antes;
+  - **2 biomas nos extremos = comportamento anterior:** interior puro → primário só; centro do ecótono (diff = 0) → 50/50, igual ao `lerp` com peso máx. 0,5 da versão original; meio do caminho a curva difere levemente (o vizinho recebe mais peso na franja — transições um pouco mais largas);
+  - **Multiclique contínuo por construção:** onde 3+ biomas se encontram dentro do limiar, todos contribuem com peso suave (3 equidistantes → média ponderada igualitária), sem degrau na troca de "secundário" — o denominador nunca zera (`s_prim = 1`);
+  - Invariante preservado: `s_i ≤ s_prim`, então **nenhum bioma individual supera o primário** no peso normalizado (generalização do cap de 0,5).
 - **Blocos seguem o primário:** a escolha superfície/subsolo/fundo/planta da coluna usa o bioma primário; apenas a altura faz blending. Regra simples, determinística e sem cintilação de bloco em zona de transição.
 
 ### Composição da coluna (REQ-BIO-03)
@@ -78,7 +81,7 @@ A estratégia matemática segue o documento de referência do mantenedor (`arqui
 
 - Antes da integração, `tools/sim/biomes_sim.py` espelha em float32 por operação (padrão `render_sim.py`): classificação (primário/secundário + desempate por índice), decisão de early-out, `smoothstep`/`lerp` com peso ≤ 0,5, somatório de camadas com sinal, round half up, clamp, seleção de bloco por faixa de y (superfície/subsolo/fundo/planta/ar) e validação de JSON (bloco inexistente, limites, defaults).
 - **Divisão de responsabilidade com o oracle:** os valores de ruído do FastNoiseLite são **entradas injetadas** (tabela determinística/mock) — a sim valida a lógica de composição; a avaliação FNL em si é da biblioteca compartilhada já em uso (mesma divisão da VS-06, onde o GH float32 foi validado contra projeção de cantos com a FNL fora do escopo do espelho).
-- Casos obrigatórios: interior de bioma (early-out, secundário ignorado), ecótono central (peso = 0,5), zona de limiar exato, empate de distâncias, camadas de subtração, `alturaBase` acima do clamp, `profundidadeSubsuperficie` 0, bioma sem camadas, coluna com planta e sem planta, e JSON inválido (bloco desconhecido, > 16 biomas, > 64 camadas, tipos inválidos).
+- Casos obrigatórios: interior de bioma (early-out por bioma, vizinhos ignorados); ecótono central a 2 biomas (peso = 0,5 cada); zona de limiar exato; empate de distâncias (desempate por índice); **multiclique** — 3 biomas equidistantes dentro do limiar (contribuição ⅓ cada; um terceiro bioma entrando no anel tem peso que sobe de 0 — continuidade), 4+ biomas no limiar, e bioma com `diff > limiar` excluído mesmo no meio de um multiclique; camadas de subtração, `alturaBase` acima do clamp, `profundidadeSubsuperficie` 0, bioma sem camadas, coluna com planta e sem planta, e JSON inválido (bloco desconhecido, > 16 biomas, > 64 camadas, tipos inválidos).
 
 ## Escopo
 
@@ -143,11 +146,11 @@ generation_jobs → generate_voxels (AGORA COM: warp → clima (T,H) → primár
 - **Quando** a bolha de chunks é gerada.
 - **Então** o mundo exibe biomas distintos (blocos de superfície/subsolo diferentes) separados por zonas de transição suaves — sem paredões, sulcos ou desníveis abruptos na malha —; o heightmap exportado ao mirror casa bit a bit com a simulação; o `x` do draw indireto e a imagem renderizada dos chunks visíveis são consistentes com a altura final.
 
-### Travessia de ecótono
+### Travessia de ecótono e multiclique
 
-- **Dado** uma linha de colunas cruzando a fronteira entre dois biomas de amplitudes diferentes.
+- **Dado** uma linha de colunas cruzando a fronteira entre dois biomas de amplitudes diferentes, e um ponto onde três ou mais biomas se encontram dentro do `limiarTransicao`.
 - **Quando** as alturas são comparadas entre colunas adjacentes.
-- **Então** a diferença de altura entre colunas vizinhas nunca salta diretamente entre as envelopes dos dois biomas: no ecótono a altura é a média ponderada (peso ≤ 0,5), garantindo rampa contínua; fora dele, o early-out mantém o bioma puro.
+- **Então** a diferença de altura entre colunas vizinhas nunca salta diretamente entre as envelopes dos biomas: no ecótono a altura é a média ponderada (peso ≤ peso do primário), garantindo rampa contínua; no multiclique, todos os biomas dentro do limiar contribuem suavemente e um terceiro bioma entrando na zona de transição tem peso que cresce a partir de 0 — sem degrau nem pico no vértice.
 
 ### Falhas e concorrência
 
@@ -193,3 +196,6 @@ Só entram na fila após a aprovação desta spec e a ratificação da ADR-B12. 
 - 2026-11-12 — **ADR-B12 ratificada (Opção A) e spec aprovada** pelo mantenedor; bloqueio removido. Config padrão fixada em 5 biomas usando blocos existentes (grama/terra/pedra/sand/podzol/snow/ice): planícies, deserto, pantano, gelado e montanhoso — sem vegetação (`permitePlantas = false` em todos; vegetação em trabalho posterior); limites de buffer confirmados (16 biomas / 8 camadas / 64 totais). Tarefas VS-22-IMPL-01..05 destravadas.
 - 2026-11-12 — **Validações automatizadas posteriores dispensadas pelo mantenedor** (ele valida manualmente): o IMPL-05 fica reduzido a sims + `spirv-val` + build + smoke run; evidências de screenshot/readback/regeneração saem do escopo da fatia. Semente da config padrão fixada em **1337** (implantação).
 - 2026-11-12 — **Implementação concluída (IMPL-01..04)**: (1) `tools/sim/biomes_sim.py` — 1.271 checks verdes (espelho f32 por operação vs oracle f64, distância euclidiana real, validação de `assets/biomes.json` incluída); (2) `assets/biomes.json` + `src/engine/voxel_biomes.odin` (loader com validação fatal padrão VS-12) + structs std430 em `common.slang` + bindings 22–24 (`DESCRIPTOR_SET_BINDING_COUNT` = 25); (3) kernel `generate_voxels` data-driven (warp → clima → classificação com sqrt real e desempate por índice → early-out/ecótono com `smoothstep` explícito → altura por camadas → round half up + clamp [1,32767] → blocos por faixa de y seguindo o primário; `biome_gs[8][8]` novo; heightmap/export VS-13 preservados); (4) docs: manual técnico §3.1/§8 e arquitetura. Regressões verdes: `render_sim.py` (2.982) e `pack_sim.py` (1.077); `spirv-val` limpo nos três SPIR-V. **Validação manual (screenshots de ecótono, telemetria de geração, regeneração bit a bit) pendente com o mantenedor.**
+- 2026-11-12 — **Fix pós-validação do mantenedor**: constantes de enum de biomas tipadas como `u32` (o `biomes_parse_enum` variádico asseriia `.(u32)` e rejeitava os valores `int` — o app abortava na carga do `assets/biomes.json`); boot verificado (5 biomas, 9 camadas carregados).
+- 2026-11-12 — **Melhoria aprovada pelo mantenedor: blending multiclique.** O ecótono que misturava apenas o bioma secundário deixava um degrau de até `0.5·|h_B − h_C|` nos pontos onde 3+ biomas se encontram (troca de secundário no vértice). REQ-BIO-02 generalizado para **blending normalizado**: todo bioma com `d_i − d_prim ≤ limiarTransicao` participa com peso bruto `smoothstep(limiar, 0, d_i − d_prim)` (primário = 1) e a altura é `Σ(s_i·h_i)/Σ(s_i)`; early-out passa a ser por bioma (a pilha de ruído só roda para `s_i > 0`). Reduz ao comportamento anterior nos extremos (interior puro; 50/50 a 2 biomas no centro), multiclique contínuo por construção (denominador ≥ 1) e o invariante "nenhum bioma supera o primário" generaliza o cap de 0,5. Sim e kernel atualizados; sims verdes.
+- 2026-11-12 — **Ajuste de config do mantenedor ratificado**: montanhoso ganhou camadas perlin fBm extras (`×8 @0,010` e `×40 @0,001`, 4 oitavas) para amplitude maior — tabela do REQ-BIO-01, `assets/biomes.json` e config embutida da sim realinhadas (11 camadas no total).

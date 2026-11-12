@@ -121,26 +121,31 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
                               fnlGetNoise2D(fnl_h, pos.x, pos.y));
 
         // 4. classificação: distância euclidiana REAL ao centro (T,H); primário
-        // = menor, secundário = segunda menor; desempate por menor índice
-        // (busca com `<` em ordem crescente de i).
+        // = menor distância; desempate por menor índice (busca com `<` em
+        // ordem crescente de i). O blending multiclique (passo 5) re-deriva as
+        // distâncias dos participantes, então só o argmin fica aqui.
         uint prim = 0u;
-        uint sec = 0u;
         float dist_prim = 1e30;
-        float dist_sec = 1e30;
         for (uint i = 0; i < g.num_biomas; i++) {
             float d = distance(clima, biome_definitions[i].centro_climatico);
-            if (d < dist_prim) { dist_sec = dist_prim; sec = prim; dist_prim = d; prim = i; }
-            else if (d < dist_sec) { dist_sec = d; sec = i; }
+            if (d < dist_prim) { dist_prim = d; prim = i; }
         }
 
-        // 5. altura do primário; o secundário só é composto no ecótono
-        // (early-out: diff > limiar → secundário nem entra no somatório).
-        float altura_f = biome_altura(biome_definitions[prim], prim, g.semente, pos);
-        if (g.num_biomas > 1u && (dist_sec - dist_prim) <= g.limiar_transicao) {
-            float altura_sec = biome_altura(biome_definitions[sec], sec, g.semente, pos);
-            float peso = smoothstep_transicao(g.limiar_transicao, dist_sec - dist_prim) * 0.5;
-            altura_f = lerp(altura_f, altura_sec, peso);
+        // 5. blending normalizado multiclique (REQ-BIO-02): cada bioma com
+        // s_i = smoothstep(limiar, 0, d_i − d_prim) > 0 participa; altura =
+        // Σ s_i·h_i / Σ s_i. O primário tem s = 1, logo w_acc ≥ 1 (sem
+        // divisão por zero); biomas fora da zona de transição têm s = 0 e
+        // nem entram no somatório de ruído (early-out por bioma).
+        float altura_acc = 0.0;
+        float peso_acc = 0.0;
+        for (uint i = 0; i < g.num_biomas; i++) {
+            float s = smoothstep_transicao(g.limiar_transicao, distance(clima, biome_definitions[i].centro_climatico) - dist_prim);
+            if (s > 0.0) {
+                altura_acc += s * biome_altura(biome_definitions[i], i, g.semente, pos);
+                peso_acc += s;
+            }
         }
+        float altura_f = altura_acc / peso_acc;
 
         // 6. round half up + clamp [1, 32767] (REQ-BIO-03).
         height = uint(clamp(floor(altura_f + 0.5), 1.0, 32767.0));

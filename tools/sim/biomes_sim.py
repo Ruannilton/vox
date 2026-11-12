@@ -119,7 +119,9 @@ CONFIG_PADRAO = {
          "blocoProfundo": "pedra", "profundidadeSubsuperficie": 4,
          "permitePlantas": False,
          "camadas": [
+             {"amplitude": 8, "frequencia": 0.010, "oitavas": 4, "tipo": "perlin", "operacao": "adicao"},
              {"amplitude": 25, "frequencia": 0.006, "oitavas": 4, "tipo": "perlin", "operacao": "adicao"},
+             {"amplitude": 40, "frequencia": 0.001, "oitavas": 4, "tipo": "perlin", "operacao": "adicao"},
              {"amplitude": 8, "frequencia": 0.010, "oitavas": 1, "tipo": "simplex", "operacao": "subtracao"},
          ]},
     ],
@@ -232,26 +234,6 @@ def validar_config_biomas(config, registry):
 # Espelho float32 (REQ-BIO-02/03) — arredondamento por operacao
 # ----------------------------------------------------------------------------
 
-def classificar_f32(ponto, biomas):
-    """Primario/secundario por distancia euclidiana REAL (sqrt apos a soma
-    dos quadrados, em f32 por operacao — ordem do kernel); desempate por
-    menor indice (busca estavel). O early-out compara distSec - distPrim
-    em unidades de distancia, entao o sqrt nao e opcional."""
-    melhor, segunda = None, None
-    for i, b in enumerate(biomas):
-        dt = f32(f32(ponto[0] - f32(b["centroTemperatura"])) ** 2)
-        dh = f32(f32(ponto[1] - f32(b["centroUmidade"])) ** 2)
-        d2 = f32(dt + dh)
-        dist = f32(math.sqrt(d2))
-        if melhor is None or dist < melhor[1]:
-            segunda, melhor = melhor, (i, dist)
-        elif segunda is None or dist < segunda[1]:
-            segunda = (i, dist)
-    if segunda is None:
-        segunda = (-1, float("inf"))  # bioma unico: secundario inexistente
-    return melhor, segunda
-
-
 def smoothstep_f32(limiar, x):
     """smoothstep(limiar, 0, x): t = clamp((x-limiar)/(0-limiar), 0, 1);
     em f32 por operacao. diff=0 -> t=1; diff=limiar -> t=0."""
@@ -260,9 +242,13 @@ def smoothstep_f32(limiar, x):
     return f32(t * t * f32(3.0 - f32(2.0 * t)))
 
 
-def altura_bioma_f32(bioma, ruidos):
+def altura_bioma_f32(bioma, ruidos, contador=None):
     """alturaBase + somatorio(camadas): ruido injetado x amplitude, sinal por
-    operacao (adicao +/subtracao -), em f32 por operacao."""
+    operacao (adicao +/subtracao -), em f32 por operacao. O contador, quando
+    fornecido, registra a avaliacao (mock) — usado para verificar o early-out
+    por bioma (s_i > 0) do REQ-BIO-02."""
+    if contador is not None:
+        contador.append(bioma["nome"])
     acc = f32(bioma["alturaBase"])
     for camada, ruido in zip(bioma["camadas"], ruidos):
         contrib = f32(f32(ruido) * f32(camada["amplitude"]))
@@ -270,6 +256,31 @@ def altura_bioma_f32(bioma, ruidos):
             contrib = f32(-contrib)
         acc = f32(acc + contrib)
     return acc
+
+
+def blending_multiclique_f32(distancias, prim, limiar, biomas,
+                             ruidos_por_bioma, contador=None):
+    """Blending normalizado multiclique (REQ-BIO-02): para cada bioma em
+    ordem ascendente fixa, diff_i = d_i - d_prim e
+    s_i = smoothstep(limiar, 0, diff_i); se s_i > 0, a altura do bioma entra
+    no somatorio (f32 por operacao). Altura = h_acc / w_acc (w_acc >= 1,
+    nunca zero). Retorna (blended, pesos brutos, avaliados, alturas)."""
+    h_acc = 0.0
+    w_acc = 0.0
+    pesos = [0.0] * len(biomas)
+    avaliados = []
+    alturas = {}
+    for i in range(len(biomas)):
+        diff = f32(distancias[i] - distancias[prim])
+        s = smoothstep_f32(limiar, diff)
+        pesos[i] = s
+        if s > 0:
+            h = altura_bioma_f32(biomas[i], ruidos_por_bioma[i], contador)
+            h_acc = f32(h_acc + f32(s * h))
+            w_acc = f32(w_acc + s)
+            avaliados.append(i)
+            alturas[i] = h
+    return f32(h_acc / w_acc), pesos, avaliados, alturas
 
 
 def altura_final_f32(altura_blended):
@@ -307,39 +318,41 @@ def montar_coluna(bioma_prim, registry, altura, y_min, y_max, spawn_planta):
     return coluna
 
 
-def gerar_coluna_f32(ponto, biomas, ruidos_por_bioma, limiar,
-                     registry, y_min, y_max, spawn_planta):
-    """Coluna completa em f32: classificacao -> early-out/blending -> altura ->
-    faixas de bloco (seguem o PRIMARIO). Retorna o estado da composicao."""
-    (prim, dist_prim), (sec, dist_sec) = classificar_f32(ponto, biomas)
-    if math.isinf(dist_sec):  # bioma unico: secundario inexistente
-        alt_prim = altura_bioma_f32(biomas[prim], ruidos_por_bioma[prim])
-        altura = altura_final_f32(alt_prim)
-        return {"prim": prim, "sec": -1, "early_out": True, "diff": float("inf"),
-                "peso": 0.0, "alt_prim": alt_prim, "alt_sec": None,
-                "blended": alt_prim, "altura": altura,
-                "coluna": montar_coluna(biomas[prim], registry, altura,
-                                        y_min, y_max, spawn_planta),
-                "bioma_prim": biomas[prim]["nome"]}
-    diff = f32(dist_sec - dist_prim)
-    early_out = diff > limiar
+def distancias_f32(ponto, biomas):
+    """Distancia euclidiana real de (T,H) a cada centro, em f32 por operacao
+    (ordem do kernel). Indice do resultado = indice do bioma."""
+    ds = []
+    for b in biomas:
+        dt = f32(f32(ponto[0] - f32(b["centroTemperatura"])) ** 2)
+        dh = f32(f32(ponto[1] - f32(b["centroUmidade"])) ** 2)
+        ds.append(f32(math.sqrt(f32(dt + dh))))
+    return ds
 
+
+def gerar_coluna_f32(ponto, biomas, ruidos_por_bioma, limiar,
+                     registry, y_min, y_max, spawn_planta,
+                     contador_avaliacoes=None):
+    """Coluna completa em f32: classificacao (prim = argmin, desempate por
+    menor indice) -> blending normalizado multiclique -> altura -> faixas de
+    bloco (seguem o PRIMARIO). Retorna o estado da composicao."""
+    ds = distancias_f32(ponto, biomas)
+    prim = min(range(len(biomas)), key=lambda i: (ds[i], i))
+    sec = min((i for i in range(len(biomas)) if i != prim), key=lambda i: (ds[i], i), default=-1)
     alt_prim = altura_bioma_f32(biomas[prim], ruidos_por_bioma[prim])
-    if early_out:
-        peso = 0.0
-        alt_sec = None
+    if len(biomas) == 1:
         blended = alt_prim
+        pesos, avaliados, alturas = [1.0], [0], {0: alt_prim}
     else:
-        alt_sec = altura_bioma_f32(biomas[sec], ruidos_por_bioma[sec])
-        peso = f32(smoothstep_f32(limiar, diff) * 0.5)
-        blended = f32(f32(alt_prim * f32(1.0 - peso)) + f32(alt_sec * peso))
+        blended, pesos, avaliados, alturas = blending_multiclique_f32(
+            ds, prim, limiar, biomas, ruidos_por_bioma, contador_avaliacoes)
     altura = altura_final_f32(blended)
 
     bioma_prim = biomas[prim]
     return {
-        "prim": prim, "sec": sec, "early_out": early_out, "diff": diff,
-        "peso": peso, "alt_prim": alt_prim, "alt_sec": alt_sec,
-        "blended": blended, "altura": altura,
+        "prim": prim, "sec": sec, "distancias": ds, "pesos": pesos,
+        "pesos_norm": {i: f32(p / (sum(pesos) or 1.0)) for i, p in enumerate(pesos)},
+        "avaliados": avaliados, "alturas": alturas,
+        "alt_prim": alt_prim, "blended": blended, "altura": altura,
         "coluna": montar_coluna(bioma_prim, registry, altura, y_min, y_max, spawn_planta),
         "bioma_prim": bioma_prim["nome"],
     }
@@ -363,37 +376,36 @@ def gerar_coluna_f64(ponto, biomas, ruidos_por_bioma, limiar,
     for b in biomas:
         dt = ponto[0] - b["centroTemperatura"]
         dh = ponto[1] - b["centroUmidade"]
-        dists.append(dt * dt + dh * dh)
-    ordem = sorted(range(len(biomas)), key=lambda i: (dists[i], i))
-    prim = ordem[0]
-    if len(biomas) == 1:  # bioma unico: secundario inexistente
-        alt_prim = altura_bioma(biomas[prim], ruidos_por_bioma[prim])
-        altura = min(ALTURA_MAX, max(ALTURA_MIN, math.floor(alt_prim + 0.5)))
-        return {"prim": prim, "sec": -1, "early_out": True, "diff": float("inf"),
-                "peso": 0.0, "alt_prim": alt_prim, "alt_sec": None,
-                "blended": alt_prim, "altura": altura,
-                "coluna": montar_coluna(biomas[prim], registry, altura,
-                                        y_min, y_max, spawn_planta),
-                "bioma_prim": biomas[prim]["nome"]}
-    sec = ordem[1]
-    diff = math.sqrt(dists[sec]) - math.sqrt(dists[prim])
-    early_out = diff > limiar
+        dists.append(math.sqrt(dt * dt + dh * dh))
+    prim = min(range(len(biomas)), key=lambda i: (dists[i], i))
+    sec = min((i for i in range(len(biomas)) if i != prim), key=lambda i: (dists[i], i), default=-1)
 
-    alt_prim = altura_bioma(biomas[prim], ruidos_por_bioma[prim])
-    if early_out:
-        peso, alt_sec, blended = 0.0, None, alt_prim
-    else:
-        alt_sec = altura_bioma(biomas[sec], ruidos_por_bioma[sec])
+    h_acc = 0.0
+    w_acc = 0.0
+    pesos = [0.0] * len(biomas)
+    avaliados = []
+    alturas = {}
+    for i in range(len(biomas)):
+        diff = dists[i] - dists[prim]
         t = min(1.0, max(0.0, (diff - limiar) / (0.0 - limiar)))
-        peso = (t * t * (3.0 - 2.0 * t)) * 0.5
-        blended = alt_prim * (1.0 - peso) + alt_sec * peso
+        s = t * t * (3.0 - 2.0 * t)
+        pesos[i] = s
+        if s > 0:
+            h = altura_bioma(biomas[i], ruidos_por_bioma[i])
+            h_acc += s * h
+            w_acc += s
+            avaliados.append(i)
+            alturas[i] = h
+    blended = h_acc / w_acc if w_acc > 0 else altura_bioma(biomas[prim], ruidos_por_bioma[prim])
+    alt_prim = alturas.get(prim, altura_bioma(biomas[prim], ruidos_por_bioma[prim]))
     altura = min(ALTURA_MAX, max(ALTURA_MIN, math.floor(blended + 0.5)))
 
     bioma_prim = biomas[prim]
     return {
-        "prim": prim, "sec": sec, "early_out": early_out, "diff": diff,
-        "peso": peso, "alt_prim": alt_prim, "alt_sec": alt_sec,
-        "blended": blended, "altura": altura,
+        "prim": prim, "sec": sec, "distancias": dists, "pesos": pesos,
+        "pesos_norm": {i: p / (sum(pesos) or 1.0) for i, p in enumerate(pesos)},
+        "avaliados": avaliados, "alturas": alturas,
+        "alt_prim": alt_prim, "blended": blended, "altura": altura,
         "coluna": montar_coluna(bioma_prim, registry, altura, y_min, y_max, spawn_planta),
         "bioma_prim": bioma_prim["nome"],
     }
@@ -444,45 +456,53 @@ def cenario_classificacao_e_early_out():
     ]
     ruidos = sem_ruido(biomas)
 
-    # interior: distSec - distPrim > limiar -> early-out, secundario ignorado
+    # interior: todos os diff_i > limiar -> so o primario avaliado
+    contador = []
     r = gerar_coluna_f32((0.3, 0.2), biomas, ruidos, LIMIAR_TRANSICAO_PADRAO,
-                         REGISTRY_PADRAO, 0, 70, False)
+                         REGISTRY_PADRAO, 0, 70, False, contador)
     check("interior: primario = bioma do centro", r["prim"] == 0)
-    check("interior: early-out disparado", r["early_out"])
-    check("interior: peso 0 e altura = alturaBase", r["peso"] == 0.0 and r["altura"] == 32)
-    check("interior: secundario nem avaliado (altura sec None)", r["alt_sec"] is None)
+    check("interior: so o primario avaliado (contador de mock)", contador == ["a"])
+    check("interior: peso normalizado 1,0 no primario", r["pesos_norm"][0] == 1.0)
+    check("interior: altura = alturaBase", r["altura"] == 32)
 
-    # ecotono central: ponto equidistante -> diff = 0 -> peso exato 0,5
+    # ecotono central: ponto equidistante -> diff = 0 -> 50/50
     # ponto medio entre a e b: ((0.3-0.8)/2, (0.2+0.0)/2) = (-0.25, 0.1)
     ponto = (-0.25, 0.1)
+    contador = []
     r = gerar_coluna_f32(ponto, biomas, ruidos, LIMIAR_TRANSICAO_PADRAO,
-                         REGISTRY_PADRAO, 0, 70, False)
-    check("ecotono central: empate exato (diff == 0)", abs(r["diff"]) < 1e-7)
-    check("ecotono central: peso exato 0,5", r["peso"] == 0.5)
+                         REGISTRY_PADRAO, 0, 70, False, contador)
+    check("ecotono central: empate exato (diff == 0)",
+          abs(r["distancias"][0] - r["distancias"][1]) < 1e-7)
+    check("ecotono central: 50/50 (pesos normalizados 0,5/0,5)",
+          r["pesos_norm"][0] == 0.5 and r["pesos_norm"][1] == 0.5)
     check("ecotono central: altura = media (32+36)/2 = 34", r["altura"] == 34)
-    check("ecotono central: sem early-out", not r["early_out"])
+    check("ecotono central: ambos avaliados, c fora do limiar",
+          sorted(r["avaliados"]) == [0, 1] and contador == ["a", "b"])
 
     # zona de limiar: diff ~= limiar (epsilon para dentro; no exato o
-    # arredondamento f32 de distSec - distPrim pode cruzar o limiar)
+    # arredondamento f32 de d_i - d_prim pode cruzar o limiar)
     dx, dy = 0.8 - 0.3, -0.7 - 0.2
     norma = math.hypot(dx, dy)
     folga = 1e-5
-    # ponto sobre o segmento a->c com distSec - distPrim = limiar - folga:
+    # ponto sobre o segmento a->c com d_c - d_a = limiar - folga:
     # fracao s = (1 - (limiar-folga)/norma) / 2 a partir de a
     s = (1.0 - (LIMIAR_TRANSICAO_PADRAO - folga) / norma) / 2.0
     t_estrela = 0.3 + s * dx
     h_estrela = 0.2 + s * dy
     r = gerar_coluna_f32((t_estrela, h_estrela), biomas, ruidos,
                          LIMIAR_TRANSICAO_PADRAO, REGISTRY_PADRAO, 0, 70, False)
-    check("limiar: diff ~= limiar (sem early-out)", not r["early_out"])
-    check("limiar: peso ~= 0 (smoothstep no extremo)", abs(r["peso"]) < 1e-3)
+    check("limiar: vizinho com s > 0 ainda entra", 1 in r["avaliados"] or 2 in r["avaliados"])
+    check("limiar: peso do vizinho ~= 0 (smoothstep no extremo)",
+          max(r["pesos_norm"][1], r["pesos_norm"][2]) < 1e-3)
 
-    # logo acima do limiar: early-out
+    # logo acima do limiar: vizinho excluido (s = 0)
     t_fora = 0.3 + (LIMIAR_TRANSICAO_PADRAO / 2.0 + 1e-4) * (dx / norma)
     h_fora = 0.2 + (LIMIAR_TRANSICAO_PADRAO / 2.0 + 1e-4) * (dy / norma)
+    contador = []
     r = gerar_coluna_f32((t_fora, h_fora), biomas, ruidos,
-                         LIMIAR_TRANSICAO_PADRAO, REGISTRY_PADRAO, 0, 70, False)
-    check("acima do limiar: early-out", r["early_out"])
+                         LIMIAR_TRANSICAO_PADRAO, REGISTRY_PADRAO, 0, 70, False, contador)
+    check("acima do limiar: vizinho excluido (so primario avaliado)",
+          r["avaliados"] == [0] and contador == ["a"])
 
     # empate de distancias a 3 biomas: desempate por menor indice
     empate = [
@@ -619,14 +639,98 @@ def cenario_blending_altura():
     check("blending: nenhum bloco do secundario na coluna",
           5 not in {b for _, _, b in r["coluna"]})
 
-    # diff no meio do ecotono: smoothstep(0.15, 0, 0.075) x 0,5 = 0,5 x 0,5
-    # ponto a meio caminho na reta: dist_prim = dist_sec - 0.075
-    # reta ao longo de T: centros (0,0) e (1,0); ponto p com d(p,baixo)=0.4625
+    # meio do ecotono (nova curva): diff = 0,075 -> s = 0,5; normalizado
+    # peso_sec = 0,5/1,5 = 1/3 (franja mais larga que o lerp antigo, 0,25)
     p = 0.4625
     r = gerar_coluna_f32((p, 0.0), biomas, sem_ruido(biomas),
                          LIMIAR_TRANSICAO_PADRAO, REGISTRY_PADRAO, 0, 50, False)
-    check("meio do ecotono: diff = 0,075 -> peso = 0,25", abs(r["peso"] - 0.25) < 1e-6)
-    check("meio do ecotono: altura = 20*0,75 + 40*0,25 = 25", r["altura"] == 25)
+    check("meio do ecotono: s = 0,5 -> peso normalizado 1/3",
+          abs(r["pesos_norm"][1] - 1.0 / 3.0) < 1e-6)
+    check("meio do ecotono: altura = 20*2/3 + 40*1/3 = 26,67 -> 27",
+          r["altura"] == 27)
+
+
+def cenario_blending_multiclique():
+    print("[cenario] blending normalizado multiclique (REQ-BIO-02)")
+    # 3 biomas equidistantes (diff 0) -> media igualitaria 1/3
+    tri = [
+        bioma_simples("t0", 1.0, 0.0, 30, "grama", "terra", "pedra"),
+        bioma_simples("t1", -0.5, 0.8660254, 40, "sand", "sand", "sand"),
+        bioma_simples("t2", -0.5, -0.8660254, 60, "snow", "ice", "pedra"),
+    ]
+    r = gerar_coluna_f32((0.0, 0.0), tri, sem_ruido(tri), LIMIAR_TRANSICAO_PADRAO,
+                         REGISTRY_PADRAO, 0, 80, False)
+    check("multiclique 3 equidistantes: todos avaliados", r["avaliados"] == [0, 1, 2])
+    check("multiclique 3 equidistantes: pesos 1/3 cada",
+          all(abs(r["pesos_norm"][i] - 1.0 / 3.0) < 1e-6 for i in range(3)))
+    check("multiclique 3 equidistantes: altura = (30+40+60)/3 = 43,33 -> 43",
+          r["altura"] == 43)
+    check("multiclique 3: nenhum peso supera o primario",
+          max(r["pesos_norm"].values()) <= r["pesos_norm"][r["prim"]] + 1e-9)
+
+    # 4 biomas dentro do limiar: pesos normalizados coherentes (somam 1)
+    quat = [
+        bioma_simples("q0", 0.0, 0.0, 20, "grama", "terra", "pedra"),
+        bioma_simples("q1", 0.05, 0.0, 30, "sand", "sand", "sand"),
+        bioma_simples("q2", 0.0, 0.06, 50, "snow", "ice", "pedra"),
+        bioma_simples("q3", -0.07, -0.02, 80, "podzol", "terra", "terra"),
+    ]
+    r = gerar_coluna_f32((0.0, 0.0), quat, sem_ruido(quat), LIMIAR_TRANSICAO_PADRAO,
+                         REGISTRY_PADRAO, 0, 100, False)
+    check("multiclique 4: todos dentro do limiar avaliados", r["avaliados"] == [0, 1, 2, 3])
+    check("multiclique 4: pesos normalizados somam 1",
+          abs(sum(r["pesos_norm"].values()) - 1.0) < 1e-6)
+    check("multiclique 4: pesos decrescem com a distancia",
+          r["pesos_norm"][0] > r["pesos_norm"][1] > r["pesos_norm"][3]
+          and r["pesos_norm"][0] > r["pesos_norm"][2])
+    # altura blended reproduz a media ponderada com os pesos brutos (f32)
+    h_esperada = sum(p * a for p, a in zip(r["pesos"], (20, 30, 50, 80))) / sum(r["pesos"])
+    check("multiclique 4: altura = media ponderada", abs(r["blended"] - h_esperada) < 1e-4)
+
+    # bioma com diff > limiar no meio de um multiclique: excluido (s = 0)
+    contador = []
+    r = gerar_coluna_f32((0.0, 0.0), quat, sem_ruido(quat), 0.05,
+                         REGISTRY_PADRAO, 0, 100, False, contador)
+    check("limiar 0,05: q3 (diff 0,073) excluido do multiclique", 3 not in r["avaliados"])
+    check("limiar 0,05: contador nao avaliou q3", "q3" not in contador)
+    check("limiar 0,05: peso bruto de q3 == 0", r["pesos"][3] == 0.0)
+
+    # continuidade: varrendo diff de um terceiro bioma (altura 90) de fora
+    # do limiar ate 0, o peso sobe suavemente de 0 — nenhum salto de altura
+    base = [
+        bioma_simples("m0", 0.0, 0.0, 40, "grama", "terra", "pedra"),
+        bioma_simples("m1", 0.05, 0.0, 40, "sand", "sand", "sand"),
+    ]
+    alturas = []
+    for desloc in (0.2, 0.151, 0.149, 0.12, 0.075, 0.03, 0.0):
+        tri2 = base + [bioma_simples("m2", 0.05 + desloc, 0.0, 90, "snow", "ice", "pedra")]
+        r = gerar_coluna_f32((0.0, 0.0), tri2, sem_ruido(tri2),
+                             LIMIAR_TRANSICAO_PADRAO, REGISTRY_PADRAO, 0, 60, False)
+        alturas.append((desloc, r["altura"]))
+    passos = [abs(alturas[i + 1][1] - alturas[i][1]) for i in range(len(alturas) - 1)]
+    check("continuidade: fora do limiar altura = 40 do par puro",
+          alturas[0][1] == 40)
+    check("continuidade: nenhum salto entre passos vizinhos (max <= 11)",
+          max(passos) <= 11)
+    s_005 = smoothstep_f32(LIMIAR_TRANSICAO_PADRAO, 0.05)
+    esperada_final = (40 + 40 * s_005 + 90 * s_005) / (1 + 2 * s_005)
+    check("continuidade: altura sobe suavemente ate a media 3-vias ponderada",
+          alturas[-1][1] == math.floor(esperada_final + 0.5)
+          and alturas[-1][1] > 50)
+    r = gerar_coluna_f32((0.0, 0.0),
+                         base + [bioma_simples("m2", 0.2, 0.0, 90, "snow", "ice", "pedra")],
+                         sem_ruido(base + [bioma_simples("m2", 0.2, 0.0, 90, "snow", "ice", "pedra")]),
+                         LIMIAR_TRANSICAO_PADRAO, REGISTRY_PADRAO, 0, 60, False)
+    check("fora do limiar: altura do terceiro nao influi (early-out por bioma)",
+          r["altura"] == 40 and 2 not in r["avaliados"])
+    r = gerar_coluna_f32((0.0, 0.0),
+                         base + [bioma_simples("m2", 0.05, 0.0, 90, "snow", "ice", "pedra")],
+                         sem_ruido(base + [bioma_simples("m2", 0.05, 0.0, 90, "snow", "ice", "pedra")]),
+                         LIMIAR_TRANSICAO_PADRAO, REGISTRY_PADRAO, 0, 60, False)
+    # m2 no mesmo centro de m1 (diff 0,05): entra com o mesmo peso de m1
+    check("dentro do limiar: terceiro entra no somatorio com peso = do vizinho",
+          r["avaliados"] == [0, 1, 2]
+          and abs(r["pesos_norm"][2] - r["pesos_norm"][1]) < 1e-9)
 
 
 def cenario_cinco_biomas():
@@ -776,9 +880,9 @@ def cenario_oracle_f64():
         r64 = gerar_coluna_f64(ponto, biomas, ruidos, limiar,
                                REGISTRY_PADRAO, 0, 140, spawn)
         # decisoes devem coincidir exatamente
-        check(f"caso {caso}: primario/secundario/early-out coincidem",
-              (r32["prim"], r32["sec"], r32["early_out"]) ==
-              (r64["prim"], r64["sec"], r64["early_out"]))
+        check(f"caso {caso}: primario/secundario/avaliados coincidem",
+              (r32["prim"], r32["sec"], r32["avaliados"]) ==
+              (r64["prim"], r64["sec"], r64["avaliados"]))
         check(f"caso {caso}: altura final (com clamp/round) coincide",
               r32["altura"] == r64["altura"])
         check(f"caso {caso}: coluna (faixas e blocos) coincide",
@@ -786,8 +890,8 @@ def cenario_oracle_f64():
         if r32["blended"] == r64["blended"]:
             continue  # espelho e oracle coincidentes: nada a medir
         decisivos += 1
-        escala = max(1.0, abs(r64["alt_prim"]), abs(r64["alt_sec"] or 0.0),
-                     abs(r64["blended"]))
+        escala = max([1.0, abs(r64["blended"])] +
+                     [abs(h) for h in r64["alturas"].values()])
         # tolerancia de alguns ULPs f32 sobre a escala dos operandos (o espelho
         # arredonda por operacao; o oracle acumula em f64)
         check(f"caso {caso}: altura blended ~ oracle (erro ~ ULPs f32, escala dos operandos)",
@@ -846,6 +950,7 @@ def main():
     cenario_composicao_altura()
     cenario_faixas_e_planta()
     cenario_blending_altura()
+    cenario_blending_multiclique()
     cenario_cinco_biomas()
     cenario_validacao_json()
     cenario_oracle_f64()
