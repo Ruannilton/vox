@@ -141,6 +141,44 @@ struct MeshTemplate {
     uint padding_1;
 }
 
+// VS-22 (REQ-BIO-01/05): biomas procedurais data-driven. Espelhadas em
+// src/engine/voxel_biomes.odin (std430; offsets comentados, verificáveis pela
+// reflection do slangc). Tipos de ruído/operacao: 0=simplex, 1=perlin,
+// 2=cellular; 0=adicao, 1=subtracao. Flags: bit 0 = permitePlantas.
+struct BiomeGlobals {
+    float2 offset_mundial;        // 0..8 (float2 alinhado a 8)
+    uint   semente;               // 8
+    uint   num_biomas;            // 12
+    uint   num_camadas_total;     // 16
+    float  forca_distorcao;       // 20
+    float  limiar_transicao;      // 24
+    float  frequencia_temperatura;// 28
+    float  frequencia_umidade;    // 32
+    uint   _padding[3];           // 36..48 (stride múltiplo de 16)
+};
+
+struct BiomeDefinition {
+    float2 centro_climatico;      // 0..8 (T, H)
+    float  altura_base;           // 8
+    uint   bloco_superficie;      // 12
+    uint   bloco_subsuperficie;   // 16
+    uint   bloco_profundo;        // 20
+    uint   profundidade_subsuperficie; // 24
+    uint   layer_start;           // 28
+    uint   layer_count;           // 32
+    uint   flags;                 // 36
+    uint   _padding[2];           // 40..48 (stride múltiplo de 16)
+};
+
+struct BiomeNoiseLayer {
+    float amplitude;              // 0
+    float frequencia;             // 4
+    uint  oitavas;                // 8
+    uint  tipo;                   // 12
+    uint  operacao;               // 16
+    uint  _padding[3];            // 20..32 (stride múltiplo de 16)
+};
+
 struct PushConstants {
     column_major float4x4 view_projection_matrix;
     float3 camera_position;
@@ -180,7 +218,7 @@ struct MeshVertex {
 
 // ----------------------------------------------------------------------------
 // Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–15 = VS-03;
-// 16 = VS-04; 18 = VS-10; 19 = VS-11; 20 = VS-13)
+// 16 = VS-04; 18 = VS-10; 19 = VS-11; 20 = VS-13; 21 = VS-20; 22–24 = VS-22)
 // ----------------------------------------------------------------------------
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint>               temporary_dense_chunks;
 [[vk::binding(1, 0)]] StructuredBuffer<ChunkGenerationJob>   generation_jobs;
@@ -218,6 +256,11 @@ struct TargetHighlight {
     uint  target_valid;
 }
 [[vk::binding(21, 0)]] ConstantBuffer<TargetHighlight>       target_highlight;
+// VS-22 (REQ-BIO-05): tabelas de biomas procedurais (leitura, bindings
+// 22–24). Preenchidas uma vez no boot; consumidas pelo kernel de geração.
+[[vk::binding(22, 0)]] StructuredBuffer<BiomeDefinition>    biome_definitions;
+[[vk::binding(23, 0)]] StructuredBuffer<BiomeNoiseLayer>    biome_noise_layers;
+[[vk::binding(24, 0)]] StructuredBuffer<BiomeGlobals>      biome_globals;
 
 uint work_queue_base_words() {
     // VS-08: slot do ring = estado + capacidade de visíveis do push constant.

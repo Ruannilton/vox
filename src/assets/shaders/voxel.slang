@@ -3,8 +3,11 @@ import common;
 
 // VS-13 (REQ-GEN-01/02): heightmap da fatia 8x8 do workgroup em groupshared.
 // As threads com y-local 0 (64/workgroup) calculam a altura de cada coluna
-// uma única vez; após barrier todos leem. 128 B/workgroup.
+// uma única vez; após barrier todos leem. 128 B/workgroup. VS-22: o índice do
+// bioma primário da coluna vai num segundo groupshared (as faixas de bloco por
+// voxel seguem o primário — só a altura faz blending).
 groupshared uint16_t heights_gs[8][8];
+groupshared uint biome_gs[8][8];
 
 // VS-14 (REQ-PLT-03): hash determinístico da coluna (x,z) mundial — wang
 // hash u32. Puro função da coordenada: a planta na fronteira entre chunks
@@ -23,6 +26,60 @@ bool plant_spawns(int world_x, int world_z) {
     return h % 1000u < 100u; // 10% das colunas
 }
 
+// ----------------------------------------------------------------------------
+// VS-22 (REQ-BIO-02/03/04): composição de biomas data-driven — por coluna.
+// ----------------------------------------------------------------------------
+
+// BiomeDefinition.flags (espelha BIOME_FLAG_PERMITE_PLANTAS no Odin).
+static const uint BIOME_FLAG_PERMITE_PLANTAS = 1u;
+
+// Derivadas determinísticas de semente (REQ-BIO-04: só config + coordenada):
+// offsets fixos por papel do estado FNL — golden ratio / mix constants, e um
+// passo primo por índice (bioma + 1, camada global + 1) para desaglomerar.
+uint biome_seed_warp_x(uint semente)   { return semente ^ 0x9E3779B9u; }
+uint biome_seed_warp_z(uint semente)   { return semente ^ 0x85EBCA6Bu; }
+uint biome_seed_temperatura(uint semente) { return semente + 101u; }
+uint biome_seed_umidade(uint semente)  { return semente + 202u; }
+uint biome_seed_camada(uint semente, uint bioma, uint camada) {
+    return semente ^ ((bioma + 1u) * 0x27D4EB2Du) ^ ((camada + 1u) * 0x165667B1u);
+}
+
+// smoothstep(limiar, 0, x) da spec — edge0 > edge1, implementado explicitamente
+// (a builtin exige edge0 < edge1): t = clamp((x − limiar)/(0 − limiar), 0, 1);
+// t²(3−2t). diff = 0 → 1; diff = limiar → 0.
+float smoothstep_transicao(float limiar, float x) {
+    float t = clamp((x - limiar) / (0.0 - limiar), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Tipo de ruído do registro → constante do FastNoiseLite (0=simplex,
+// 1=perlin, 2=cellular; mesma ordem do loader Odin).
+int biome_noise_type(uint tipo) {
+    switch (tipo) {
+    case 1u:  return FNL_NOISE_PERLIN;
+    case 2u:  return FNL_NOISE_CELLULAR;
+    default:  return FNL_NOISE_OPENSIMPLEX2;
+    }
+}
+
+// Altura de um bioma: alturaBase + Σ camadas de ruído (REQ-BIO-03). Estado FNL
+// por camada com tipo/frequency/octaves do registro; o ruído é amostrado em
+// (x,z) × frequencia da camada; adicao soma, subtracao escava (sinal negativo).
+float biome_altura(BiomeDefinition def, uint bioma_index, uint semente, float2 pos) {
+    float altura = def.altura_base;
+    for (uint l = 0; l < def.layer_count; l++) {
+        uint camada_global = def.layer_start + l;
+        BiomeNoiseLayer camada = biome_noise_layers[camada_global];
+        fnl_state fnl = fnlCreateState(int(biome_seed_camada(semente, bioma_index, camada_global)));
+        fnl.noise_type = biome_noise_type(camada.tipo);
+        fnl.frequency = camada.frequencia;
+        fnl.octaves = int(camada.oitavas);
+        float valor = fnlGetNoise2D(fnl, pos.x, pos.y) * camada.amplitude;
+        altura += (camada.operacao == 1u) ? -valor : valor;
+    }
+    return altura;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 8)]
 void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_GroupThreadID) {
@@ -36,24 +93,60 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
 
     uint height = 0;
     if (local_id.y == 0) {
-        // VS-13 (REQ-GEN-02): estados de ruído criados 1x por coluna de
-        // threads (não por voxel); mesma função, mesmos inputs e mesma ordem
-        // de cálculo do caminho antigo — equivalência bit a bit.
-        fnl_state fnl1;
-        fnl1 = fnlCreateState();
-        fnl1.frequency = 0.02;
-        fnl1.noise_type = FNL_NOISE_OPENSIMPLEX2;
+        // VS-22 (REQ-BIO-02/03): pipeline por coluna, uma única vez (mesma
+        // estrutura VS-13 de heightmap em groupshared). Ordem fiel à spec e à
+        // sim tools/sim/biomes_sim.py:
+        BiomeGlobals g = biome_globals[0];
 
-        fnl_state fnl2;
-        fnl2 = fnlCreateState();
-        fnl2.frequency = 0.07;
-        fnl2.noise_type = FNL_NOISE_PERLIN;
+        // 1. posição mundial (x,z) + offsetMundial.
+        float2 pos = float2(float(voxel_world_position.x), float(voxel_world_position.z))
+                   + g.offset_mundial;
 
-        uint height1 = uint(fnlGetNoise2D(fnl1,voxel_world_position.x, voxel_world_position.z) * 10);
-        uint height2 = uint(fnlGetNoise2D(fnl2,voxel_world_position.z, voxel_world_position.x) * 5);
-        height = 32 + height1 + height2;
+        // 2. domain warping: dois desvios FNL independentes × forcaDistorcao.
+        fnl_state warp_x = fnlCreateState(int(biome_seed_warp_x(g.semente)));
+        warp_x.noise_type = FNL_NOISE_OPENSIMPLEX2;
+        fnl_state warp_z = fnlCreateState(int(biome_seed_warp_z(g.semente)));
+        warp_z.noise_type = FNL_NOISE_OPENSIMPLEX2;
+        pos += float2(fnlGetNoise2D(warp_x, pos.x, pos.y),
+                      fnlGetNoise2D(warp_z, pos.x, pos.y)) * g.forca_distorcao;
+
+        // 3. clima: temperatura e umidade em baixíssima frequência.
+        fnl_state fnl_t = fnlCreateState(int(biome_seed_temperatura(g.semente)));
+        fnl_t.noise_type = FNL_NOISE_OPENSIMPLEX2;
+        fnl_t.frequency = g.frequencia_temperatura;
+        fnl_state fnl_h = fnlCreateState(int(biome_seed_umidade(g.semente)));
+        fnl_h.noise_type = FNL_NOISE_OPENSIMPLEX2;
+        fnl_h.frequency = g.frequencia_umidade;
+        float2 clima = float2(fnlGetNoise2D(fnl_t, pos.x, pos.y),
+                              fnlGetNoise2D(fnl_h, pos.x, pos.y));
+
+        // 4. classificação: distância euclidiana REAL ao centro (T,H); primário
+        // = menor, secundário = segunda menor; desempate por menor índice
+        // (busca com `<` em ordem crescente de i).
+        uint prim = 0u;
+        uint sec = 0u;
+        float dist_prim = 1e30;
+        float dist_sec = 1e30;
+        for (uint i = 0; i < g.num_biomas; i++) {
+            float d = distance(clima, biome_definitions[i].centro_climatico);
+            if (d < dist_prim) { dist_sec = dist_prim; sec = prim; dist_prim = d; prim = i; }
+            else if (d < dist_sec) { dist_sec = d; sec = i; }
+        }
+
+        // 5. altura do primário; o secundário só é composto no ecótono
+        // (early-out: diff > limiar → secundário nem entra no somatório).
+        float altura_f = biome_altura(biome_definitions[prim], prim, g.semente, pos);
+        if (g.num_biomas > 1u && (dist_sec - dist_prim) <= g.limiar_transicao) {
+            float altura_sec = biome_altura(biome_definitions[sec], sec, g.semente, pos);
+            float peso = smoothstep_transicao(g.limiar_transicao, dist_sec - dist_prim) * 0.5;
+            altura_f = lerp(altura_f, altura_sec, peso);
+        }
+
+        // 6. round half up + clamp [1, 32767] (REQ-BIO-03).
+        height = uint(clamp(floor(altura_f + 0.5), 1.0, 32767.0));
 
         heights_gs[local_id.x][local_id.z] = uint16_t(height);
+        biome_gs[local_id.x][local_id.z] = prim;
 
         // VS-13 (REQ-MIR-01): export do heightmap no ring paralelo (binding
         // 20, z-contíguo x|z<<5). Topologia: y do SÓLIDO mais alto da coluna
@@ -70,22 +163,28 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
     height = uint(heights_gs[local_id.x][local_id.z]);
 
     uint block_id = 0;
-    if(voxel_world_position.y > height) {
-        // VS-14 (REQ-PLT-03): voxel acima da grama (y == altura+1) vira planta
-        // (id 4) quando a coluna sorteia spawn; altura+1 fora do chunk nunca
-        // casa com y de thread, então a planta não nasce.
-        if (voxel_world_position.y == int(height) + 1
+    // VS-22 (REQ-BIO-03): faixas por voxel seguem o bioma PRIMÁRIO da coluna
+    // (biome_gs); apenas a altura foi blended. profundidade clampada defensiva
+    // (u32 do JSON pode exceder o int).
+    BiomeDefinition biome = biome_definitions[biome_gs[local_id.x][local_id.z]];
+    int profundidade = int(min(biome.profundidade_subsuperficie, 65536u));
+    int y = voxel_world_position.y;
+    if (y > int(height)) {
+        // VS-14 (REQ-PLT-03): planta (id 4) em y == altura+1 quando o bioma
+        // primário permitePlantas E a coluna sorteia spawn (wang hash por x,z).
+        if (y == int(height) + 1
+            && (biome.flags & BIOME_FLAG_PERMITE_PLANTAS) != 0u
             && plant_spawns(voxel_world_position.x, voxel_world_position.z)) {
             block_id = 4; // planta
         } else {
             block_id = 0; // ar
         }
-    }else if (voxel_world_position.y < (height-8)) {
-        block_id = 3; // pedra profunda
-    } else if (voxel_world_position.y < height) {
-        block_id = 2; // terra
-    } else if (voxel_world_position.y == height) {
-        block_id = 1; // grama
+    } else if (y <= int(height) - profundidade) {
+        block_id = biome.bloco_profundo;
+    } else if (y < int(height)) {
+        block_id = biome.bloco_subsuperficie;
+    } else {
+        block_id = biome.bloco_superficie;
     }
 
     temporary_dense_chunks[(push_constants.batch_job_offset + chunk_in_batch) * CHUNK_VOXEL_COUNT + dense_index_from_coordinate(coord)] = block_id;

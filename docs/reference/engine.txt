@@ -9,6 +9,31 @@ package engine
 			estável 3/3). 16×16 é o padrão dos assets reais; camada = cor sólida.
 
 		ASSETS_DEFAULT_PATH :: "assets/blocks.json"
+		BIOMES_DEFAULT_PATH :: "assets/biomes.json"
+		BIOME_DEFAULT_DISTORTION :: f32(24)
+		BIOME_DEFAULT_HUMIDITY_FREQUENCY :: f32(0.002)
+		BIOME_DEFAULT_SEED :: 1337
+			Defaults documentados (REQ-BIO-01).
+
+		BIOME_DEFAULT_SUBSURFACE_DEPTH :: 8
+		BIOME_DEFAULT_TEMPERATURE_FREQUENCY :: f32(0.001)
+		BIOME_DEFAULT_TRANSITION_THRESHOLD :: f32(0.15)
+		BIOME_FLAG_PERMITE_PLANTAS :: 1
+			BiomeDefinition.flags: bit 0 — o bioma permite spawn de plantas (VS-14).
+
+		BIOME_MAX_HEIGHT :: 32767
+		BIOME_MIN_HEIGHT :: 1
+			Clamps documentados (REQ-BIO-01/03).
+
+		BIOME_NOISE_OP_ADD :: 0
+			Operação da camada: +amplitude (vales preservados) ou −amplitude (ravinas).
+
+		BIOME_NOISE_OP_SUBTRACT :: 1
+		BIOME_NOISE_TYPE_CELLULAR :: 2
+		BIOME_NOISE_TYPE_PERLIN :: 1
+		BIOME_NOISE_TYPE_SIMPLEX :: 0
+			Tipo de ruído (espelha o FastNoiseLite usado pelo kernel).
+
 		BLOCK_DEFINITION_FLAG_NON_SOLID :: 2
 			VS-14 (emenda 2026-11-07): bit 1 — bloco ocupa o voxel mas não é sólido
 			(planta). Espelha common.slang.
@@ -38,7 +63,7 @@ package engine
 
 		CONFIG_DEFAULT_PATH :: "vox.ini"
 		CULL_FACE_NEVER :: 7
-		DESCRIPTOR_SET_BINDING_COUNT :: 22
+		DESCRIPTOR_SET_BINDING_COUNT :: 25
 		EDIT_FLUSH_INTERVAL_MS :: 100.0
 			Limites do flush. MAX_EDITS_PER_CHUNK_PER_FLUSH também é usado pelo shader
 			(arrays groupshared) — espelhar com o common.slang.
@@ -56,6 +81,12 @@ package engine
 		MATERIAL_PLANE_COUNT_MAXIMUM :: 8
 		MATERIAL_WORDS_PER_CHUNK :: MATERIAL_PLANE_COUNT_MAXIMUM * BRICKS_PER_CHUNK
 		MAX_ASSET_TEXTURE_DIM :: 256
+		MAX_BIOMES :: 16
+			Limites fixos de buffer (REQ-BIO-01): ≤16 biomas, ≤8 camadas por bioma e
+			≤64 camadas no total (stride dos StructuredBuffers).
+
+		MAX_BIOME_LAYERS_PER_BIOME :: 8
+		MAX_BIOME_LAYERS_TOTAL :: 64
 		MAX_EDITS_PER_CHUNK_PER_FLUSH :: 1024
 		MAX_EDITS_PER_FLUSH :: 4096
 		MAX_EDIT_JOBS_PER_FLUSH :: 256
@@ -168,6 +199,7 @@ package engine
 		tracing_results_lock: TracingLock 
 		tracy_output_directory: string 
 		voxel_assets: VoxelAssets 
+		voxel_biomes: VoxelBiomes 
 		voxel_gpu: VoxelGpu 
 		voxel_physics: [BLOCK_REGISTRY_CAPACITY]PhysicsDefinition 
 			VS-19 (REQ-PHY-01): tabela física por id, paralela ao registry std430.
@@ -207,6 +239,10 @@ package engine
 		assets_load :: proc() {...} /* engine:voxel_assets.odin!3835 */
 			Carga + validação (REQ-AST-06). Ausente → loaded = false (fallback).
 
+		biomes_load :: proc() {...} /* engine:voxel_biomes.odin!4933 */
+			Carga + validação (REQ-BIO-01). Ausente ou inválido → fatal (sem fallback:
+			o kernel de geração data-driven (VS-22-IMPL-03) passa a exigir as tabelas).
+
 		block_is_blocking :: proc(block_id: u32) -> bool {...} /* engine:voxel_assets.odin!5739 */
 			VS-19 (REQ-PHY-01): o bitmask `solid` filtra candidatos; a semântica de
 			bloqueio vem da tabela física (planta ocupa o voxel sem bloquear).
@@ -236,16 +272,16 @@ package engine
 			MATERIALIZED — heights[x|z<<5] deve ser o topo SÓLIDO derivado do bitmask.
 
 		debug_paths_init :: proc(version: string) {...} /* engine:debug_paths.odin!194 */
-		debug_texture_parity :: proc() {...} /* engine:voxel_gpu.odin!31667 */
+		debug_texture_parity :: proc() {...} /* engine:voxel_gpu.odin!33290 */
 			VS-21 (AC-01/AC-04): readback da paleta albedo e comparação pixel a pixel
 			com texture_pixels (já flipado). Executado ao final do init, com o device
 			ocioso — prova que a orientação pós-flip sobrevive ao upload. Sem assets
 			(fallback de paleta procedural) a checagem é estrutural apenas.
 
-		debug_texture_validate :: proc() {...} /* engine:voxel_gpu.odin!34600 */
+		debug_texture_validate :: proc() {...} /* engine:voxel_gpu.odin!36223 */
 			VS-21 (REQ-TEX-09): ponto de entrada público da validação de textura.
 
-		debug_validate_run :: proc(ve: ^VoxelEngine) {...} /* engine:voxel_gpu.odin!34812 */
+		debug_validate_run :: proc(ve: ^VoxelEngine) {...} /* engine:voxel_gpu.odin!36435 */
 			VS-19 (AC-04): ponto de entrada público da validação packed×denso (a
 			rotina em si é privada deste arquivo); usada pelo hook de debug F7.
 
@@ -404,8 +440,8 @@ package engine
 		voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {...} /* engine:voxel_engine.odin!12729 */
 		voxel_engine_wait_published :: proc(ve: ^VoxelEngine, frame_value: u64, camera_chunk: ChunkCoordinate) -> u32 {...} /* engine:voxel_engine.odin!9868 */
 		voxel_get :: proc(ve: ^VoxelEngine, world_voxel: [3]i32) -> (sample: VoxelSample, ok: bool) {...} /* engine:voxel_mirror.odin!5214 */
-		voxel_gpu_destroy :: proc() {...} /* engine:voxel_gpu.odin!19849 */
-		voxel_gpu_init :: proc() {...} /* engine:voxel_gpu.odin!4182 */
+		voxel_gpu_destroy :: proc() {...} /* engine:voxel_gpu.odin!21320 */
+		voxel_gpu_init :: proc() {...} /* engine:voxel_gpu.odin!4423 */
 		voxel_is_solid :: proc(ve: ^VoxelEngine, world_voxel: [3]i32) -> (solid: bool, ok: bool) {...} /* engine:voxel_mirror.odin!5682 */
 		voxel_render_pipeline_create :: proc() {...} /* engine:voxel_render.odin!176 */
 		voxel_render_prepare :: proc(cmd: vk.CommandBuffer, vp: matrix[4, 4]f32, camera_position: [3]f32, visible_count: u32, frame_index: u32, edit_job_count: u32) {...} /* engine:voxel_render.odin!2860 */
@@ -414,6 +450,15 @@ package engine
 		zone_end :: proc(ctx: ZoneCtx) {...} /* engine:tracing.odin!686 */
 
 	types
+		BiomeDefinition :: struct {centro_climatico: [2]f32, altura_base: f32, bloco_superficie: u32, bloco_subsuperficie: u32, bloco_profundo: u32, profundidade_subsuperficie: u32, layer_start: u32, layer_count: u32, flags: u32, padding: [2]u32}
+			48 B std430 — espelha o Slang. Os blocos são ids do registry global (VS-12).
+
+		BiomeGlobals :: struct {offset_mundial: [2]f32, semente: u32, num_biomas: u32, num_camadas_total: u32, forca_distorcao: f32, limiar_transicao: f32, frequencia_temperatura: f32, frequencia_umidade: f32, padding: [3]u32}
+			48 B std430 — espelha o Slang (float2 alinhado a 8, stride múltiplo de 16).
+
+		BiomeNoiseLayer :: struct {amplitude: f32, frequencia: f32, oitavas: u32, tipo: u32, operacao: u32, padding: [3]u32}
+			32 B std430 — espelha o Slang (stride múltiplo de 16).
+
 		BlockDefinition :: struct {mesh_template_index: u32, pbr_texture_index: u32, flags: u32, albedo_faces: [6]u32, rotation: u32, padding_2: u32, padding_3: u32, emission_color: [3]f32, base_roughness: f32, base_metallic: f32, padding_4: u32, padding_5: u32, padding_6: u32}
 			80 B — espelha o Slang byte a byte (verificável por offset_of e pela
 			reflection do slangc). VS-21 (REQ-TEX-05, revisão VS-00/VS-02):
@@ -492,9 +537,13 @@ package engine
 
 		VoxEngine :: struct {runtimeContext: runtime.Context, glfwWindow: glfw.WindowHandle, windowWidth, windowHeight: u32, vkInstance: vk.Instance, vkDebugMessenger: vk.DebugUtilsMessengerEXT, vkSurface: vk.SurfaceKHR, vkPhysicalDevice: vk.PhysicalDevice, vkDevice: vk.Device, queues: [QueueType]QueueTuple, presentation: PresentationInfo, vmaAllocator: vma.Allocator, depthBuffer: DepthBuffer, frameData: [NUM_FRAMES_IN_FLIGHT]FrameResource, timelineSemaphore: vk.Semaphore, computeTimelineSemaphore: vk.Semaphore, currentTimelineValue: u64, nextTimelineValue: u64, descriptorSetLayout: vk.DescriptorSetLayout, graphicsPipelineLayout: vk.PipelineLayout, computePipelineLayout: vk.PipelineLayout, validationLayersEnabled: bool, swapchainNeedsRecreate: bool, deltaTime: f64, lastFrameTime: f64, currentTime: f64, tick: u64, frameIndex: u32}
 		VoxelAssets :: struct {loaded: bool, templates: []MeshTemplate, vertices: [][4]f32, triangles: []u32, uvs: [][2]f32, registry: [BLOCK_REGISTRY_CAPACITY]BlockDefinition, block_names: []string, texture_pixels: []u8, texture_width: u32, texture_height: u32, texture_layers: u32, layer_of: map[string]int, stats_textures_decoded: u64, stats_texture_bytes: u64, stats_decode_ms: f64}
+		VoxelBiomes :: struct {loaded: bool, globals: BiomeGlobals, biomes: [MAX_BIOMES]BiomeDefinition, layers: [MAX_BIOME_LAYERS_TOTAL]BiomeNoiseLayer}
+			Tabelas parseadas: arrays de capacidade fixa para o upload direto aos
+			StructuredBuffers (bindings 22/23/24); as contagens vêm de BiomeGlobals.
+
 		VoxelEditRequest :: struct {world_voxel: [3]i32, block_id: u32}
 		VoxelEngine :: struct {active_chunks: map[ChunkCoordinate]ChunkRecord, free_storage_slots: [dynamic]u32, retiring_slots: [dynamic]RetiringSlot, retiring_compute_slots: [dynamic]RetiringComputeSlot, slot_generations: []u32, last_camera_chunk: ChunkCoordinate, streaming_cursor: StreamingCursor, visible_set: [dynamic]ChunkCoordinate, visible_membership: map[ChunkCoordinate]int, visible_set_camera: ChunkCoordinate, visible_set_initialized: bool, update_appended_tasks: int, slots_starved: bool, first_update: bool, highest_completed_compute_value: u64, empty_chunks_active: int, slots_saved_total: u64, last_empty_log_time: time.Tick, edit: EditManager, mirror: MirrorManager, physics: PhysicsManager, gameplay: GameplayManager, queue_mutex: sync.Mutex, queue_condition: sync.Cond, pending_tasks: [dynamic]GenerationTask, pending_export_tasks: [dynamic]GenerationTask, submitted_batches: [dynamic]SubmittedBatch, priority_camera_chunk: ChunkCoordinate, worker_stop_requested: u32, worker: ^thread.Thread, frame_mutex: sync.Mutex, frame_condition: sync.Cond, requested_frame: u64, published_frame: u64, requested_frame_index: u32, requested_camera_chunk: ChunkCoordinate, published_frame_index: u32, published_visible_count: u32, published_compute_value: u64, published_camera_chunk: ChunkCoordinate, world_revision: u64, published_revision: u64, has_published: bool, publish_bump: u64, consumed_publish_bump: u64}
-		VoxelGpu :: struct {scratch: GpuBuffer, generation_jobs: GpuBuffer, generation_jobs_mapped: [^]ChunkGenerationJob, occupancy_pool: GpuBuffer, material_plane_pool: GpuBuffer, chunk_headers: GpuBuffer, special_voxel_records: GpuBuffer, block_registry: GpuBuffer, visible_chunks: GpuBuffer, visible_chunks_mapped: [^]VisibleChunk, mesh_templates: GpuBuffer, template_vertices: GpuBuffer, template_triangles: GpuBuffer, template_uvs: GpuBuffer, work_queue: GpuBuffer, edit_jobs: GpuBuffer, edit_jobs_mapped: [^]EditChunkJob, voxel_edits: GpuBuffer, voxel_edits_mapped: [^]u32, edit_results: GpuBuffer, edit_results_mapped: [^]u32, mirror_export_ring: GpuBuffer, mirror_export_ring_mapped: [^]u16, mirror_heightmap_ring: GpuBuffer, mirror_heightmap_ring_mapped: [^]u16, chunk_result_flags: GpuBuffer, chunk_result_flags_mapped: [^]u32, target_highlight_ubo: GpuBuffer, target_highlight_ubo_mapped: [^]u8, target_highlight_alignment: vk.DeviceSize, dummy_buffer: GpuBuffer, albedo_palette_image: vk.Image, albedo_palette_allocation: vma.Allocation, albedo_palette_view: vk.ImageView, pbr_dummy_image: vk.Image, pbr_dummy_allocation: vma.Allocation, pbr_dummy_view: vk.ImageView, texture_sampler: vk.Sampler, descriptor_pool: vk.DescriptorPool, descriptor_set: vk.DescriptorSet, shader_module: vk.ShaderModule, edit_shader_module: vk.ShaderModule, render_shader_module: vk.ShaderModule, generation_pipeline: vk.Pipeline, packing_pipeline: vk.Pipeline, build_work_queue_pipeline: vk.Pipeline, finalize_work_queue_pipeline: vk.Pipeline, edit_pipeline: vk.Pipeline, mesh_pipeline: vk.Pipeline, compute_command_pool: vk.CommandPool, compute_command_buffers: []vk.CommandBuffer}
+		VoxelGpu :: struct {scratch: GpuBuffer, generation_jobs: GpuBuffer, generation_jobs_mapped: [^]ChunkGenerationJob, occupancy_pool: GpuBuffer, material_plane_pool: GpuBuffer, chunk_headers: GpuBuffer, special_voxel_records: GpuBuffer, block_registry: GpuBuffer, visible_chunks: GpuBuffer, visible_chunks_mapped: [^]VisibleChunk, mesh_templates: GpuBuffer, template_vertices: GpuBuffer, template_triangles: GpuBuffer, template_uvs: GpuBuffer, work_queue: GpuBuffer, edit_jobs: GpuBuffer, edit_jobs_mapped: [^]EditChunkJob, voxel_edits: GpuBuffer, voxel_edits_mapped: [^]u32, edit_results: GpuBuffer, edit_results_mapped: [^]u32, mirror_export_ring: GpuBuffer, mirror_export_ring_mapped: [^]u16, mirror_heightmap_ring: GpuBuffer, mirror_heightmap_ring_mapped: [^]u16, chunk_result_flags: GpuBuffer, chunk_result_flags_mapped: [^]u32, biome_definitions: GpuBuffer, biome_noise_layers: GpuBuffer, biome_globals: GpuBuffer, target_highlight_ubo: GpuBuffer, target_highlight_ubo_mapped: [^]u8, target_highlight_alignment: vk.DeviceSize, dummy_buffer: GpuBuffer, albedo_palette_image: vk.Image, albedo_palette_allocation: vma.Allocation, albedo_palette_view: vk.ImageView, pbr_dummy_image: vk.Image, pbr_dummy_allocation: vma.Allocation, pbr_dummy_view: vk.ImageView, texture_sampler: vk.Sampler, descriptor_pool: vk.DescriptorPool, descriptor_set: vk.DescriptorSet, shader_module: vk.ShaderModule, edit_shader_module: vk.ShaderModule, render_shader_module: vk.ShaderModule, generation_pipeline: vk.Pipeline, packing_pipeline: vk.Pipeline, build_work_queue_pipeline: vk.Pipeline, finalize_work_queue_pipeline: vk.Pipeline, edit_pipeline: vk.Pipeline, mesh_pipeline: vk.Pipeline, compute_command_pool: vk.CommandPool, compute_command_buffers: []vk.CommandBuffer}
 		VoxelPushConstants :: struct {view_projection_matrix: matrix[4, 4]f32, camera_position: [3]f32, visible_chunk_offset: u32, batch_job_offset: u32, edit_job_offset: u32, visible_chunk_capacity: u32}
 			92 B — casar com o pipeline layout da VS-00 (88 B + visible_chunk_capacity, REQ-CFG-06).
 
@@ -508,6 +557,10 @@ package engine
 		assets_json_doc :: struct {meshes: []assets_json_mesh, textures: []assets_json_texture, blocks: []assets_json_block}
 		assets_json_mesh :: struct {name: string, vertices: [][3]f64, triangles: [][3]i64, cull_tags: []i64, uvs: [][2]f64}
 		assets_json_texture :: struct {name: string, path: string}
+		biomes_json_biome :: struct {nome: Maybe(string), centro_temperatura: Maybe(f64), centro_umidade: Maybe(f64), altura_base: Maybe(f64), bloco_superficie: Maybe(string), bloco_subsuperficie: Maybe(string), bloco_profundo: Maybe(string), profundidade_subsuperficie: Maybe(i64), permite_plantas: Maybe(bool), camadas: []biomes_json_layer}
+		biomes_json_doc :: struct {global: Maybe(biomes_json_global), biomas: []biomes_json_biome}
+		biomes_json_global :: struct {semente: Maybe(i64), forca_distorcao: Maybe(f64), limiar_transicao: Maybe(f64), frequencia_temperatura: Maybe(f64), frequencia_umidade: Maybe(f64), offset_mundial: Maybe([2]f64)}
+		biomes_json_layer :: struct {amplitude: Maybe(f64), frequencia: Maybe(f64), oitavas: Maybe(i64), tipo: Maybe(string), operacao: Maybe(string)}
 
 
 	fullpath:
@@ -526,6 +579,7 @@ package engine
 		tracing_gpu.odin
 		types.odin
 		voxel_assets.odin
+		voxel_biomes.odin
 		voxel_edit.odin
 		voxel_engine.odin
 		voxel_gpu.odin

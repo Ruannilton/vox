@@ -76,6 +76,11 @@ VoxelGpu :: struct {
 	// VS-10 (REQ-VRT-02): flags do pack por slot (binding 18, host-visible).
 	chunk_result_flags:        GpuBuffer,
 	chunk_result_flags_mapped: [^]u32,
+	// VS-22 (REQ-BIO-05): tabelas de biomas (bindings 22–24) — imutáveis após
+	// o upload do boot; lidas só pelo kernel de geração.
+	biome_definitions:  GpuBuffer,
+	biome_noise_layers: GpuBuffer,
+	biome_globals:      GpuBuffer,
 	target_highlight_ubo:        GpuBuffer,
 	target_highlight_ubo_mapped: [^]u8,
 	target_highlight_alignment:  vk.DeviceSize, // stride do slot (>= minUniformBufferOffsetAlignment)
@@ -260,6 +265,21 @@ voxel_gpu_init :: proc() {
 	voxel_gpu.target_highlight_ubo_mapped = cast([^]u8)mapped_target
 	voxel_gpu.dummy_buffer = gpu_buffer_create(vk.DeviceSize(16), {.STORAGE_BUFFER})
 
+	// VS-22 (REQ-BIO-05): buffers das tabelas de biomas (capacidade fixa —
+	// os StructuredBuffers são indexados por num_biomas/num_camadas_total).
+	voxel_gpu.biome_definitions = gpu_buffer_create(
+		vk.DeviceSize(MAX_BIOMES * size_of(BiomeDefinition)),
+		{.STORAGE_BUFFER, .TRANSFER_DST},
+	)
+	voxel_gpu.biome_noise_layers = gpu_buffer_create(
+		vk.DeviceSize(MAX_BIOME_LAYERS_TOTAL * size_of(BiomeNoiseLayer)),
+		{.STORAGE_BUFFER, .TRANSFER_DST},
+	)
+	voxel_gpu.biome_globals = gpu_buffer_create(
+		vk.DeviceSize(size_of(BiomeGlobals)),
+		{.STORAGE_BUFFER, .TRANSFER_DST},
+	)
+
 	// VS-12: assets data-driven substituem built-ins quando assets/blocks.json
 	// existe (fallback = comportamento anterior, paridade total).
 	if voxel_assets.loaded {
@@ -271,6 +291,9 @@ voxel_gpu_init :: proc() {
 		upload_block_registry()
 		upload_palette_textures()
 	}
+	// VS-22 (REQ-BIO-05): tabelas de biomas — upload único no boot; buffers
+	// imutáveis depois disso (kernel de geração é o único consumidor).
+	upload_biome_tables()
 
 	// --- pipelines de compute (generate + pack) ---
 	voxel_gpu.shader_module = load_shader_module("./voxel.spv")
@@ -436,6 +459,9 @@ voxel_gpu_init :: proc() {
 		19 = voxel_gpu.template_uvs.handle,
 		20 = voxel_gpu.mirror_heightmap_ring.handle,
 		21 = voxel_gpu.target_highlight_ubo.handle,
+		22 = voxel_gpu.biome_definitions.handle,
+		23 = voxel_gpu.biome_noise_layers.handle,
+		24 = voxel_gpu.biome_globals.handle,
 	}
 	buffer_infos: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorBufferInfo
 	writes: [DESCRIPTOR_SET_BINDING_COUNT]vk.WriteDescriptorSet
@@ -505,6 +531,9 @@ voxel_gpu_init :: proc() {
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.chunk_result_flags.handle, .BUFFER, "chunk_result_flags")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.template_uvs.handle, .BUFFER, "template_uvs")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.target_highlight_ubo.handle, .BUFFER, "target_highlight_ubo")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.biome_definitions.handle, .BUFFER, "biome_definitions")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.biome_noise_layers.handle, .BUFFER, "biome_noise_layers")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.biome_globals.handle, .BUFFER, "biome_globals")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.generation_pipeline, .PIPELINE, "pipeline_generate")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.packing_pipeline, .PIPELINE, "pipeline_pack")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_pipeline, .PIPELINE, "pipeline_apply_voxel_edits")
@@ -537,6 +566,10 @@ voxel_gpu_destroy :: proc() {
 	vk.DestroyCommandPool(app.vkDevice, voxel_gpu.compute_command_pool, nil)
 
 	vk.DestroySampler(app.vkDevice, voxel_gpu.texture_sampler, nil)
+
+	gpu_buffer_destroy(&voxel_gpu.biome_globals)
+	gpu_buffer_destroy(&voxel_gpu.biome_noise_layers)
+	gpu_buffer_destroy(&voxel_gpu.biome_definitions)
 	vk.DestroyImageView(app.vkDevice, voxel_gpu.pbr_dummy_view, nil)
 	vma.DestroyImage(app.vmaAllocator, voxel_gpu.pbr_dummy_image, voxel_gpu.pbr_dummy_allocation)
 	vk.DestroyImageView(app.vkDevice, voxel_gpu.albedo_palette_view, nil)
@@ -1100,6 +1133,25 @@ upload_asset_registry :: proc() {
 		&voxel_assets.registry,
 		size_of(voxel_assets.registry),
 		voxel_gpu.block_registry.handle,
+	)
+}
+
+@(private)
+upload_biome_tables :: proc() {
+	upload_to_device_buffer(
+		raw_data(&voxel_biomes.biomes),
+		vk.DeviceSize(MAX_BIOMES * size_of(BiomeDefinition)),
+		voxel_gpu.biome_definitions.handle,
+	)
+	upload_to_device_buffer(
+		raw_data(&voxel_biomes.layers),
+		vk.DeviceSize(MAX_BIOME_LAYERS_TOTAL * size_of(BiomeNoiseLayer)),
+		voxel_gpu.biome_noise_layers.handle,
+	)
+	upload_to_device_buffer(
+		&voxel_biomes.globals,
+		vk.DeviceSize(size_of(BiomeGlobals)),
+		voxel_gpu.biome_globals.handle,
 	)
 }
 

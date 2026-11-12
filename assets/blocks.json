@@ -413,6 +413,10 @@
       "path": "textures/grass.png"
     },
     {
+      "name": "grama_side",
+      "path": "textures/grass_side.png"
+    },
+    {
       "name": "terra",
       "path": "textures/dirt.png"
     },
@@ -423,6 +427,26 @@
     {
       "name": "planta",
       "path": "textures/plant.png"
+    },
+    {
+      "name": "ice",
+      "path": "textures/ice.png"
+    },
+    {
+      "name": "snow",
+      "path": "textures/snow.png"
+    },
+     {
+      "name": "sand",
+      "path": "textures/sand.png"
+    },
+    {
+      "name": "podzol_top",
+      "path": "textures/podzol_top.png"
+    },
+    {
+      "name": "podzol_side",
+      "path": "textures/podzol_side.png"
     }
   ],
   "blocks": [
@@ -433,10 +457,10 @@
       "texture": {
         "top": "grama",
         "bottom": "terra",
-        "front": "terra",
-        "back": "terra",
-        "left": "terra",
-        "right": "terra"
+        "front": "grama_side",
+        "back": "grama_side",
+        "left": "grama_side",
+        "right": "grama_side"
       },
       "physics": {
         "blocking": true,
@@ -478,6 +502,82 @@
       "solid": false,
       "physics": {
         "blocking": false,
+        "hittable": true,
+        "friction": 0.6,
+        "restitution": 0.0
+      }
+    },
+    {
+      "id": 5,
+      "name": "ice",
+      "mesh": "cubo",
+      "texture": {
+        "top": "ice",
+        "bottom": "ice",
+        "front": "ice",
+        "back": "ice",
+        "left": "ice",
+        "right": "ice"
+      },
+      "physics": {
+        "blocking": true,
+        "hittable": true,
+        "friction": 0.1,
+        "restitution": 0.0
+      }
+    },
+    {
+      "id": 6,
+      "name": "snow",
+      "mesh": "cubo",
+      "texture": {
+        "top": "snow",
+        "bottom": "snow",
+        "front": "snow",
+        "back": "snow",
+        "left": "snow",
+        "right": "snow"
+      },
+      "physics": {
+        "blocking": true,
+        "hittable": true,
+        "friction": 0.6,
+        "restitution": 0.0
+      }
+    },
+    {
+      "id": 7,
+      "name": "sand",
+      "mesh": "cubo",
+      "texture": {
+        "top": "sand",
+        "bottom": "sand",
+        "front": "sand",
+        "back": "sand",
+        "left": "sand",
+        "right": "sand"
+      },
+      "physics": {
+        "blocking": true,
+        "hittable": true,
+        "friction": 0.6,
+        "restitution": 0.0
+      }
+    },
+    {
+      "id": 8,
+      "name": "podzol",
+      "mesh": "cubo",
+      "texture": {
+        "top": "podzol_top",
+        "bottom": "terra",
+        "front": "podzol_side",
+        "back": "podzol_side",
+        "left": "podzol_side",
+        "right": "podzol_side"
+      },
+      "physics": {
+        "blocking": true,
         "hittable": true,
         "friction": 0.6,
         "restitution": 0.0

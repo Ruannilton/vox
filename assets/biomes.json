@@ -1,0 +1,86 @@
+{
+  "global": {
+    "semente": 1337,
+    "forcaDistorcao": 24,
+    "limiarTransicao": 0.15,
+    "frequenciaTemperatura": 0.001,
+    "frequenciaUmidade": 0.002,
+    "offsetMundial": [0, 0]
+  },
+  "biomas": [
+    {
+      "nome": "planicies",
+      "centroTemperatura": 0.3,
+      "centroUmidade": 0.2,
+      "alturaBase": 32,
+      "blocoSuperficie": "grama",
+      "blocoSubsuperficie": "terra",
+      "blocoProfundo": "pedra",
+      "profundidadeSubsuperficie": 8,
+      "permitePlantas": false,
+      "camadas": [
+        { "amplitude": 10, "frequencia": 0.01, "oitavas": 1, "tipo": "simplex", "operacao": "adicao" },
+        { "amplitude": 5, "frequencia": 0.01, "oitavas": 1, "tipo": "perlin", "operacao": "adicao" }
+      ]
+    },
+    {
+      "nome": "deserto",
+      "centroTemperatura": 0.8,
+      "centroUmidade": -0.7,
+      "alturaBase": 34,
+      "blocoSuperficie": "sand",
+      "blocoSubsuperficie": "sand",
+      "blocoProfundo": "sand",
+      "profundidadeSubsuperficie": 4,
+      "permitePlantas": false,
+      "camadas": [
+        { "amplitude": 6, "frequencia": 0.008, "oitavas": 1, "tipo": "simplex", "operacao": "adicao" },
+        { "amplitude": 2, "frequencia": 0.02, "oitavas": 1, "tipo": "perlin", "operacao": "adicao" }
+      ]
+    },
+    {
+      "nome": "pantano",
+      "centroTemperatura": 0.5,
+      "centroUmidade": 0.8,
+      "alturaBase": 30,
+      "blocoSuperficie": "podzol",
+      "blocoSubsuperficie": "terra",
+      "blocoProfundo": "terra",
+      "profundidadeSubsuperficie": 8,
+      "permitePlantas": false,
+      "camadas": [
+        { "amplitude": 2, "frequencia": 0.006, "oitavas": 1, "tipo": "simplex", "operacao": "adicao" }
+      ]
+    },
+    {
+      "nome": "gelado",
+      "centroTemperatura": -0.8,
+      "centroUmidade": 0.0,
+      "alturaBase": 36,
+      "blocoSuperficie": "snow",
+      "blocoSubsuperficie": "ice",
+      "blocoProfundo": "pedra",
+      "profundidadeSubsuperficie": 4,
+      "permitePlantas": false,
+      "camadas": [
+        { "amplitude": 8, "frequencia": 0.012, "oitavas": 3, "tipo": "perlin", "operacao": "adicao" },
+        { "amplitude": 3, "frequencia": 0.03, "oitavas": 1, "tipo": "simplex", "operacao": "adicao" }
+      ]
+    },
+    {
+      "nome": "montanhoso",
+      "centroTemperatura": -0.1,
+      "centroUmidade": -0.3,
+      "alturaBase": 40,
+      "blocoSuperficie": "pedra",
+      "blocoSubsuperficie": "pedra",
+      "blocoProfundo": "pedra",
+      "profundidadeSubsuperficie": 4,
+      "permitePlantas": false,
+      "camadas": [
+        { "amplitude": 25, "frequencia": 0.006, "oitavas": 4, "tipo": "perlin", "operacao": "adicao" },
+        { "amplitude": 8, "frequencia": 0.01, "oitavas": 1, "tipo": "simplex", "operacao": "subtracao" }
+      ]
+    }
+  ]
+}

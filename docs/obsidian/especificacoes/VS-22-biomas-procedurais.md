@@ -3,8 +3,8 @@ id: VS-22
 titulo: Biomas procedurais data-driven na geração
 tipo: especificacao
 status_spec: aprovada
-status_implementacao: nao-iniciada
-status_validacao: nao-iniciada
+status_implementacao: concluida
+status_validacao: em-validacao
 depende_de:
   - VS-01
   - VS-12
@@ -181,7 +181,7 @@ Só entram na fila após a aprovação desta spec e a ratificação da ADR-B12. 
 2. **VS-22-IMPL-02 — JSON, loader e buffers** (REQ-BIO-01, REQ-BIO-05; AC-03, AC-04). `assets/biomes.json` + schema/defaults/validação (padrão VS-12), structs espelhadas em Odin, buffers e bindings 22–24, `DESCRIPTOR_SET_BINDING_COUNT = 25`.
 3. **VS-22-IMPL-03 — Kernel data-driven** (REQ-BIO-02, REQ-BIO-03, REQ-BIO-04; AC-01, AC-02, AC-04). Reescrita do trecho de terreno do `generate_voxels`: warp → clima → classificação → early-out/blending → altura → blocos; preserva heightmap por coluna (VS-13) e export pós-blend; `spirv-val` limpo.
 4. **VS-22-IMPL-04 — Config padrão e docs** (REQ-BIO-01). `assets/biomes.json` padrão equivalente ao mundo atual; atualização de arquitetura/manual técnico/tracking/frontmatter.
-5. **VS-22-IMPL-05 — Evidências e fechamento** (AC-01..05). Regeneração bit a bit, screenshots de ecótono vs comutação direta, métricas de geração (VS-05/16), runs de config inválida; registrar evidências nos ACs e commitar com o nome da spec.
+5. **VS-22-IMPL-05 — Evidências e fechamento reduzido** (AC-01..05). **Dispensa registrada (2026-11-12):** o mantenedor validará manualmente — as validações automatizadas com captura de screenshot/readback são **fora desta fatia**. Escopo do IMPL-05: sims verdes (`biomes_sim.py` + regressões `render_sim.py`/`pack_sim.py`), `spirv-val` limpo, build limpo, smoke run (app inicia, mundo dos 5 biomas gera, sem erros de validation além dos pré-existentes da VS-05). Evidências manuais (screenshots de ecótono, métricas de telemetria, regeneração bit a bit) ficam por conta do mantenedor; registrar resultado na validação manual e commitar com o nome da spec.
 
 ## Questões abertas
 
@@ -191,3 +191,5 @@ Só entram na fila após a aprovação desta spec e a ratificação da ADR-B12. 
 
 - 2026-11-12 — Rascunho elaborado a partir do documento do mantenedor (geração procedural de biomas em compute shaders: eixos climáticos, ecótono, domain warping, early-out), adaptado ao pipeline de geração existente, com a adição pedida de blocos de superfície/subsolo/fundo configuráveis por bioma via JSON; ADR-B12 registrada como pendente (bloqueia a aprovação).
 - 2026-11-12 — **ADR-B12 ratificada (Opção A) e spec aprovada** pelo mantenedor; bloqueio removido. Config padrão fixada em 5 biomas usando blocos existentes (grama/terra/pedra/sand/podzol/snow/ice): planícies, deserto, pantano, gelado e montanhoso — sem vegetação (`permitePlantas = false` em todos; vegetação em trabalho posterior); limites de buffer confirmados (16 biomas / 8 camadas / 64 totais). Tarefas VS-22-IMPL-01..05 destravadas.
+- 2026-11-12 — **Validações automatizadas posteriores dispensadas pelo mantenedor** (ele valida manualmente): o IMPL-05 fica reduzido a sims + `spirv-val` + build + smoke run; evidências de screenshot/readback/regeneração saem do escopo da fatia. Semente da config padrão fixada em **1337** (implantação).
+- 2026-11-12 — **Implementação concluída (IMPL-01..04)**: (1) `tools/sim/biomes_sim.py` — 1.271 checks verdes (espelho f32 por operação vs oracle f64, distância euclidiana real, validação de `assets/biomes.json` incluída); (2) `assets/biomes.json` + `src/engine/voxel_biomes.odin` (loader com validação fatal padrão VS-12) + structs std430 em `common.slang` + bindings 22–24 (`DESCRIPTOR_SET_BINDING_COUNT` = 25); (3) kernel `generate_voxels` data-driven (warp → clima → classificação com sqrt real e desempate por índice → early-out/ecótono com `smoothstep` explícito → altura por camadas → round half up + clamp [1,32767] → blocos por faixa de y seguindo o primário; `biome_gs[8][8]` novo; heightmap/export VS-13 preservados); (4) docs: manual técnico §3.1/§8 e arquitetura. Regressões verdes: `render_sim.py` (2.982) e `pack_sim.py` (1.077); `spirv-val` limpo nos três SPIR-V. **Validação manual (screenshots de ecótono, telemetria de geração, regeneração bit a bit) pendente com o mantenedor.**

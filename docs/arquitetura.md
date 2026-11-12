@@ -207,7 +207,7 @@ Estados: PENDING_READBACK → (timeline + memcpy + replay pending) → MATERIALI
 | B9 | bug alto | generate_voxels cobria só 8192/32768 voxels: numthreads(8,8,8), job = thread_id.z/32 | Corrigido |
 | Caminho B | recurso | Templates de malha data-driven em SSBO + subdivisão de brick | Implementado |
 | Culling de frustum | recurso | Planos Gribb-Hartmann na GPU no builder: early-out de chunk + por brick (VS-06/ADR-B11) | Implementado |
-| VS-22 | recurso | Biomas procedurais data-driven no generate — config JSON (clima T/H contínuo, ecótono, domain warping, blocos de superfície/subsolo por bioma); spec VS-22/ADR-B12 (Opção A), config padrão de 5 biomas sem vegetação | Aprovado |
+| VS-22 | recurso | Biomas procedurais data-driven no generate — config JSON (clima T/H contínuo, ecótono, domain warping, blocos de superfície/subsolo por bioma); spec VS-22/ADR-B12 (Opção A), config padrão de 5 biomas sem vegetação | Implementado (validação manual pendente) |
 | E1 | recurso | Edição de voxels bufferizada com flush no command buffer do frame | Implementado |
 | C2 | recurso | Mirror CPU-side: ChunkPage denso u16 y-major + ring host-visible | Implementado |
 | Eventos | recurso | Bus de eventos de input/comando com gravação JSONL e replay 1× (VS-07) | Implementado |

@@ -47,6 +47,8 @@ main :: proc() {
 	// VS-12 (REQ-AST-06): parse + validação de assets antes de criar a janela;
 	// ausente → warning + fallback built-ins/paleta no init do voxel engine.
 	engine.assets_load()
+	// VS-22 (REQ-BIO-01): biomas dependem do registry de blocos (nomes → ids).
+	engine.biomes_load()
 
 	engine.CreateEngine()
 	defer engine.DestroyEngine()

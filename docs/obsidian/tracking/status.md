@@ -12,11 +12,11 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 | Specs aprovadas | 23 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 22 |
+| Implementações concluídas | 23 |
 | Validações verificadas | 20 |
-| Validações em andamento | 2 |
+| Validações em andamento | 3 |
 
-Vinte e três especificações registradas e aprovadas; 22 implementadas, 20 integralmente verificadas (VS-15 e VS-16 aguardam os ACs manuais da UI Tracy). VS-22 (biomas procedurais data-driven, ADR-B12 Opção A) aprovada em 2026-11-12 — config padrão de 5 biomas sem vegetação; tarefas VS-22-IMPL-01..05 destravadas. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Vinte e três especificações registradas e aprovadas; 23 implementadas, 20 integralmente verificadas (VS-15 e VS-16 aguardam os ACs manuais da UI Tracy). VS-22 (biomas procedurais data-driven, ADR-B12 Opção A) implementada em 2026-11-12 — config padrão de 5 biomas sem vegetação; sims verdes (biomes 1.271 / render 2.982 / pack 1.077) e `spirv-val` limpo; **validação manual com o mantenedor pendente** (screenshots de ecótono, telemetria de geração, regeneração bit a bit). Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -44,7 +44,7 @@ Vinte e três especificações registradas e aprovadas; 22 implementadas, 20 int
 | VS-19 | [[VS-19-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aprovada` | `concluida` | `verificada` | VS-04, VS-13, VS-14, VS-18 | — |
 | VS-20 | [[VS-20-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aprovada` | `concluida` | `verificada` | VS-03, VS-07, VS-19 | — |
 | VS-21 | [[VS-21-texturas-nearest-flip-stb-faces|Texturas — nearest, flip Y, stb_image e multi-face]] | `aprovada` | `concluida` | `verificada` | VS-11, VS-12 | — |
-| VS-22 | [[VS-22-biomas-procedurais|Biomas procedurais data-driven na geração]] | `aprovada` | `nao-iniciada` | `nao-iniciada` | VS-01, VS-12, VS-13, VS-14 | — |
+| VS-22 | [[VS-22-biomas-procedurais|Biomas procedurais data-driven na geração]] | `aprovada` | `concluida` | `em-validacao` | VS-01, VS-12, VS-13, VS-14 | validação manual do mantenedor |
 
 ## Decisões
 

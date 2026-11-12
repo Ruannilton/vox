@@ -9,7 +9,7 @@ import vma "shared:vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-DESCRIPTOR_SET_BINDING_COUNT :: 22 // VS-11: +19 (template_uvs); VS-13: +20 (mirror_heightmap_ring); VS-20: +21 (target_highlight, UBO dinâmico)
+DESCRIPTOR_SET_BINDING_COUNT :: 25 // VS-11: +19 (template_uvs); VS-13: +20 (mirror_heightmap_ring); VS-20: +21 (target_highlight, UBO dinâmico); VS-22: +22..24 (biomas)
 PUSH_CONSTANTS_SIZE :: 92 // VS-08 (REQ-CFG-06): + visible_chunk_capacity
 
 REQUIRED_DEVICE_EXTENSIONS :: []cstring {
