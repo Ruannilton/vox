@@ -1,6 +1,6 @@
 # Painel de status
 
-Última revisão geral: 2026-11-08.
+Última revisão geral: 2026-11-12.
 
 Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o frontmatter correspondente no mesmo trabalho.
 
@@ -8,14 +8,15 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 22 |
+| Specs registradas | 23 |
 | Specs aprovadas | 22 |
-| Specs em elaboração ou revisão | 0 |
+| Specs em elaboração ou revisão | 1 |
 | Implementações em andamento | 0 |
 | Implementações concluídas | 22 |
 | Validações verificadas | 20 |
+| Validações em andamento | 2 |
 
-Vinte e duas especificações registradas e aprovadas; **22 implementadas, 20 integralmente verificadas** (VS-21 concluída e verificada). VS-15 e VS-16 aguardam os ACs manuais da UI Tracy. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Vinte e três especificações registradas; 22 aprovadas e implementadas, 20 integralmente verificadas (VS-15 e VS-16 aguardam os ACs manuais da UI Tracy). VS-22 (biomas procedurais data-driven) está em elaboração (`rascunho`), bloqueada pela ADR-B12 — ver a spec. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -43,7 +44,7 @@ Vinte e duas especificações registradas e aprovadas; **22 implementadas, 20 in
 | VS-19 | [[VS-19-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aprovada` | `concluida` | `verificada` | VS-04, VS-13, VS-14, VS-18 | — |
 | VS-20 | [[VS-20-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aprovada` | `concluida` | `verificada` | VS-03, VS-07, VS-19 | — |
 | VS-21 | [[VS-21-texturas-nearest-flip-stb-faces|Texturas — nearest, flip Y, stb_image e multi-face]] | `aprovada` | `concluida` | `verificada` | VS-11, VS-12 | — |
-| VS-21 | [[VS-21-texturas-nearest-flip-stb-faces|Texturas — nearest, flip Y, stb_image e multi-face]] | `aprovada` | `em-andamento` | `nao-iniciada` | VS-11, VS-12 | — |
+| VS-22 | [[VS-22-biomas-procedurais|Biomas procedurais data-driven na geração]] | `rascunho` | `nao-iniciada` | `nao-iniciada` | VS-01, VS-12, VS-13, VS-14 | ADR-B12 |
 
 ## Decisões
 
