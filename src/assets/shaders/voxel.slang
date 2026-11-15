@@ -1,17 +1,11 @@
 import common;
 #include "./lib/FastNoiseLite.slang"
 
-// VS-13 (REQ-GEN-01/02): heightmap da fatia 8x8 do workgroup em groupshared.
-// As threads com y-local 0 (64/workgroup) calculam a altura de cada coluna
-// uma única vez; após barrier todos leem. 128 B/workgroup. VS-22: o índice do
-// bioma primário da coluna vai num segundo groupshared (as faixas de bloco por
-// voxel seguem o primário — só a altura faz blending).
+
 groupshared uint16_t heights_gs[8][8];
 groupshared uint biome_gs[8][8];
 
-// VS-14 (REQ-PLT-03): hash determinístico da coluna (x,z) mundial — wang
-// hash u32. Puro função da coordenada: a planta na fronteira entre chunks
-// nasce igual nos dois. Probabilidade constante: 10% (hash % 1000 < 100).
+
 uint wang_hash(uint a) {
     a = (a ^ 61u) ^ (a >> 16);
     a = a + (a << 3);
@@ -26,16 +20,10 @@ bool plant_spawns(int world_x, int world_z) {
     return h % 1000u < 100u; // 10% das colunas
 }
 
-// ----------------------------------------------------------------------------
-// VS-22 (REQ-BIO-02/03/04): composição de biomas data-driven — por coluna.
-// ----------------------------------------------------------------------------
 
-// BiomeDefinition.flags (espelha BIOME_FLAG_PERMITE_PLANTAS no Odin).
 static const uint BIOME_FLAG_PERMITE_PLANTAS = 1u;
 
-// Derivadas determinísticas de semente (REQ-BIO-04: só config + coordenada):
-// offsets fixos por papel do estado FNL — golden ratio / mix constants, e um
-// passo primo por índice (bioma + 1, camada global + 1) para desaglomerar.
+
 uint biome_seed_warp_x(uint semente)   { return semente ^ 0x9E3779B9u; }
 uint biome_seed_warp_z(uint semente)   { return semente ^ 0x85EBCA6Bu; }
 uint biome_seed_temperatura(uint semente) { return semente + 101u; }
@@ -44,16 +32,13 @@ uint biome_seed_camada(uint semente, uint bioma, uint camada) {
     return semente ^ ((bioma + 1u) * 0x27D4EB2Du) ^ ((camada + 1u) * 0x165667B1u);
 }
 
-// smoothstep(limiar, 0, x) da spec — edge0 > edge1, implementado explicitamente
-// (a builtin exige edge0 < edge1): t = clamp((x − limiar)/(0 − limiar), 0, 1);
-// t²(3−2t). diff = 0 → 1; diff = limiar → 0.
+
 float smoothstep_transicao(float limiar, float x) {
     float t = clamp((x - limiar) / (0.0 - limiar), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
 }
 
-// Tipo de ruído do registro → constante do FastNoiseLite (0=simplex,
-// 1=perlin, 2=cellular; mesma ordem do loader Odin).
+
 int biome_noise_type(uint tipo) {
     switch (tipo) {
     case 1u:  return FNL_NOISE_PERLIN;
@@ -62,9 +47,7 @@ int biome_noise_type(uint tipo) {
     }
 }
 
-// Altura de um bioma: alturaBase + Σ camadas de ruído (REQ-BIO-03). Estado FNL
-// por camada com tipo/frequency/octaves do registro; o ruído é amostrado em
-// (x,z) × frequencia da camada; adicao soma, subtracao escava (sinal negativo).
+
 float biome_altura(BiomeDefinition def, uint bioma_index, uint semente, float2 pos) {
     float altura = def.altura_base;
     for (uint l = 0; l < def.layer_count; l++) {
@@ -93,16 +76,13 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
 
     uint height = 0;
     if (local_id.y == 0) {
-        // VS-22 (REQ-BIO-02/03): pipeline por coluna, uma única vez (mesma
-        // estrutura VS-13 de heightmap em groupshared). Ordem fiel à spec e à
-        // sim tools/sim/biomes_sim.py:
+
         BiomeGlobals g = biome_globals[0];
 
-        // 1. posição mundial (x,z) + offsetMundial.
+        
         float2 pos = float2(float(voxel_world_position.x), float(voxel_world_position.z))
                    + g.offset_mundial;
 
-        // 2. domain warping: dois desvios FNL independentes × forcaDistorcao.
         fnl_state warp_x = fnlCreateState(int(biome_seed_warp_x(g.semente)));
         warp_x.noise_type = FNL_NOISE_OPENSIMPLEX2;
         fnl_state warp_z = fnlCreateState(int(biome_seed_warp_z(g.semente)));
@@ -120,10 +100,6 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
         float2 clima = float2(fnlGetNoise2D(fnl_t, pos.x, pos.y),
                               fnlGetNoise2D(fnl_h, pos.x, pos.y));
 
-        // 4. classificação: distância euclidiana REAL ao centro (T,H); primário
-        // = menor distância; desempate por menor índice (busca com `<` em
-        // ordem crescente de i). O blending multiclique (passo 5) re-deriva as
-        // distâncias dos participantes, então só o argmin fica aqui.
         uint prim = 0u;
         float dist_prim = 1e30;
         for (uint i = 0; i < g.num_biomas; i++) {
@@ -131,11 +107,6 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
             if (d < dist_prim) { dist_prim = d; prim = i; }
         }
 
-        // 5. blending normalizado multiclique (REQ-BIO-02): cada bioma com
-        // s_i = smoothstep(limiar, 0, d_i − d_prim) > 0 participa; altura =
-        // Σ s_i·h_i / Σ s_i. O primário tem s = 1, logo w_acc ≥ 1 (sem
-        // divisão por zero); biomas fora da zona de transição têm s = 0 e
-        // nem entram no somatório de ruído (early-out por bioma).
         float altura_acc = 0.0;
         float peso_acc = 0.0;
         for (uint i = 0; i < g.num_biomas; i++) {
@@ -147,17 +118,11 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
         }
         float altura_f = altura_acc / peso_acc;
 
-        // 6. round half up + clamp [1, 32767] (REQ-BIO-03).
         height = uint(clamp(floor(altura_f + 0.5), 1.0, 32767.0));
 
         heights_gs[local_id.x][local_id.z] = uint16_t(height);
         biome_gs[local_id.x][local_id.z] = prim;
 
-        // VS-13 (REQ-MIR-01): export do heightmap no ring paralelo (binding
-        // 20, z-contíguo x|z<<5). Topologia: y do SÓLIDO mais alto da coluna
-        // neste chunk; 0xFFFF = coluna vazia. VS-14 (emenda 2026-11-07): planta
-        // não é sólida — o export é `altura` (não altura+1); o topo sólido é o
-        // terreno, acima dele só há plantas.
         if (job.mirror_ring_slot >= 0) {
             int top_local = min(int(height) - job.chunk_world_origin.y, CHUNK_SIZE - 1);
             uint16_t top = top_local < 0 ? uint16_t(0xFFFF) : uint16_t(top_local);
@@ -168,15 +133,12 @@ void generate_voxels(uint3 thread_id : SV_DispatchThreadID, uint3 local_id : SV_
     height = uint(heights_gs[local_id.x][local_id.z]);
 
     uint block_id = 0;
-    // VS-22 (REQ-BIO-03): faixas por voxel seguem o bioma PRIMÁRIO da coluna
-    // (biome_gs); apenas a altura foi blended. profundidade clampada defensiva
-    // (u32 do JSON pode exceder o int).
+
     BiomeDefinition biome = biome_definitions[biome_gs[local_id.x][local_id.z]];
     int profundidade = int(min(biome.profundidade_subsuperficie, 65536u));
     int y = voxel_world_position.y;
     if (y > int(height)) {
-        // VS-14 (REQ-PLT-03): planta (id 4) em y == altura+1 quando o bioma
-        // primário permitePlantas E a coluna sorteia spawn (wang hash por x,z).
+       
         if (y == int(height) + 1
             && (biome.flags & BIOME_FLAG_PERMITE_PLANTAS) != 0u
             && plant_spawns(voxel_world_position.x, voxel_world_position.z)) {
@@ -247,6 +209,7 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
 
         uint occupancy = 0;
         uint solidity = 0;
+        uint opacity = 0; // VS-23/T0.1: máscara de opacidade por brick
         uint part_verts[4] = { 0u, 0u, 0u, 0u };
         uint part_tris[4]  = { 0u, 0u, 0u, 0u };
 
@@ -261,6 +224,7 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
 
                 BlockDefinition def = global_block_registry[block_id];
                 if ((def.flags & BLOCK_DEFINITION_FLAG_NON_SOLID) == 0u) solidity |= 1u << bit_idx;
+                if ((def.flags & (BLOCK_DEFINITION_FLAG_NON_SOLID | BLOCK_DEFINITION_FLAG_TRANSPARENT)) == 0u) opacity |= 1u << bit_idx;
                 MeshTemplate tmpl = mesh_templates[def.mesh_template_index];
                 if (tmpl.triangle_count > 0u) {
                     uint part = bit_idx >> 3u;
@@ -272,6 +236,7 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
 
         occupancy_pool[occupancy_base + brick_idx] = occupancy;
         occupancy_pool[occupancy_base + SOLID_WORD_BASE + brick_idx] = solidity;
+        occupancy_pool[occupancy_base + OPAQUE_WORD_BASE + brick_idx] = opacity;
 
         uint half_verts  = max(part_verts[0] + part_verts[1], part_verts[2] + part_verts[3]);
         uint half_tris   = max(part_tris[0] + part_tris[1], part_tris[2] + part_tris[3]);
@@ -350,7 +315,6 @@ void pack_chunk(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID) 
         }
 
         chunk_headers[slot] = header;
-        // VS-10 (REQ-VRT-02): feedback por slot p/ o handler de conclusão.
         chunk_result_flags[slot] = header.flags;
     }
     GroupMemoryBarrierWithGroupSync();

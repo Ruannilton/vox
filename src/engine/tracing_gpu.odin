@@ -1,8 +1,3 @@
-// VS-16 (REQ-GPU-01/02/03): zonas GPU do Tracy sobre query pools dedicadas.
-// Dois contextos (gráfica = 0, compute = 1), ring de slots de timestamp com
-// coleta nos pontos de espera existentes. Com TRACY_ENABLE=false tudo é
-// no-op e nenhuma query pool é criada (VS-05 intacta e independente).
-
 package engine
 
 import "core:log"
@@ -14,9 +9,6 @@ TRACING_GPU_CONTEXT_GRAPHICS :: 0
 TRACING_GPU_CONTEXT_COMPUTE  :: 1
 TRACING_GPU_CONTEXT_COUNT    :: 2
 
-// Ring por contexto: cada zona usa 2 slots (begin/end) alocados em par;
-// o slot 0 é reservado para a calibração inicial e o último para o
-// gpu_time_sync periódico.
 TRACING_GPU_RING_SIZE       :: 4096
 TRACING_GPU_ZONE_SLOT_FIRST :: 2
 TRACING_GPU_ZONE_SLOT_LIMIT :: TRACING_GPU_RING_SIZE - 1
@@ -28,10 +20,10 @@ TRACING_GPU_SYNC_SLOT  :: TRACING_GPU_RING_SIZE - 1
 
 GpuTracingContext :: struct {
 	query_pool:        vk.QueryPool,
-	period_ns:         f32, // timestampPeriod do device (ns por tick)
-	record_pos:        u64, // próximo slot absoluto a alocar
-	collect_pos:       u64, // próximo slot absoluto a coletar
-	reset_pos:         u64, // faixa [reset_pos, collect_pos) aguardando reset
+	period_ns:         f32, 
+	record_pos:        u64, 
+	collect_pos:       u64, 
+	reset_pos:         u64, 
 	frames_since_sync: u32,
 	sync_pending:      bool,
 	omitted_logged:    bool,
@@ -65,8 +57,6 @@ tracing_gpu_init :: proc() {
 			vk.GetPhysicalDeviceProperties(app.vkPhysicalDevice, &props)
 			ctx.period_ns = props.limits.timestampPeriod
 
-			// Reset inicial + calibração: um único submit bloqueante por
-			// contexto, só aqui no startup (padrão TracyVkContext).
 			cmd_pool: vk.CommandPool
 			vk_check(
 				vk.CreateCommandPool(
@@ -115,8 +105,7 @@ tracing_gpu_init :: proc() {
 tracing_gpu_shutdown :: proc() {
 	when TRACY_ENABLE {
 		if !gpu_tracing.active do return
-		// Coleta final com a GPU ociosa (worker encerrado e DeviceWaitIdle
-		// no corpo de main) — drena o restante antes de descer o profiler.
+	
 		vk_check(vk.DeviceWaitIdle(app.vkDevice))
 		for i in 0 ..< TRACING_GPU_CONTEXT_COUNT {
 			collect_range(u8(i), true)
@@ -129,9 +118,7 @@ tracing_gpu_shutdown :: proc() {
 	}
 }
 
-// Uma vez por command buffer que grava zonas do contexto: aplica os resets
-// pendentes de faixas já coletadas e, a cada TRACING_GPU_SYNC_INTERVAL
-// frames, grava o timestamp de re-sync.
+
 tracing_gpu_record_context :: proc(cmd: vk.CommandBuffer, context_index: u8) {
 	when TRACY_ENABLE {
 		if !gpu_tracing.active do return
@@ -155,8 +142,6 @@ tracing_gpu_record_context :: proc(cmd: vk.CommandBuffer, context_index: u8) {
 	}
 }
 
-// Aloca o par de slots e emite gpu_zone_begin. Retorna o queryId (slot de
-// begin) ou max(u16) quando a zona foi omitida (ring sob pressão).
 tracing_gpu_zone_begin :: proc(
 	cmd: vk.CommandBuffer,
 	context_index: u8,
@@ -225,8 +210,7 @@ collect_range :: proc(context_index: u8, drain: bool) {
 	when TRACY_ENABLE {
 	ctx := &gpu_tracing.contexts[context_index]
 
-	// Zonas pendentes: leitura com disponibilidade, em blocos que não
-	// cruzam o fim do ring; emite gpu_time para os pares completos.
+
 	for ctx.collect_pos + 1 < ctx.record_pos {
 		slot := u32(ctx.collect_pos % TRACING_GPU_RING_SIZE)
 		pairs_here := min(

@@ -34,9 +34,6 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 		{
 			ZoneN("worker_iteration")
 
-			// VS-16 (REQ-CPU-01): claim_batch cobre a aquisição do lote sob
-			// queue_mutex (inclui a espera na condvar — o lock aparece
-			// "detido" durante o cond_wait no Tracy, por construção).
 			{
 				ZoneN("claim_batch")
 				tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
@@ -84,8 +81,6 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 				tracing_mutex_unlock(&ve.queue_mutex, &tracing_queue_lock)
 			}
 
-			// Backpressure: no máximo config.batches_in_flight lotes em voo antes
-			// de regravar o ring.
 			if submitted_batch_count >= u64(config.batches_in_flight) {
 				ZoneN("wait_batch_slot")
 				wait_for_compute_timeline(submitted_batch_count - u64(config.batches_in_flight) + 1)
@@ -124,8 +119,7 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 					),
 				)
 
-				// VS-20: o set tem 1 binding dinâmico (21) — offset 0 no compute.
-				dynamic_offset: u32 = 0
+				dynamic_offsets := [2]u32{0, 0}
 				vk.CmdBindDescriptorSets(
 					cmd,
 					.COMPUTE,
@@ -133,8 +127,8 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 					0,
 					1,
 					&voxel_gpu.descriptor_set,
-					1,
-					&dynamic_offset,
+					2,
+					&dynamic_offsets[0],
 				)
 
 				push_constants := VoxelPushConstants {
@@ -194,8 +188,6 @@ worker_thread_process :: proc(worker_thread: ^thread.Thread) {
 
 				submitted_batch_count += 1
 
-				// O valor sinalizado é o MESMO publicado no claim atômico (1 claim = 1
-				// lote = 1 valor de timeline).
 				vk_check(
 					vk.QueueSubmit2(
 						app.queues[.Compute].queue,
@@ -237,6 +229,8 @@ worker_service_frame :: proc(ve: ^VoxelEngine) {
 	sync.mutex_lock(&ve.mirror.mutex)
 	voxel_engine_update(ve, {f32(camera_chunk.x * CHUNK_SIZE), f32(camera_chunk.y * CHUNK_SIZE), f32(camera_chunk.z * CHUNK_SIZE)})
 	edit_update(ve, frame_index)
+	// VS-23/T0.2: recentralização do chunk_grid acompanha a câmera.
+	light_service_grid(ve, camera_chunk)
 
 	publish_required := !ve.has_published || ve.published_camera_chunk != camera_chunk || ve.published_revision != ve.world_revision || ve.consumed_publish_bump != ve.publish_bump
 	if publish_required && frame_value >= 3 {
@@ -251,6 +245,7 @@ worker_service_frame :: proc(ve: ^VoxelEngine) {
 		sync.mutex_lock(&ve.frame_mutex)
 		ZoneN("publish_world")
 		visible_count := voxel_engine_publish_visible(ve, frame_index)
+		light_build_jobs(ve, frame_index)
 		ve.published_frame = frame_value
 		ve.published_frame_index = frame_index
 		ve.published_visible_count = visible_count
@@ -261,6 +256,8 @@ worker_service_frame :: proc(ve: ^VoxelEngine) {
 		ve.has_published = true
 		sync.cond_broadcast(&ve.frame_condition)
 		sync.mutex_unlock(&ve.frame_mutex)
+	} else {
+		ve.light_job_counts[int(frame_index % config.frames_in_flight)] = 0
 	}
 	sync.mutex_unlock(&ve.mirror.mutex)
 }

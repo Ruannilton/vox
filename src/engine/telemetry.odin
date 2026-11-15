@@ -38,8 +38,8 @@ Telemetry :: struct {
 	enabled:             bool,
 	times_available:     bool,
 	timestamp_period_ns: f64,
-	gfx_pools:           [NUM_FRAMES_IN_FLIGHT]vk.QueryPool,
-	gfx_slot_submitted:  [NUM_FRAMES_IN_FLIGHT]bool, // slot já submetido ao menos uma vez (VUID 09401)
+	gfx_pools:           [MAX_FRAMES_IN_FLIGHT]vk.QueryPool,
+	gfx_slot_submitted:  [MAX_FRAMES_IN_FLIGHT]bool, // slot já submetido ao menos uma vez (VUID 09401)
 	compute_pools:       [dynamic]vk.QueryPool, // [config.batches_in_flight] (VS-08)
 	results_mutex:       sync.Mutex,
 	last_times_us:       [TELEMETRY_OPERATION_COUNT]f64,

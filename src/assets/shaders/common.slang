@@ -15,14 +15,16 @@ static const uint COARSE_CELLS_PER_CHUNK = 64; // 4 x 4 x 4 células (8/2, 16/4,
 static const uint COARSE_WORDS_PER_CHUNK = 2;
 // CAMINHO B: 2 bits de subdivisão por brick = 64 words por chunk.
 static const uint SUBDIVISION_WORDS_PER_CHUNK = 64;
-// Layout do pool de ocupação por chunk:
+// Layout do pool de ocupação por chunk (VS-23/T0.1: +1024 words de opacidade):
 //   [0..1024)    = 1 word de ocupação por brick
 //   [1024..1026) = 64 bits de coarse cells
 //   [1026..1090) = 2 bits de subdivisão por brick (caminho B)
 //   [1090..2114) = 1 word de solidez por brick (subset da ocupação)
-static const uint OCCUPANCY_WORDS_PER_CHUNK = 2 * BRICKS_PER_CHUNK + COARSE_WORDS_PER_CHUNK + SUBDIVISION_WORDS_PER_CHUNK;
+//   [2114..3138) = 1 word de opacidade por brick (opaco = !NON_SOLID && !TRANSPARENT)
+static const uint OCCUPANCY_WORDS_PER_CHUNK = 3 * BRICKS_PER_CHUNK + COARSE_WORDS_PER_CHUNK + SUBDIVISION_WORDS_PER_CHUNK;
 static const uint SUBDIVISION_WORD_BASE     = BRICKS_PER_CHUNK + COARSE_WORDS_PER_CHUNK; // 1026
 static const uint SOLID_WORD_BASE           = SUBDIVISION_WORD_BASE + SUBDIVISION_WORDS_PER_CHUNK; // 1090
+static const uint OPAQUE_WORD_BASE          = SOLID_WORD_BASE + BRICKS_PER_CHUNK; // 2114
 
 // Paleta: 8 planos, 256 entradas — slot 0 é SEMPRE ar (invariante do B3).
 static const uint MATERIAL_PLANE_COUNT_MAXIMUM = 8;
@@ -44,21 +46,15 @@ static const uint MAX_TEMPLATE_VERTICES  = 32; // por voxel; subdivisão x4 => 8
 static const uint MAX_TEMPLATE_TRIANGLES = 24; // pior-caso por voxel; x4 => 8*24 = 192
 static const uint TEMPLATE_FLAG_HAS_FLUSH_FACES = 1;
 static const uint CULL_FACE_NEVER = 7; // triângulo nunca culpado (interior/diagonal)
-// VS-14 (REQ-PLT-01): bit 0 de BlockDefinition.flags — bloco com recorte
-// alpha (folhagem). O fragment descarta fragmentos com albedo.a < 0.5
-// (limiar constante, cutout opaco — sem blending nem ordenação).
+
 static const uint BLOCK_DEFINITION_FLAG_TRANSPARENT = 1;
-// VS-14 (emenda 2026-11-07): bit 1 — bloco ocupa o voxel mas NÃO é sólido
-// (planta/folhagem). Solidez é propriedade do tipo de bloco; a ocupação
-// (bit no brick) continua contendo plantas (o brick não perde itens).
+
 static const uint BLOCK_DEFINITION_FLAG_NON_SOLID = 2;
 static const uint NO_TEMPLATE_UV_OFFSET = 0xFFFFFFFFu;
 
 static const uint NEIGHBOR_SLOT_INVALID       = 0xFFFFFFFFu;
 
-// VS-08 (REQ-CFG-06): as capacidades da fila de trabalho deixam de ser
-// constantes de compilação — vêm do push constant visible_chunk_capacity
-// (derivado de |esfera(vision)| no host).
+
 static const uint WORK_QUEUE_STATE_WORDS       = 8;
 static const uint WORK_QUEUE_APPEND_COUNT_WORD = 0;
 static const uint WORK_QUEUE_OVERFLOW_WORD     = 1;
@@ -107,10 +103,6 @@ struct SpecialVoxelRecord {
     uint block_identifier;
 };
 
-// VS-21 (REQ-TEX-05): camada por face em ordem FACE_NORMALS
-// (+X, -X, +Y, -Y, +Z, -Z). Registry 48 -> 80 B (VS-00/VS-02; correção
-// 2026-11-09: float3 alinhado a 16 — ordem e size múltiplo de 16 espelham
-// o Odin byte a byte; verificável pela reflection do slangc).
 struct BlockDefinition {
     uint   mesh_template_index; // 0
     uint   pbr_texture_index;   // 4
@@ -134,17 +126,11 @@ struct MeshTemplate {
     uint triangle_count;
     uint worst_case_tris; // pré-computado no load
     uint flags;           // bit 0: HAS_FLUSH_FACES
-    // VS-11 (REQ-UV-02): offset no pool template_uvs (binding 19); o template
-    // não tem pool de UVs quando uv_offset == NO_TEMPLATE_UV_OFFSET — o mesh
-    // shader emite a sentinela float2(-1,-1) e o fragment cai no triplanar.
     uint uv_offset;
     uint padding_1;
 }
 
-// VS-22 (REQ-BIO-01/05): biomas procedurais data-driven. Espelhadas em
-// src/engine/voxel_biomes.odin (std430; offsets comentados, verificáveis pela
-// reflection do slangc). Tipos de ruído/operacao: 0=simplex, 1=perlin,
-// 2=cellular; 0=adicao, 1=subtracao. Flags: bit 0 = permitePlantas.
+
 struct BiomeGlobals {
     float2 offset_mundial;        // 0..8 (float2 alinhado a 8)
     uint   semente;               // 8
@@ -202,24 +188,24 @@ struct EditChunkJob {
     uint _padding;
 };
 
+
+struct LightJob {
+    int3 chunk_world_origin;
+    uint storage_slot_index;
+};
+
 struct MeshVertex {
     float4 clip_position  : SV_Position;
     float3 world_position : WORLD_POSITION;
     uint   block_id       : BLENDINDICES;
-    float2 uv             : TEXCOORD0; // (-1,-1) = sentinela: fragment usa triplanar
+    float2 uv             : TEXCOORD0; 
 };
 
-// VS-02: saída do mesh shader. VS-11 (REQ-UV-01): +uv (TEXCOORD0) — 10
-// componentes de saída por vértice, distante do limite de
-// maxMeshOutputComponents; world_position segue necessário para as normais
-// por derivadas (REQ-SHADE-02).
+
 
 [[vk::push_constant]] PushConstants push_constants;
 
-// ----------------------------------------------------------------------------
-// Bindings (0–5, 7, 10–12 = VS-01; 6, 8, 9, 17 = VS-02; 13–15 = VS-03;
-// 16 = VS-04; 18 = VS-10; 19 = VS-11; 20 = VS-13; 21 = VS-20; 22–24 = VS-22)
-// ----------------------------------------------------------------------------
+
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint>               temporary_dense_chunks;
 [[vk::binding(1, 0)]] StructuredBuffer<ChunkGenerationJob>   generation_jobs;
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint>               occupancy_pool;
@@ -238,46 +224,50 @@ struct MeshVertex {
 [[vk::binding(15, 0)]] RWStructuredBuffer<uint>              edit_results;
 [[vk::binding(16, 0)]] RWStructuredBuffer<uint16_t>          mirror_export_ring;
 [[vk::binding(17, 0)]] RWStructuredBuffer<uint>                work_queue;
-// VS-10 (REQ-VRT-02): flags do header por slot, escritas pelo pack e lidas
-// pelo handler de conclusão (host-visible) após a timeline do lote.
 [[vk::binding(18, 0)]] RWStructuredBuffer<uint>                chunk_result_flags;
-// VS-11 (REQ-UV-02): pool de UVs dos templates — paralelo e indexado como
-// template_vertices (stride 8 B, std430 float2); MeshTemplate.uv_offset.
 [[vk::binding(19, 0)]] StructuredBuffer<float2>                template_uvs;
-// VS-13 (REQ-MIR-01): heightmap de export do mirror — ring paralelo ao denso
-// (binding 16, mesmo índice de slot). 64 slots x 1.024 u16 (2 KiB/slot),
-// z-contíguo x|z<<5; y do sólido mais alto da coluna (0xFFFF = coluna vazia).
 [[vk::binding(20, 0)]] RWStructuredBuffer<uint16_t>          mirror_heightmap_ring;
 
-// VS-20 (REQ-GPL-02): realce do voxel sob o centro da tela — alvo da mira
-// central publicado pela main uma vez por frame. 16 B: i32x3 + u32.
+
 struct TargetHighlight {
     int3  target_voxel;
     uint  target_valid;
 }
 [[vk::binding(21, 0)]] ConstantBuffer<TargetHighlight>       target_highlight;
-// VS-22 (REQ-BIO-05): tabelas de biomas procedurais (leitura, bindings
-// 22–24). Preenchidas uma vez no boot; consumidas pelo kernel de geração.
 [[vk::binding(22, 0)]] StructuredBuffer<BiomeDefinition>    biome_definitions;
 [[vk::binding(23, 0)]] StructuredBuffer<BiomeNoiseLayer>    biome_noise_layers;
 [[vk::binding(24, 0)]] StructuredBuffer<BiomeGlobals>      biome_globals;
 
+// ----------------------------------------------------------------------------
+// VS-23 (ADR-L1): iluminação híbrida por ray casting na GPU
+// ----------------------------------------------------------------------------
+// UBO atualizado por frame (binding 25, dinâmico por frame no host).
+struct LightGlobals {
+    float4 sun_direction;   // xyz: direção PARA o sol, normalizada
+    float4 sun_color;       // rgb
+    float4 sky_zenith;      // rgb
+    float4 sky_horizon;     // rgb
+    int4   grid_min_chunk;  // xyz: coordenada do primeiro chunk do chunk_grid
+    int4   grid_dim_chunks; // xyz: dimensões do chunk_grid
+    float4 params;          // x: shadow_max_distance, y: ao_strength, z: block_light_strength
+    float4 dynamic_light_position_radius[2];
+    float4 dynamic_light_color[2];
+    uint4  counts;          // x: dynamic_light_count, y: debug_mode (0 normal, 1 sombra, 2 AO, 3 block light)
+};
+[[vk::binding(25, 0)]] ConstantBuffer<LightGlobals>  light_globals;
+// Coordenada de chunk -> slot ou NEIGHBOR_SLOT_INVALID (VS-23/T0.2).
+[[vk::binding(26, 0)]] StructuredBuffer<uint>        chunk_grid;
+// Volume RGB de block light: uint16 por voxel, 4 bits por canal (VS-23/T3.1).
+[[vk::binding(27, 0)]] RWStructuredBuffer<uint16_t> light_pool;
+// Jobs de relight do frame, reescrito pela CPU por frame (VS-23/T3.1).
+[[vk::binding(28, 0)]] StructuredBuffer<LightJob>    light_jobs;
+
 uint work_queue_base_words() {
-    // VS-08: slot do ring = estado + capacidade de visíveis do push constant.
     return (push_constants.visible_chunk_offset / push_constants.visible_chunk_capacity) *
            (WORK_QUEUE_STATE_WORDS + push_constants.visible_chunk_capacity * BRICKS_PER_CHUNK);
 }
 
-// VS-06 (REQ-CULL-01): planos do frustum por Gribb-Hartmann sobre a MESMA
-// view_projection_matrix que leva a clip_position no mesh shader — o frustum
-// testado é exatamente o renderizado. Convenção Vulkan: clip = VP × mundo,
-// NDC x,y ∈ [−1,1], z ∈ [0,1]. Ordem: left, right, bottom, top, near, far;
-// xyz = normal para dentro, w = offset; normalizados.
-// Atenção: no Slang, vp[i] é a LINHA i (indexação lógica estilo HLSL,
-// independente do layout column_major em memória) — as inequações de clip
-// saem diretamente das linhas, SEM transposição. (Uma versão anterior
-// transpunha a VP por assumir vp[i] = coluna i, e derivava os planos do
-// frustum trocado — culpava geometria visível.)
+
 float4[6] frustum_planes_from_vp(column_major float4x4 vp) {
     float4 r0 = vp[0]; // clip.x = r0 · p
     float4 r1 = vp[1]; // clip.y = r1 · p
@@ -297,9 +287,7 @@ float4[6] frustum_planes_from_vp(column_major float4x4 vp) {
     return planes;
 }
 
-// VS-06 (REQ-CULL-04): p-vertex clássico — um AABB só é culpado se estiver
-// inteiramente do lado de fora de um único plano (o vértice mais positivo na
-// direção da normal falha o plano). AABBs que intersectam nunca são culpados.
+
 bool aabb_outside_frustum(float3 box_min, float3 box_max, float4 planes[6]) {
     [unroll]
     for (uint i = 0; i < 6; i++) {
@@ -485,4 +473,50 @@ uint read_palette_index_at(uint slot, uint plane_count, int3 coord) {
         palette_index |= ((plane_word >> bit_idx) & 1u) << plane;
     }
     return palette_index;
+}
+
+// ----------------------------------------------------------------------------
+// VS-23 (ADR-L1): helpers de iluminação (grid global, opacidade, block light)
+// ----------------------------------------------------------------------------
+
+// Opaco = bloqueia luz (sombra/AO): nem ar, nem NON_SOLID, nem TRANSPARENT.
+bool block_is_opaque(uint block_id) {
+    return block_id != 0u &&
+        (global_block_registry[block_id].flags &
+         (BLOCK_DEFINITION_FLAG_NON_SOLID | BLOCK_DEFINITION_FLAG_TRANSPARENT)) == 0u;
+}
+
+uint chunk_slot_at(int3 chunk_coord) {
+    int3 rel = chunk_coord - light_globals.grid_min_chunk.xyz;
+    int3 dim = light_globals.grid_dim_chunks.xyz;
+    if (any(rel < 0) || any(rel >= dim)) return NEIGHBOR_SLOT_INVALID;
+    return chunk_grid[uint(rel.x) + uint(dim.x) * (uint(rel.z) + uint(dim.z) * uint(rel.y))];
+}
+
+// Máscara de opacidade de um voxel mundial; fora do grid = aberto.
+bool opaque_at_world(int3 w) {
+    uint slot = chunk_slot_at(w >> 5);
+    if (slot == NEIGHBOR_SLOT_INVALID) return false;
+    int3 l = w & 31;
+    uint word = occupancy_pool[slot * OCCUPANCY_WORDS_PER_CHUNK + OPAQUE_WORD_BASE
+                               + brick_index_from_coordinate(l / BRICK_SIZE)];
+    return ((word >> bit_index_from_local_coordinate(l % BRICK_SIZE)) & 1u) != 0u;
+}
+
+uint light_index(uint slot, int3 l) { return slot * CHUNK_VOXEL_COUNT + dense_index_from_coordinate(l); }
+uint3 unpack_block_light(uint v)       { return uint3(v & 15u, (v >> 4u) & 15u, (v >> 8u) & 15u); }
+// bits 12..15 reservados (skylight fica fora de escopo na VS-23).
+uint  pack_block_light(uint3 c)        { return c.x | (c.y << 4u) | (c.z << 8u); }
+
+uint3 block_light_at_world(int3 w) {
+    uint slot = chunk_slot_at(w >> 5);
+    if (slot == NEIGHBOR_SLOT_INVALID) return uint3(0);
+    return unpack_block_light(uint(light_pool[light_index(slot, w & 31)]));
+}
+
+uint read_block_identifier_fast(uint slot, int3 coord) {
+    uint plane_count  = chunk_headers[slot].plane_count;
+    uint palette_size = chunk_headers[slot].palette_size;
+    uint idx = read_palette_index_at(slot, plane_count, coord);
+    return chunk_headers[slot].palette[min(idx, max(palette_size, 1u) - 1u)];
 }

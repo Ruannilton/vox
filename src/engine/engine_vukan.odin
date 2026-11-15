@@ -9,8 +9,8 @@ import vma "shared:vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-DESCRIPTOR_SET_BINDING_COUNT :: 25 // VS-11: +19 (template_uvs); VS-13: +20 (mirror_heightmap_ring); VS-20: +21 (target_highlight, UBO dinâmico); VS-22: +22..24 (biomas)
-PUSH_CONSTANTS_SIZE :: 92 // VS-08 (REQ-CFG-06): + visible_chunk_capacity
+DESCRIPTOR_SET_BINDING_COUNT :: 29
+PUSH_CONSTANTS_SIZE :: 92
 
 REQUIRED_DEVICE_EXTENSIONS :: []cstring {
 	vk.KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -151,6 +151,7 @@ destroy_vulkan_surface :: proc() {
 init_device_feature_chain :: proc(chain: ^DeviceFeatureChain) {
 	chain.base = {
 		shaderInt16 = true,
+		fragmentStoresAndAtomics = true,
 	}
 	chain.v11 = {
 		sType                 = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
@@ -190,6 +191,7 @@ init_device_feature_chain :: proc(chain: ^DeviceFeatureChain) {
 @(private)
 collect_missing_features :: proc(chain: ^DeviceFeatureChain, missing: ^[dynamic]string) {
 	if !chain.base.shaderInt16 do append(missing, "shaderInt16")
+	if !chain.base.fragmentStoresAndAtomics do append(missing, "fragmentStoresAndAtomics")
 	if !chain.v11.shaderDrawParameters do append(missing, "shaderDrawParameters")
 	if !chain.v11.storageBuffer16BitAccess do append(missing, "storageBuffer16BitAccess")
 	if !chain.v11.uniformAndStorageBuffer16BitAccess do append(missing, "uniformAndStorageBuffer16BitAccess")
@@ -471,7 +473,7 @@ create_sync_objects :: proc() {
 		}
 		vk_check(vk.CreateSemaphore(device, &info, nil, semaphore))
 	}
-	create_timeline(app.vkDevice, NUM_FRAMES_IN_FLIGHT, &app.timelineSemaphore)
+	create_timeline(app.vkDevice, u64(config.frames_in_flight), &app.timelineSemaphore)
 	create_timeline(app.vkDevice, 0, &app.computeTimelineSemaphore)
 	log.info("Sync objects created successfully")
 }
@@ -518,13 +520,18 @@ create_descriptor_layouts :: proc() {
 
 	bindings[8].descriptorType = .COMBINED_IMAGE_SAMPLER
 	bindings[9].descriptorType = .COMBINED_IMAGE_SAMPLER
-	// VS-20 (REQ-GPL-03): UBO dinâmico do realce — offset por frame no bind,
-	// visível só ao fragment; demais bindings permanecem STORAGE_BUFFER.
 	bindings[21] = {
 		binding         = 21,
 		descriptorType  = .UNIFORM_BUFFER_DYNAMIC,
 		descriptorCount = 1,
 		stageFlags      = {.FRAGMENT},
+	}
+
+	bindings[25] = {
+		binding         = 25,
+		descriptorType  = .UNIFORM_BUFFER_DYNAMIC,
+		descriptorCount = 1,
+		stageFlags      = {.COMPUTE, .FRAGMENT},
 	}
 	set_layout_info := vk.DescriptorSetLayoutCreateInfo {
 		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -798,8 +805,8 @@ get_swap_chain_capabilities :: proc() -> (vk.SurfaceCapabilitiesKHR, u32) {
 		),
 	)
 
-	image_count: u32 = max(3, surface_capabilities.minImageCount)
-	if surface_capabilities.maxImageCount != 0 do image_count = min(NUM_SWAP_CHAIN_IMAGES, surface_capabilities.maxImageCount)
+	image_count: u32 = max(config.frames_in_flight + 1, surface_capabilities.minImageCount)
+	if surface_capabilities.maxImageCount != 0 do image_count = min(config.frames_in_flight + 1, surface_capabilities.maxImageCount)
 	return surface_capabilities, image_count
 }
 

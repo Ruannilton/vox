@@ -1,19 +1,14 @@
 package engine
 
-// VS-20 (REQ-GPL-01..08; ADR-G2): mira central por frame com realce no
-// fragment (UBO binding 21), construção com clique esquerdo (pedra id 3 em
-// hit+normal), remoção com direito (ar no hit) via intake E1, e pulo de
-// 1,5 bloco com SPACE. Regras espelhadas por tools/sim/render_sim.py.
 
 import "core:log"
 import "core:math"
 
-TARGET_HIGHLIGHT_TINT :: 1.4 // fator constante de clareamento (REQ-GPL-02)
-GAMEPLAY_REACH :: f32(12.0)  // alcance do DDA central (REQ-GPL-01)
+TARGET_HIGHLIGHT_TINT :: 1.4 
+GAMEPLAY_REACH :: f32(12.0)  
 GAMEPLAY_BLOCK_PLACE_ID :: u32(3) // pedra
 JUMP_HEIGHT_VOXELS :: f32(1.5)
 
-// 16 B — espelha TargetHighlight do common.slang (REQ-GPL-02).
 TargetHighlight :: struct {
 	target_voxel: [3]i32,
 	target_valid: u32,
@@ -22,12 +17,12 @@ TargetHighlight :: struct {
 #assert(size_of(TargetHighlight) == 16)
 
 GameplayManager :: struct {
-	target:              PhysicsRayHit, // snapshot da mira central (1×/frame)
+	target:              PhysicsRayHit, 
 	stats_target_hit:    u64,
 	stats_target_miss:   u64,
 	stats_target_unknown: u64,
-	stats_edits:         u64, // edições solicitadas (place + remove)
-	stats_noop:          u64, // ações rejeitadas pelas guardas
+	stats_edits:         u64, 
+	stats_noop:          u64,
 	stats_jumps:         u64,
 	stats_jumps_rejected: u64,
 	stats_jumps_logged:  u64,
@@ -39,8 +34,6 @@ gameplay_init :: proc(ve: ^VoxelEngine) {
 
 gameplay_destroy :: proc(ve: ^VoxelEngine) {}
 
-// Publica o alvo do frame no UBO do slot do frame (REQ-GPL-01/07): chamado
-// na main após physics_tick + player_sync_camera, antes do submit.
 gameplay_update_target :: proc(ve: ^VoxelEngine, frame_index: u32, origin, direction: [3]f32) {
 	ZoneN("gameplay_target_update")
 	ve.gameplay.target = physics_raycast(ve, origin, direction, GAMEPLAY_REACH)
@@ -60,13 +53,12 @@ gameplay_update_target :: proc(ve: ^VoxelEngine, frame_index: u32, origin, direc
 	slot_ptr^ = highlight
 }
 
-// Teleporte invalida o alvo até o próximo DDA (REQ-GPL-07).
+
 gameplay_clear_target :: proc(ve: ^VoxelEngine) {
 	ve.gameplay.target = {}
 }
 
-// Clique: 0 = esquerdo (colocar pedra), 1 = direito (remover). Consome o
-// snapshot do frame — o mesmo exibido pelo realce (REQ-GPL-04/05/07).
+
 gameplay_mouse_press :: proc(ve: ^VoxelEngine, button: i32, player: ^PhysicsBody) {
 	if button == 0 {
 		ZoneN("gameplay_place_block")
@@ -88,7 +80,7 @@ gameplay_mouse_press :: proc(ve: ^VoxelEngine, button: i32, player: ^PhysicsBody
 			ve.gameplay.stats_noop += 1
 			return
 		}
-		// a pedra resultante não pode intersectar a AABB do jogador
+
 		if player != nil && gameplay_aabb_intersects_voxel(player.position, player.size, destination) {
 			ve.gameplay.stats_noop += 1
 			return
@@ -109,8 +101,6 @@ gameplay_mouse_press :: proc(ve: ^VoxelEngine, button: i32, player: ^PhysicsBody
 	}
 }
 
-// Pulo de 1,5 bloco (REQ-GPL-06): impulso único no press, só grounded e não
-// congelado; release/hold/auto-repeat não pulam (a main dedup auto-repeat).
 gameplay_jump :: proc(ve: ^VoxelEngine, player: ^PhysicsBody) {
 	ZoneN("gameplay_jump")
 	if player == nil || !player.grounded || player.frozen {

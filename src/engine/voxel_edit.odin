@@ -25,7 +25,7 @@ EditManager :: struct {
 	force_next_flush:  bool,
 	staged_jobs:       [dynamic]EditChunkJob,
 	staged_edits:      [dynamic]u32,
-	ring_counts:       [NUM_FRAMES_IN_FLIGHT]EditRingCounts,
+	ring_counts:       [MAX_FRAMES_IN_FLIGHT]EditRingCounts,
 	stats_applied:     u64,
 	stats_noop:        u64,
 	stats_rejected:    u64,
@@ -43,13 +43,7 @@ ve_request_voxel_edit :: proc(ve: ^VoxelEngine, world_voxel: [3]i32, block_id: u
 	sync.cond_signal(&ve.frame_condition)
 }
 
-// VS-10 (REQ-VRT-04): materializa um chunk EMPTY — aloca slot, enfileira a
-// geração (com mirror sintetizado se na bolha de simulação) e volta para
-// GENERATING. A edição segue para a fila/pendências do E1 normalmente.
-// Retorna false se o pool de slots estiver vazio (retry por update).
 
-// VS-10 (REQ-VRT-04): retenta a materialização de edições cujo chunk ainda
-// está EMPTY (pool esgotado na solicitação). No-op de ar-em-ar é removido.
 ve_retry_empty_edits :: proc(ve: ^VoxelEngine) {
 	if len(ve.edit.queue) == 0 do return
 	kept := make([dynamic]VoxelEditRequest, context.temp_allocator)
@@ -98,7 +92,7 @@ ve_request_voxel_edits_in_box :: proc(ve: ^VoxelEngine, min_corner, max_corner: 
 edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	sync.mutex_lock(&ve.edit.mutex)
 	defer sync.mutex_unlock(&ve.edit.mutex)
-	frame_idx := int(frame_index % NUM_FRAMES_IN_FLIGHT)
+	frame_idx := int(frame_index % config.frames_in_flight)
 	job_count := u32(len(ve.edit.staged_jobs))
 	edit_count := u32(len(ve.edit.staged_edits))
 	for job, i in ve.edit.staged_jobs {
@@ -119,11 +113,8 @@ edit_ring_write :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 edit_ring_write_legacy :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	sync.mutex_lock(&ve.edit.mutex)
 	defer sync.mutex_unlock(&ve.edit.mutex)
-	frame_idx := int(frame_index % NUM_FRAMES_IN_FLIGHT)
+	frame_idx := int(frame_index % config.frames_in_flight)
 
-	// Feedback do flush que usou este slot há NUM_FRAMES_IN_FLIGHT frames.
-	// O buffer é HOST_ACCESS_RANDOM: invalida antes de ler (no-op em memória
-	// coerente).
 	vk_check(
 		vma.InvalidateAllocation(
 			app.vmaAllocator,
@@ -134,7 +125,6 @@ edit_ring_write_legacy :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	)
 	previous := ve.edit.ring_counts[frame_idx]
 	if previous.edit_count > 0 {
-		// Log por flush (diagnóstico): contagem por código neste slot.
 		applied, noop, rejected: u32
 		for i in 0 ..< previous.edit_count {
 			code := voxel_gpu.edit_results_mapped[frame_idx * MAX_EDITS_PER_FLUSH + int(i)]
@@ -145,10 +135,6 @@ edit_ring_write_legacy :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 				noop += 1
 			case:
 				rejected += 1
-				// VS-04 (REQ-MIRROR-09): o mirror aplicou otimisticamente —
-				// reconcilia a página mapeando a posição do ring de volta a
-				// (chunk, voxel, bloco). Os rings de jobs/edições do slot
-				// ainda estão intactos na colheita (só são regravados abaixo).
 				mirror_reconcile_ring_position(ve, frame_idx, previous, i)
 			}
 		}
@@ -193,8 +179,7 @@ edit_ring_write_legacy :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 {
 	}
 
 	ve.edit.ring_counts[frame_idx] = EditRingCounts{job_count, edit_count}
-	// O staging vale por UMA cópia: sem limpar, frames seguintes re-copiam e
-	// re-despacham o mesmo flush (vistos como no-ops redundantes no feedback).
+
 	clear(&ve.edit.staged_jobs)
 	clear(&ve.edit.staged_edits)
 	return job_count
@@ -225,7 +210,7 @@ edit_collect_feedback :: proc(ve: ^VoxelEngine, frame_idx: int) {
 edit_update :: proc(ve: ^VoxelEngine, frame_index: u32) {
 	sync.mutex_lock(&ve.edit.mutex)
 	defer sync.mutex_unlock(&ve.edit.mutex)
-	edit_collect_feedback(ve, int(frame_index % NUM_FRAMES_IN_FLIGHT))
+	edit_collect_feedback(ve, int(frame_index % config.frames_in_flight))
 	ve_retry_empty_edits(ve)
 	if edit_flush_due(ve) do flush_voxel_edits(ve)
 }
@@ -273,10 +258,9 @@ ve_try_materialize_empty :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) -> bo
 	chunk_record.generation = generation
 	ve.empty_chunks_active -= 1
 
-	// Mirror: se o chunk está na bolha de simulação e a página não existe,
-	// sintetiza zeros (conteúdo worldgen = ar conhecido) antes do journal.
+
 	if coord in ve.mirror.pages {
-		// página existente (zeros do ring ou já sintetizada): nada a fazer.
+
 	} else {
 		sim_radius2 := i64(config.radius_simulation) * i64(config.radius_simulation)
 		if calculate_squared_distance(ve.last_camera_chunk, coord) <= sim_radius2 {
@@ -311,9 +295,7 @@ edit_defer_to_pending :: proc(ve: ^VoxelEngine, chunk: ChunkCoordinate, request:
 		}
 	}
 	append(&list, request)
-	ve.edit.pending[chunk] = list // append pode realocar: escreve de volta
-	// Nota: pendências de chunks que nunca mais forem carregados ficam na
-	// memória (capar por TTL/quantidade fica no backlog, junto ao save).
+	ve.edit.pending[chunk] = list 
 }
 
 @(private)
@@ -332,8 +314,7 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 	ready := make([dynamic]ChunkCoordinate, context.temp_allocator)
 	for coord in ve.edit.pending {
 		record, found := ve.active_chunks[coord]
-		// VS-10: chunk EMPTY (sem slot) não está pronto — a edição só sai da
-		// pendência quando a materialização concluir (CACHED/RENDERABLE).
+		
 		if found && (record.state == .CACHED || record.state == .RENDERABLE) {
 			append(&ready, coord)
 		}
@@ -347,15 +328,15 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 		delete_key(&ve.edit.pending, coord)
 	}
 
-	buckets := make(map[u32][dynamic]u32, context.temp_allocator) // slot -> packed edits
+	buckets := make(map[u32][dynamic]u32, context.temp_allocator) 
 	total_staged := 0
 	kept := make([dynamic]VoxelEditRequest, context.temp_allocator)
+	
+	dirty_chunks := make(map[ChunkCoordinate]struct{}, context.temp_allocator)
 
 	for request in ve.edit.queue {
 		chunk, voxel_index := voxel_chunk_and_index(request.world_voxel)
 		record, found := ve.active_chunks[chunk]
-		// VS-10: chunk EMPTY não tem slot — sem materialização não há para
-		// onde despachar (a materialização é retentada por ve_retry_empty_edits).
 		if !found || record.state == .GENERATING || record.state == .EMPTY {
 			edit_defer_to_pending(ve, chunk, request)
 			continue
@@ -365,6 +346,7 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 			ve.edit.stats_deferred += 1
 			continue
 		}
+		dirty_chunks[chunk] = {}
 		bucket, bucket_found := buckets[record.storage_slot_index]
 		if !bucket_found {
 			if len(buckets) >= MAX_EDIT_JOBS_PER_FLUSH {
@@ -394,6 +376,9 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 		append(&ve.edit.staged_jobs, job)
 		append(&ve.edit.staged_edits, ..bucket[:])
 	}
+	for chunk in dirty_chunks {
+		light_mark_dirty(ve, chunk)
+	}
 
 	delete(ve.edit.queue)
 	ve.edit.queue = make([dynamic]VoxelEditRequest)
@@ -412,8 +397,6 @@ flush_voxel_edits :: proc(ve: ^VoxelEngine) {
 		)
 	}
 
-	// O flush do journal (staging) é quem consome o intervalo/force;
-	// edit_ring_write só copia o staging para o ring e não deve tocar aqui.
 	ve.edit.last_flush = time.tick_now()
 	ve.edit.force_next_flush = false
 }

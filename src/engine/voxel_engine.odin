@@ -16,13 +16,13 @@ ChunkState :: enum {
 	GENERATING,
 	CACHED,
 	RENDERABLE,
-	EMPTY, // VS-10: chunk de ar puro — registro sem slot, nunca publicado
+	EMPTY, 
 }
 
 ChunkRecord :: struct {
 	state:              ChunkState,
 	storage_slot_index: u32,
-	generation:         u32, // anti-ABA: distingue "mesmo slot, novo chunk"
+	generation:         u32, 
 }
 
 GenerationTask :: struct {
@@ -35,7 +35,7 @@ GenerationTask :: struct {
 
 SubmittedBatch :: struct {
 	compute_timeline_value: u64,
-	tasks:                  [dynamic]GenerationTask, // cap = config.chunks_per_batch (VS-08)
+	tasks:                  [dynamic]GenerationTask, 
 }
 
 RetiringSlot :: struct {
@@ -69,18 +69,20 @@ VoxelEngine :: struct {
 	visible_membership:             map[ChunkCoordinate]int,
 	visible_set_camera:             ChunkCoordinate,
 	visible_set_initialized:        bool,
-	update_appended_tasks:          int,   // VS-15: tarefas enfileiradas no último update (plot work_items)
+	update_appended_tasks:          int,   
 	slots_starved:                  bool,
 	first_update:                   bool,
 	highest_completed_compute_value: u64,
-	// VS-10 (REQ-VRT-05): contadores de chunks vazios virtuais.
-	empty_chunks_active:            int,   // registros no estado EMPTY
-	slots_saved_total:              u64,   // slots devolvidos ao pool (acumulado)
+	empty_chunks_active:            int,   
+	slots_saved_total:              u64,   
 	last_empty_log_time:            time.Tick,
 	edit:                           EditManager,
 	mirror:                         MirrorManager,
-	physics:                        PhysicsManager, // VS-19: solver CPU (main)
-	gameplay:                       GameplayManager, // VS-20: mira/construção/pulo
+	physics:                        PhysicsManager, 
+	gameplay:                       GameplayManager, 
+	light_dirty:                    map[ChunkCoordinate]struct{},
+	light_grid_min:                 ChunkCoordinate,
+	light_job_counts:               [MAX_FRAMES_IN_FLIGHT]u32,
 
 	// --- domínio de queue_mutex (thread principal <-> worker) ---
 	queue_mutex:           sync.Mutex,
@@ -152,6 +154,7 @@ voxel_engine_init :: proc() -> ^VoxelEngine {
 	mirror_init(ve)
 	physics_init(ve)
 	gameplay_init(ve)
+	light_manager_init(ve)
 	streaming_cursor_init(ve)
 
 	voxel_gpu_init()
@@ -193,6 +196,7 @@ voxel_engine_destroy :: proc(ve: ^VoxelEngine) {
 	mirror_destroy(ve)
 	physics_destroy(ve)
 	gameplay_destroy(ve)
+	light_manager_destroy(ve)
 	active_ve = nil
 	free(ve)
 }
@@ -202,8 +206,7 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 	vk_check(vk.GetSemaphoreCounterValue(app.vkDevice, app.computeTimelineSemaphore, &completed_compute))
 
 	tracing_mutex_lock(&ve.queue_mutex, &tracing_queue_lock)
-	// VS-10 (REQ-VRT-02): as flags do pack são lidas pela CPU após a
-	// timeline do lote (mesma ordenação da promoção a CACHED, mesmo anti-ABA).
+
 	vk_check(
 		vma.InvalidateAllocation(
 			app.vmaAllocator,
@@ -225,12 +228,11 @@ voxel_engine_service_completions :: proc(ve: ^VoxelEngine) {
 					flags := voxel_gpu.chunk_result_flags_mapped[task.storage_slot_index]
 					_, has_pending := ve.edit.pending[task.coordinate]
 					if (flags & CHUNK_FLAG_EMPTY) != 0 && !has_pending {
-						// Chunk de ar puro: vira registro virtual e o slot
-						// volta ao pool. Adiado p/ depois do materialize do
-						// mirror (ele valida slot+geração do registro).
 						to_empty = true
 					} else {
 						rec.state = .CACHED
+						light_grid_publish(ve, task.coordinate, task.storage_slot_index)
+						light_mark_dirty(ve, task.coordinate)
 						vision_radius2 := i64(config.radius_vision) * i64(config.radius_vision)
 						if calculate_squared_distance(ve.last_camera_chunk, task.coordinate) <= vision_radius2 {
 							rec.state = .RENDERABLE
@@ -339,10 +341,6 @@ voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 
 			neighbor_coord := coord + neighbor_offset
 			if neighbor_coord in ve.active_chunks {
 				neighbor_record := ve.active_chunks[neighbor_coord]
-
-				// VS-10 (REQ-VRT-03): vizinho contribui slot só se
-				// materializado (CACHED/RENDERABLE); EMPTY/GENERATING =
-				// NEIGHBOR_SLOT_INVALID, que o shader já trata como ar (B2).
 				if neighbor_record.state == .CACHED || neighbor_record.state == .RENDERABLE {
 					entry.neighbor_slots[i] = neighbor_record.storage_slot_index
 				}
@@ -353,9 +351,6 @@ voxel_engine_publish_visible :: proc(ve: ^VoxelEngine, frame_index: u32) -> u32 
 	}
 	return count
 }
-
-// VS-10 (REQ-VRT-05): log periódico dos contadores de chunks vazios
-// virtuais (reativos são recontados no map; economia é acumulada).
 
 voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 	{
@@ -378,10 +373,9 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 		ZoneN("mirror_service")
 		mirror_update_bubble(ve, camera_chunk)
 		mirror_service_retries(ve)
-		physics_drain_requests(ve) // VS-19: pedidos coalescidos da física
+		physics_drain_requests(ve) 
 	}
 
-	// VS-10 (REQ-VRT-05): log periódico dos contadores de chunks vazios.
 	if time.duration_seconds(time.tick_since(ve.last_empty_log_time)) >= 5.0 {
 		ve_log_empty_stats(ve)
 	}
@@ -486,6 +480,17 @@ streaming_cursor_advance :: proc(ve: ^VoxelEngine, camera_chunk: ChunkCoordinate
 streaming_unload_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
 	record := ve.active_chunks[coord]
 	mirror_forget_chunk(ve, coord, record)
+	light_grid_publish(ve, coord, SLOT_INDEX_INVALID)
+	zero_offset := ChunkCoordinate{0, 0, 0}
+	for offset in LIGHT_RELIGHT_NEIGHBORS {
+		if offset == zero_offset {
+			continue
+		}
+		neighbor := coord + offset
+		if neighbor in ve.active_chunks {
+			light_mark_dirty(ve, neighbor)
+		}
+	}
 	if record.state == .GENERATING {
 		retire_generating_slot(ve, coord, record)
 	} else if record.state != .EMPTY {

@@ -10,12 +10,23 @@ voxel_render_pipeline_create :: proc() {
 		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.MESH_EXT}, module = voxel_gpu.render_shader_module, pName = "build_brick_mesh"},
 		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.FRAGMENT}, module = voxel_gpu.render_shader_module, pName = "shade_voxel"},
 	}
+	prepass_stages := [2]vk.PipelineShaderStageCreateInfo {
+		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.MESH_EXT}, module = voxel_gpu.render_shader_module, pName = "build_brick_mesh"},
+		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.FRAGMENT}, module = voxel_gpu.render_shader_module, pName = "depth_prepass"},
+	}
 
 	rendering_info := vk.PipelineRenderingCreateInfo {
 		sType                   = .PIPELINE_RENDERING_CREATE_INFO,
 		colorAttachmentCount    = 1,
 		pColorAttachmentFormats = &app.presentation.format,
 		depthAttachmentFormat   = app.depthBuffer.format,
+	}
+	// VS-23/T1.3: pre-pass de profundidade sem color attachment.
+	prepass_rendering_info := vk.PipelineRenderingCreateInfo {
+		sType                 = .PIPELINE_RENDERING_CREATE_INFO,
+		colorAttachmentCount  = 0,
+		pColorAttachmentFormats = nil,
+		depthAttachmentFormat = app.depthBuffer.format,
 	}
 
 	dynamic_states := [2]vk.DynamicState{.VIEWPORT, .SCISSOR}
@@ -39,11 +50,18 @@ voxel_render_pipeline_create :: proc() {
 		sType                = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 		rasterizationSamples = {._1},
 	}
-	depth_stencil := vk.PipelineDepthStencilStateCreateInfo {
+
+	prepass_depth_stencil := vk.PipelineDepthStencilStateCreateInfo {
 		sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 		depthTestEnable  = true,
 		depthWriteEnable = true,
 		depthCompareOp   = .LESS,
+	}
+	depth_stencil := vk.PipelineDepthStencilStateCreateInfo {
+		sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		depthTestEnable  = true,
+		depthWriteEnable = false,
+		depthCompareOp   = .LESS_OR_EQUAL,
 	}
 	blend_attachment := vk.PipelineColorBlendAttachmentState {
 		colorWriteMask = {.R, .G, .B, .A},
@@ -54,6 +72,28 @@ voxel_render_pipeline_create :: proc() {
 		pAttachments    = &blend_attachment,
 	}
 
+	vk_check(
+		vk.CreateGraphicsPipelines(
+			app.vkDevice,
+			{},
+			1,
+			&vk.GraphicsPipelineCreateInfo {
+				sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
+				pNext               = &prepass_rendering_info,
+				stageCount          = len(prepass_stages),
+				pStages             = &prepass_stages[0],
+				pViewportState      = &viewport_state,
+				pRasterizationState = &rasterization,
+				pMultisampleState   = &multisample,
+				pDepthStencilState  = &prepass_depth_stencil,
+				pColorBlendState    = nil,
+				pDynamicState       = &dynamic_state,
+				layout              = app.graphicsPipelineLayout,
+			},
+			nil,
+			&voxel_gpu.mesh_prepass_pipeline,
+		),
+	)
 	vk_check(
 		vk.CreateGraphicsPipelines(
 			app.vkDevice,
@@ -76,7 +116,7 @@ voxel_render_pipeline_create :: proc() {
 			&voxel_gpu.mesh_pipeline,
 		),
 	)
-	log.info("Pipeline mesh (mesh-only/fragment) criada")
+	log.info("Pipelines mesh criadas (depth pre-pass + pass principal)")
 }
 
 voxel_render_prepare :: proc(
@@ -87,7 +127,9 @@ voxel_render_prepare :: proc(
 	frame_index: u32,
 	edit_job_count: u32,
 ) {
-	if visible_count == 0 && edit_job_count == 0 do return
+
+	light_job_count := active_ve.light_job_counts[int(frame_index % config.frames_in_flight)]
+	if visible_count == 0 && edit_job_count == 0 && light_job_count == 0 do return
 
 	push_constants := VoxelPushConstants {
 		view_projection_matrix = vp,
@@ -96,13 +138,12 @@ voxel_render_prepare :: proc(
 		edit_job_offset        = frame_index * MAX_EDIT_JOBS_PER_FLUSH,
 		visible_chunk_capacity = config.visible_capacity,
 	}
-	dynamic_offset: u32 = 0
-	vk.CmdBindDescriptorSets(cmd, .COMPUTE, app.computePipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 1, &dynamic_offset)
+
+	dynamic_offsets := [2]u32{0, 0}
+	vk.CmdBindDescriptorSets(cmd, .COMPUTE, app.computePipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 2, &dynamic_offsets[0])
 	vk.CmdPushConstants(cmd, app.computePipelineLayout, {.COMPUTE}, 0, PUSH_CONSTANTS_SIZE, &push_constants)
 
 	if edit_job_count > 0 {
-		// VS-16 (REQ-GPU-02/03): contexto gráfico — resets pendentes e
-		// re-sync entram uma vez por command buffer.
 		tracing_gpu_record_context(cmd, TRACING_GPU_CONTEXT_GRAPHICS)
 
 		gfx_pool := telemetry.gfx_pools[frame_index]
@@ -115,12 +156,56 @@ voxel_render_prepare :: proc(
 		tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_GRAPHICS, apply_edits_query)
 		telemetry_end_label(cmd)
 		telemetry_timestamp_end(cmd, gfx_pool, 3)
+	}
 
-		edit_barrier := vk.MemoryBarrier2 {
+	if light_job_count > 0 {
+
+		ZoneN("light.relight_record")
+		tracing_gpu_record_context(cmd, TRACING_GPU_CONTEXT_GRAPHICS)
+		vk.CmdPushConstants(
+			cmd,
+			app.computePipelineLayout,
+			{.COMPUTE},
+			0,
+			PUSH_CONSTANTS_SIZE,
+			&VoxelPushConstants {
+				batch_job_offset       = u32(int(frame_index % config.frames_in_flight) * MAX_LIGHT_JOBS_PER_FLUSH),
+				visible_chunk_capacity = config.visible_capacity,
+			},
+		)
+		seed_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_GRAPHICS, "light.seed")
+		vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.light_seed_pipeline)
+		vk.CmdDispatch(cmd, 4, 4, 4 * light_job_count)
+		tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_GRAPHICS, seed_query)
+		light_barrier := vk.MemoryBarrier2 {
 			sType         = .MEMORY_BARRIER_2,
 			srcStageMask  = {.COMPUTE_SHADER},
 			srcAccessMask = {.SHADER_WRITE},
 			dstStageMask  = {.COMPUTE_SHADER},
+			dstAccessMask = {.SHADER_READ, .SHADER_WRITE},
+		}
+		vk.CmdPipelineBarrier2(cmd, &vk.DependencyInfo{sType = .DEPENDENCY_INFO, memoryBarrierCount = 1, pMemoryBarriers = &light_barrier})
+		for pass in 0 ..< LIGHT_PROPAGATION_PASSES {
+			propagate_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_GRAPHICS, "light.propagate")
+			vk.CmdBindPipeline(cmd, .COMPUTE, voxel_gpu.light_propagate_pipeline)
+			vk.CmdDispatch(cmd, 4, 4, 4 * light_job_count)
+			tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_GRAPHICS, propagate_query)
+			if pass < LIGHT_PROPAGATION_PASSES - 1 {
+				vk.CmdPipelineBarrier2(cmd, &vk.DependencyInfo{sType = .DEPENDENCY_INFO, memoryBarrierCount = 1, pMemoryBarriers = &light_barrier})
+			}
+		}
+
+		vk.CmdPushConstants(cmd, app.computePipelineLayout, {.COMPUTE}, 0, PUSH_CONSTANTS_SIZE, &push_constants)
+	}
+
+	if edit_job_count > 0 || light_job_count > 0 {
+
+		tracing_gpu_record_context(cmd, TRACING_GPU_CONTEXT_GRAPHICS)
+		edit_barrier := vk.MemoryBarrier2 {
+			sType         = .MEMORY_BARRIER_2,
+			srcStageMask  = {.COMPUTE_SHADER},
+			srcAccessMask = {.SHADER_WRITE},
+			dstStageMask  = {.COMPUTE_SHADER, .FRAGMENT_SHADER},
 			dstAccessMask = {.SHADER_READ},
 		}
 		ZoneN("barriers_record")
@@ -136,7 +221,7 @@ voxel_render_prepare :: proc(
 
 	if visible_count == 0 do return
 
-	if edit_job_count == 0 {
+	if edit_job_count == 0 && light_job_count == 0 {
 		tracing_gpu_record_context(cmd, TRACING_GPU_CONTEXT_GRAPHICS)
 	}
 
@@ -222,12 +307,14 @@ voxel_render_prepare :: proc(
 	)
 }
 
+
 voxel_render_record :: proc(
 	cmd: vk.CommandBuffer,
 	vp: matrix[4, 4]f32,
 	camera_position: [3]f32,
 	visible_count: u32,
 	frame_index: u32,
+	swapchain_frame: SwapChainFrameData,
 ) {
 	if visible_count == 0 do return
 
@@ -240,10 +327,11 @@ voxel_render_record :: proc(
 	scissor := vk.Rect2D{extent = {app.presentation.width, app.presentation.height}}
 	vk.CmdSetScissor(cmd, 0, 1, &scissor)
 
-	vk.CmdBindPipeline(cmd, .GRAPHICS, voxel_gpu.mesh_pipeline)
-	// VS-20: offset dinâmico do UBO do realce = slot do frame corrente.
+	// VS-20/VS-23: offsets dinâmicos dos UBOs (21 realce, 25 luz) do frame.
 	highlight_offset := u32(voxel_gpu.target_highlight_alignment) * frame_index
-	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, app.graphicsPipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 1, &highlight_offset)
+	light_offset := u32(voxel_gpu.light_globals_alignment) * frame_index
+	dynamic_offsets := [2]u32{highlight_offset, light_offset}
+	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, app.graphicsPipelineLayout, 0, 1, &voxel_gpu.descriptor_set, 2, &dynamic_offsets[0])
 
 	push_constants := VoxelPushConstants {
 		view_projection_matrix = vp,
@@ -260,18 +348,79 @@ voxel_render_record :: proc(
 		&push_constants,
 	)
 	state_offset := vk.DeviceSize(frame_index * config.work_queue_slot_words * size_of(u32))
+
 	telemetry_timestamp_begin(cmd, telemetry.gfx_pools[frame_index], 8)
-	telemetry_begin_label(cmd, "draw_mesh")
-	ZoneN("mesh_draw_record")
-	draw_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_GRAPHICS, "draw_mesh")
+	// ---- depth pre-pass: mesmo mesh shader, sem color attachment ----
+	prepass_depth_attachment := vk.RenderingAttachmentInfo {
+		sType              = .RENDERING_ATTACHMENT_INFO,
+		imageView          = app.depthBuffer.vkImageView,
+		imageLayout        = .DEPTH_ATTACHMENT_OPTIMAL,
+		loadOp             = .CLEAR,
+		storeOp              = .STORE,
+		clearValue         = {depthStencil = {depth = 1, stencil = 0}},
+	}
+	prepass_info := vk.RenderingInfo {
+		sType              = .RENDERING_INFO,
+		renderArea         = {offset = {0, 0}, extent = {app.presentation.width, app.presentation.height}},
+		layerCount         = 1,
+		colorAttachmentCount = 0,
+		pColorAttachments  = nil,
+		pDepthAttachment   = &prepass_depth_attachment,
+	}
+	vk.CmdBeginRendering(cmd, &prepass_info)
+	telemetry_begin_label(cmd, "depth_prepass")
+	prepass_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_GRAPHICS, "depth_prepass")
+	vk.CmdBindPipeline(cmd, .GRAPHICS, voxel_gpu.mesh_prepass_pipeline)
 	vk.CmdDrawMeshTasksIndirectEXT(
 		cmd,
 		voxel_gpu.work_queue.handle,
 		state_offset + WORK_QUEUE_INDIRECT_X_WORD * 4,
-		1,  // um único comando (x = contagem de itens, com clamp do finalize)
-		12, // stride = size_of(VkDrawMeshTasksIndirectCommandEXT) = 3 u32
+		1,
+		12,
+	)
+	tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_GRAPHICS, prepass_query)
+	telemetry_end_label(cmd)
+	vk.CmdEndRendering(cmd)
+
+	// ---- pass principal: cor + profundidade do pre-pass (load, <=) ----
+	color_attachment := vk.RenderingAttachmentInfo {
+		sType              = .RENDERING_ATTACHMENT_INFO,
+		imageView          = swapchain_frame.image_view,
+		imageLayout        = .COLOR_ATTACHMENT_OPTIMAL,
+		loadOp             = .CLEAR,
+		storeOp              = .STORE,
+		clearValue         = {color = {float32 = {0, 0.2, 0.8, 1}}},
+	}
+	depth_attachment := vk.RenderingAttachmentInfo {
+		sType              = .RENDERING_ATTACHMENT_INFO,
+		imageView          = app.depthBuffer.vkImageView,
+		imageLayout        = .DEPTH_ATTACHMENT_OPTIMAL,
+		loadOp             = .LOAD,
+		storeOp              = .DONT_CARE,
+	}
+	rendering_info := vk.RenderingInfo {
+		sType              = .RENDERING_INFO,
+		renderArea         = {offset = {0, 0}, extent = {app.presentation.width, app.presentation.height}},
+		layerCount         = 1,
+		colorAttachmentCount = 1,
+		pColorAttachments  = &color_attachment,
+		pDepthAttachment   = &depth_attachment,
+	}
+
+	vk.CmdBeginRendering(cmd, &rendering_info)
+	telemetry_begin_label(cmd, "render_pass")
+	ZoneN("mesh_draw_record")
+	draw_query := tracing_gpu_zone_begin(cmd, TRACING_GPU_CONTEXT_GRAPHICS, "draw_mesh")
+	vk.CmdBindPipeline(cmd, .GRAPHICS, voxel_gpu.mesh_pipeline)
+	vk.CmdDrawMeshTasksIndirectEXT(
+		cmd,
+		voxel_gpu.work_queue.handle,
+		state_offset + WORK_QUEUE_INDIRECT_X_WORD * 4,
+		1,
+		12,
 	)
 	tracing_gpu_zone_end(cmd, TRACING_GPU_CONTEXT_GRAPHICS, draw_query)
 	telemetry_end_label(cmd)
+	vk.CmdEndRendering(cmd)
 	telemetry_timestamp_end(cmd, telemetry.gfx_pools[frame_index], 9)
 }

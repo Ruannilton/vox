@@ -2,7 +2,7 @@
   "global": {
     "semente": 1337,
     "forcaDistorcao": 16,
-    "limiarTransicao": 0.25,
+    "limiarTransicao": 0.10,
     "frequenciaTemperatura": 0.0005,
     "frequenciaUmidade": 0.001,
     "offsetMundial": [0, 0]
@@ -79,9 +79,7 @@
       "permitePlantas": false,
       "camadas": [
         { "amplitude": 10, "frequencia": 0.01, "oitavas": 8, "tipo": "simplex", "operacao": "adicao" },
-        { "amplitude": 25, "frequencia": 0.006, "oitavas": 4, "tipo": "perlin", "operacao": "adicao" },
-         { "amplitude": 40, "frequencia": 0.001, "oitavas": 6, "tipo": "perlin", "operacao": "adicao" },
-        { "amplitude": 8, "frequencia": 0.01, "oitavas": 1, "tipo": "simplex", "operacao": "subtracao" }
+         { "amplitude": 40, "frequencia": 0.001, "oitavas": 6, "tipo": "perlin", "operacao": "adicao" }
       ]
     }
   ]

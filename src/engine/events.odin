@@ -1,8 +1,5 @@
 package engine
 
-// VS-07 — bus central de eventos: produtores (callbacks GLFW, cursor de replay)
-// apenas empurram eventos na fila; o loop drena uma vez por frame, grava em
-// JSONL e despacha aos handlers registrados.
 
 import "core:encoding/json"
 import "core:fmt"
@@ -34,7 +31,7 @@ EventType :: enum {
 KeyPayload :: struct {
 	key:      i32,
 	scancode: i32,
-	duration: f64, // < 0 = ausente
+	duration: f64, 
 }
 
 MouseMovePayload :: struct {
@@ -47,11 +44,11 @@ MouseButtonPayload :: struct {
 }
 
 Vec3fPayload :: struct {
-	v: [3]f32, // TeleportTo (position) e LookAt (target)
+	v: [3]f32, 
 }
 
 Vec3iPayload :: struct {
-	v:        [3]i32, // AddBlock/RemoveBlock (position)
+	v:        [3]i32, 
 	block_id: u32,
 }
 
@@ -66,11 +63,11 @@ EventPayload :: union {
 	Vec3fPayload,
 	Vec3iPayload,
 	WaitPayload,
-	struct {}, // CloseRequested, ToggleTelemetry, TelemetrySnapshot
+	struct {},
 }
 
 Event :: struct {
-	t:       f64, // segundos desde o início da aplicação (glfw.GetTime() - t0)
+	t:       f64,
 	type:    EventType,
 	payload: EventPayload,
 }
@@ -95,15 +92,13 @@ json_event :: struct {
 events: struct {
 	t0: f64,
 
-	// fila anel (produtores: callbacks "c"/contextless e cursor de replay)
 	queue:           [EVENT_QUEUE_CAPACITY]Event,
 	head, tail:      int,
 	overflow_count:  u64,
 	overflow_warned: bool,
 
-	// estado derivado de KeyPress/KeyRelease (substitui o polling glfw.GetKey)
 	pressed:           map[i32]bool,
-	scheduled_release: map[i32]f64, // KeyPress{duration}: release sintetizado
+	scheduled_release: map[i32]f64,
 
 	handlers: map[EventType]proc(Event),
 
@@ -179,8 +174,8 @@ events_init :: proc() {
 	}
 }
 
-// Chamado no fim da inicialização, antes do primeiro PollEvents (REQ-EVT-07).
-events_set_t0 :: proc() {
+
+events_reset_clock :: proc() {
 	events.t0 = glfw.GetTime()
 	if events.record_enabled {
 		events_recorder_open()
@@ -198,9 +193,7 @@ events_destroy :: proc() {
 	delete(events.replay_events)
 }
 
-// --- Produtores ---
 
-// Empurra um evento na fila. Contextless: pode ser chamado de callbacks "c".
 events_push_now :: proc "contextless" (type: EventType, payload: EventPayload) {
 	events_push(Event{t = events_now(), type = type, payload = payload})
 }
@@ -209,12 +202,11 @@ events_time_now :: proc() -> f64 {
 	return events_now()
 }
 
-// Emissão fora de callback (cursor de replay, handlers): timestamp e empurra.
+
 events_emit :: proc(type: EventType, payload: EventPayload) {
 	events_push(Event{t = events_now(), type = type, payload = payload})
 }
 
-// --- Registro de handlers ---
 
 events_register :: proc(types: []EventType, handler: proc(Event)) {
 	for t in types do events.handlers[t] = handler
@@ -224,12 +216,10 @@ events_is_pressed :: proc(key: i32) -> bool {
 	return events.pressed[key]
 }
 
-// --- Dreno (uma vez por frame, thread principal) ---
 
 events_drain :: proc() {
 	t_drain := events_now()
 
-	// releases sintetizados de KeyPress{duration} que já venceram
 	for key, until in events.scheduled_release {
 		if until <= t_drain {
 			events_push(Event{t = t_drain, type = .KeyRelease, payload = KeyPayload{key = key, duration = -1}})
@@ -237,13 +227,11 @@ events_drain :: proc() {
 		}
 	}
 
-	// aviso único de overflow por sessão
 	if events.overflow_count > 0 && !events.overflow_warned {
 		log.warnf("Fila de eventos em overflow; {} eventos descartados", events.overflow_count)
 		events.overflow_warned = true
 	}
 
-	// VS-16 (REQ-CPU-01)
 	ZoneN("drain")
 	for events.head != events.tail {
 		e := events.queue[events.head]
@@ -258,18 +246,13 @@ events_drain :: proc() {
 	}
 }
 
-// Alimenta a fila com os eventos do replay devidos até `now` (REQ-EVT-05:
-// Wait segura o cursor; nada com t < hold_until é despachado).
 events_replay_feed :: proc(now: f64) {
 	if events.replay_path == "" || events.replay_finished do return
 
-	// VS-16 (REQ-CPU-01)
 	ZoneN("replay_cursor")
 	for events.replay_cursor < len(events.replay_events) {
 		e := events.replay_events[events.replay_cursor]
 		if e.t > now do break
-		// Wait: eventos com t anterior ao fim da espera só saem quando o
-		// relógio da sessão também passou desse instante (REQ-EVT-05)
 		if e.t < events.replay_hold_until && now < events.replay_hold_until do break
 
 		events.replay_cursor += 1
@@ -307,7 +290,6 @@ events_apply_key_state :: proc(e: Event, t_drain: f64) {
 	case .KeyPress:
 		events.pressed[p.key] = true
 		if p.duration >= 0 {
-			// última escrita vence (re-marca release de tecla já pressionada)
 			events.scheduled_release[p.key] = t_drain + p.duration
 		}
 	case .KeyRelease:
@@ -317,8 +299,6 @@ events_apply_key_state :: proc(e: Event, t_drain: f64) {
 	}
 }
 
-// Converte uma linha JSON em evento; ok = false marca skip (linha inválida
-// ou tipo desconhecido), distinguindo apenas a falha de parse de JSON.
 @(private)
 events_parse_line :: proc(line: string) -> (Event, bool) {
 	ev := json_event{}
@@ -373,9 +353,7 @@ events_parse_line :: proc(line: string) -> (Event, bool) {
 	return e, true
 }
 
-// Carrega e valida o arquivo de replay. Fatal (exit != 0) se ausente,
-// ilegível ou com JSON inválido na primeira linha (REQ-EVT-08). Chamado por
-// events_init, antes da criação da janela.
+
 @(private)
 events_load_replay :: proc(path: string) {
 	data, ferr := os.read_entire_file_from_path(path, context.allocator)
@@ -406,7 +384,6 @@ events_load_replay :: proc(path: string) {
 	}
 	delete(lines)
 
-	// ordenação por t (insertion sort: arquivos já vêm quase ordenados)
 	events.replay_events = make([]Event, len(parsed), context.allocator)
 	copy(events.replay_events, parsed[:])
 	for i := 1; i < len(events.replay_events); i += 1 {
@@ -537,11 +514,11 @@ events_timestamp_string :: proc() -> string {
 	return fmt.tprintf("%04d%02d%02d_%02d%02d%02d", year, int(month), day, hour, min, sec)
 }
 
-// Abre o arquivo de gravação, criando os diretórios do caminho se preciso.
+
 @(private)
 events_try_open :: proc(path: string) -> ^os.File {
 	for i := 0; i < len(path); i += 1 {
-		if path[i] == '/' do os.make_directory(path[:i]) // já existe: erro ignorado
+		if path[i] == '/' do os.make_directory(path[:i]) 
 	}
 	f, err := os.open(path, os.O_WRONLY | os.O_CREATE | os.O_TRUNC)
 	if err == nil do return f

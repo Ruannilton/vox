@@ -1,11 +1,5 @@
 package engine
 
-// VS-22 (REQ-BIO-01): biomas procedurais data-driven via assets/biomes.json.
-// Mesmo padrão de rejeição da VS-12: parse + validação rodam no boot, DEPOIS
-// de assets_load (o registry de blocos precisa estar carregado para resolver
-// nomes → ids). Erro → log fatal, sem fallback silencioso. Os dados parseados
-// espelham as structs std430 de common.slang e alimentam os bindings 22–24
-// (upload em voxel_gpu_init, upload_biome_tables).
 
 import "core:encoding/json"
 import "core:fmt"
@@ -14,8 +8,7 @@ import "core:os"
 
 BIOMES_DEFAULT_PATH :: "assets/biomes.json"
 
-// Limites fixos de buffer (REQ-BIO-01): ≤16 biomas, ≤8 camadas por bioma e
-// ≤64 camadas no total (stride dos StructuredBuffers).
+
 MAX_BIOMES :: 16
 MAX_BIOME_LAYERS_PER_BIOME :: 8
 MAX_BIOME_LAYERS_TOTAL :: 64
@@ -28,24 +21,18 @@ BIOME_DEFAULT_TEMPERATURE_FREQUENCY :: f32(0.001)
 BIOME_DEFAULT_HUMIDITY_FREQUENCY :: f32(0.002)
 BIOME_DEFAULT_SUBSURFACE_DEPTH :: 8
 
-// Tipo de ruído (espelha o FastNoiseLite usado pelo kernel).
-// u32 explícito: biomes_parse_enum asserção .(u32) nos argumentos variádicos.
 BIOME_NOISE_TYPE_SIMPLEX :: u32(0)
 BIOME_NOISE_TYPE_PERLIN :: u32(1)
 BIOME_NOISE_TYPE_CELLULAR :: u32(2)
 
-// Operação da camada: +amplitude (vales preservados) ou −amplitude (ravinas).
 BIOME_NOISE_OP_ADD :: u32(0)
 BIOME_NOISE_OP_SUBTRACT :: u32(1)
 
-// BiomeDefinition.flags: bit 0 — o bioma permite spawn de plantas (VS-14).
 BIOME_FLAG_PERMITE_PLANTAS :: 1
 
-// Clamps documentados (REQ-BIO-01/03).
 BIOME_MIN_HEIGHT :: 1
 BIOME_MAX_HEIGHT :: 32767
 
-// 48 B std430 — espelha o Slang (float2 alinhado a 8, stride múltiplo de 16).
 BiomeGlobals :: struct {
 	offset_mundial:         [2]f32, // 0..8
 	semente:                u32,    // 8
@@ -58,7 +45,6 @@ BiomeGlobals :: struct {
 	padding:                [3]u32, // 36..48
 }
 
-// 48 B std430 — espelha o Slang. Os blocos são ids do registry global (VS-12).
 BiomeDefinition :: struct {
 	centro_climatico:              [2]f32, // 0..8 (T, H)
 	altura_base:                   f32,    // 8
@@ -72,7 +58,7 @@ BiomeDefinition :: struct {
 	padding:                       [2]u32, // 40..48
 }
 
-// 32 B std430 — espelha o Slang (stride múltiplo de 16).
+
 BiomeNoiseLayer :: struct {
 	amplitude: f32,     // 0
 	frequencia: f32,    // 4
@@ -82,8 +68,6 @@ BiomeNoiseLayer :: struct {
 	padding:     [3]u32, // 20..32
 }
 
-// Tabelas parseadas: arrays de capacidade fixa para o upload direto aos
-// StructuredBuffers (bindings 22/23/24); as contagens vêm de BiomeGlobals.
 VoxelBiomes :: struct {
 	loaded:  bool,
 	globals: BiomeGlobals,
@@ -132,8 +116,7 @@ biomes_json_doc :: struct {
 	biomas: []biomes_json_biome `json:"biomas"`,
 }
 
-// Carga + validação (REQ-BIO-01). Ausente ou inválido → fatal (sem fallback:
-// o kernel de geração data-driven (VS-22-IMPL-03) passa a exigir as tabelas).
+
 biomes_load :: proc() {
 	ZoneN("biomes_load")
 	path := BIOMES_DEFAULT_PATH
@@ -215,8 +198,6 @@ biomes_parse_globals :: proc(global: Maybe(biomes_json_global), path: string) {
 	voxel_biomes.globals = g
 }
 
-// Índice nome → id a partir do registry global (VS-12). Requer assets_load
-// executado antes (biomes_load roda depois dele no boot).
 @(private)
 biomes_block_id_index :: proc() -> map[string]u32 {
 	index := make(map[string]u32, BLOCK_REGISTRY_CAPACITY, context.temp_allocator)
@@ -227,8 +208,7 @@ biomes_block_id_index :: proc() -> map[string]u32 {
 	return index
 }
 
-// Biomas: valida limites e referências, aplica defaults e preenche as tabelas
-// std430 (layer_start/layer_count apontam no pool global de camadas).
+
 @(private)
 biomes_parse_biomes :: proc(json_biomes: []biomes_json_biome, block_ids: map[string]u32) -> (total_layers: int) {
 	if len(json_biomes) == 0 || len(json_biomes) > MAX_BIOMES {
