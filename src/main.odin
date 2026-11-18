@@ -11,23 +11,15 @@ import "vendor:glfw"
 import vk "vendor:vulkan"
 
 
-camera: Camera
+
 voxel_engine: ^engine.VoxelEngine
 
-
-player_body: engine.PhysicsHandle
-space_pressed:     bool
-jump_tracking:     bool
-jump_base_y:       f32
-jump_apex_y:       f32
+// Referência global do jogador por ora (refatoração de ownership fica para
+// depois): o estado do player (câmera + corpo físico) mora em engine.player.
+player: engine.Player
 
 debug_light_mode:  u32 = 0
 torch_enabled:     bool = true
-PLAYER_SIZE :: glm.vec3{0.6, 2, 0.6}
-PLAYER_HALF_WIDTH :: f32(0.3)
-PLAYER_EYE_HEIGHT :: f32(2)
-PLAYER_WALK_SPEED :: f32(6.0)
-PLAYER_SPRINT_FACTOR :: f32(2.0)
 
 main :: proc() {
 	engine.debug_paths_init(VERSION_STRING)
@@ -56,29 +48,11 @@ main :: proc() {
 	defer engine.TracingShutdown()
 
 	voxel_engine = engine.voxel_engine_init()
+	player = engine.player_create(voxel_engine, glm.vec3{32, 75, 60})
 
-	camera = camera_create(glm.vec3{32, 75, 60}, glm.vec3{-50, -90, 0}, 45.0)
 	
-	player_body = engine.physics_body_create(
-		voxel_engine,
-		camera.position - glm.vec3{PLAYER_HALF_WIDTH, PLAYER_EYE_HEIGHT, PLAYER_HALF_WIDTH},
-		PLAYER_SIZE,
-	)
-	projection := glm.mat4Perspective(
-		glm.radians(camera.fov),
-		f32(engine.app.presentation.width) / f32(engine.app.presentation.height),
-		0.5,
-		500.0,
-	)
+	
 
-	GL_TO_VK_CLIP :: matrix[4, 4]f32{
-		1, 0, 0, 0,
-		0, -1, 0, 0,
-		0, 0, 0.5, 0.5,
-		0, 0, 0, 1,
-	}
-
-	glfw.SetInputMode(engine.app.glfwWindow, glfw.CURSOR, glfw.CURSOR_DISABLED)
 	
 	engine.setup_glfw_callbacks()
 	engine.events_register({.KeyPress, .KeyRelease}, key_handler)
@@ -91,16 +65,10 @@ main :: proc() {
 			#partial switch p in e.payload {
 			case engine.Vec3fPayload:
 				if e.type == .TeleportTo {
-					camera.position = p.v
-					camera.target = camera.position + camera.direction
-					
-					if body := engine.physics_body_get(voxel_engine, player_body); body != nil {
-						body.position = p.v - glm.vec3{PLAYER_HALF_WIDTH, PLAYER_EYE_HEIGHT, PLAYER_HALF_WIDTH}
-						body.velocity = {}
-					}
+					engine.player_set_position(&player, p.v)
 					engine.gameplay_clear_target(voxel_engine)
 				} else {
-					camera_look_at(&camera, p.v)
+					engine.camera_look_at(&player.camera, p.v)
 				}
 			case engine.Vec3iPayload:
 				block_id := e.type == .AddBlock ? p.block_id : u32(0)
@@ -116,7 +84,7 @@ main :: proc() {
 	)
 
 	engine.events_reset_clock()
-
+	engine.voxel_engine_set_view_camera(voxel_engine, &player.camera)
 	engine.SetThreadName("main")
 	engine.AppInfo(fmt.tprintf("version={} | {}", VERSION_STRING, engine.ConfigSummary()))
 	log.infof("Tracy IsConnected()={}", engine.TracingIsConnected())
@@ -142,16 +110,17 @@ main :: proc() {
 				engine.Update()
 				engine.telemetry_service()
 				frame_dt := min(f32(engine.app.deltaTime), 0.1)
-				update_camera_movement(frame_dt)
-			
-				engine.physics_tick(voxel_engine, frame_dt)
-				player_track_jump_apex()
-				player_sync_camera()
-		
-				engine.gameplay_update_target(voxel_engine, engine.app.frameIndex, camera.position, camera.direction)
-				engine.light_update_globals(voxel_engine, engine.app.frameIndex, camera.position, debug_light_mode, torch_enabled)
+				engine.player_update(&player, frame_dt)
 
-				engine.voxel_engine_request_frame(voxel_engine, engine.app.currentTimelineValue, engine.app.frameIndex, engine.chunk_coordinate_from_world(camera.position))
+				engine.physics_tick(voxel_engine, frame_dt)
+				engine.player_track_jump_apex(&player, voxel_engine)
+				engine.player_sync_camera(&player)
+
+				engine.gameplay_upate()
+				engine.gameplay_update_target(voxel_engine, engine.app.frameIndex, player.camera.position, player.camera.direction)
+				engine.light_update_globals(voxel_engine, engine.app.frameIndex, player.camera.position, debug_light_mode, torch_enabled)
+
+				engine.voxel_engine_request_frame(voxel_engine, engine.app.currentTimelineValue, engine.app.frameIndex, engine.chunk_coordinate_from_world(player.camera.position))
 			}
 
 			signal_value: u64
@@ -160,7 +129,7 @@ main :: proc() {
 			compute_wait_value: u64
 			frame_resource: ^engine.FrameResource
 			swapchain_frame: engine.SwapChainFrameData
-			vp: glm.mat4
+			
 			cmd: vk.CommandBuffer
 			{
 				engine.ZoneN("frame_wait")
@@ -169,8 +138,6 @@ main :: proc() {
 					signal_value = engine.WaitTimelineSemaphore()
 					engine.telemetry_collect_graphics(engine.app.frameIndex)
 					engine.tracing_gpu_collect_graphics()
-					view := camera_view(&camera)
-					vp = GL_TO_VK_CLIP * projection * view
 				}
 
 				{
@@ -187,7 +154,7 @@ main :: proc() {
 		
 				{
 					engine.ZoneN("publish_visible")
-					visible_count = engine.voxel_engine_wait_published(voxel_engine, signal_value, engine.chunk_coordinate_from_world(camera.position))
+					visible_count = engine.voxel_engine_wait_published(voxel_engine, signal_value, engine.chunk_coordinate_from_world(player.camera.position))
 					compute_wait_value = voxel_engine.published_compute_value
 				}
 				{
@@ -253,14 +220,13 @@ main :: proc() {
 
 			engine.voxel_render_prepare(
 				cmd,
-				vp,
-				camera.position,
+				player.camera.position,
 				visible_count,
 				engine.app.frameIndex,
 				edit_job_count,
 			)
 
-			engine.voxel_render_record(cmd, vp, camera.position, visible_count, engine.app.frameIndex, swapchain_frame)
+			engine.voxel_render_record(cmd,  player.camera.position, visible_count, engine.app.frameIndex, swapchain_frame)
 
 			transition_present_barrier := vk.ImageMemoryBarrier2 {
 				sType = .IMAGE_MEMORY_BARRIER_2,
@@ -339,8 +305,8 @@ main :: proc() {
 
 	log.infof(
 		"FINAL pose: position=[{}, {}, {}] target=[{}, {}, {}]",
-		camera.position.x, camera.position.y, camera.position.z,
-		camera.target.x, camera.target.y, camera.target.z,
+		player.camera.position.x, player.camera.position.y, player.camera.position.z,
+		player.camera.target.x, player.camera.target.y, player.camera.target.z,
 	)
 	engine.edit_log_stats(voxel_engine, "FINAL edits:")
 	log.info("Exiting application")
@@ -350,66 +316,8 @@ main :: proc() {
 		os.exit(0)
 	}
 
+	engine.player_destroy(voxel_engine, &player)
 	engine.voxel_engine_destroy(voxel_engine)
-}
-
-@(private)
-update_camera_movement :: proc(delta_time: f32) {
-	body := engine.physics_body_get(voxel_engine, player_body)
-	if body == nil do return
-	speed: f32 = PLAYER_WALK_SPEED
-	if engine.events_is_pressed(glfw.KEY_LEFT_SHIFT) do speed *= PLAYER_SPRINT_FACTOR
-
-	forward_input, right_input: f32
-	if engine.events_is_pressed(glfw.KEY_W) do forward_input += 1
-	if engine.events_is_pressed(glfw.KEY_S) do forward_input -= 1
-	if engine.events_is_pressed(glfw.KEY_D) do right_input += 1
-	if engine.events_is_pressed(glfw.KEY_A) do right_input -= 1
-
-	// evita andar mais rápido na diagonal
-	if forward_input != 0 && right_input != 0 {
-		forward_input *= 0.70710678
-		right_input *= 0.70710678
-	}
-
-	rad_yaw := glm.radians(camera.rotation.y)
-	forward := glm.vec3{glm.cos(rad_yaw), 0, glm.sin(rad_yaw)}
-	right := glm.vec3{-glm.sin(rad_yaw), 0, glm.cos(rad_yaw)}
-	wish := forward * forward_input + right * right_input
-
-	body.velocity.x = wish.x * speed
-	body.velocity.z = wish.z * speed
-}
-
-
-@(private)
-player_track_jump_apex :: proc() {
-	body := engine.physics_body_get(voxel_engine, player_body)
-	if body == nil do return
-	if !jump_tracking {
-		if voxel_engine.gameplay.stats_jumps > 0 &&
-		   voxel_engine.gameplay.stats_jumps != voxel_engine.gameplay.stats_jumps_logged &&
-		   !body.grounded {
-			jump_tracking = true
-			jump_base_y = body.position.y
-			jump_apex_y = body.position.y
-			voxel_engine.gameplay.stats_jumps_logged = voxel_engine.gameplay.stats_jumps
-		}
-		return
-	}
-	jump_apex_y = max(jump_apex_y, body.position.y)
-	if body.grounded {
-		log.infof("VS-20 PULO ápice: base={:.3f} apex={:.3f} delta={:.3f} voxels", jump_base_y, jump_apex_y, jump_apex_y - jump_base_y)
-		jump_tracking = false
-	}
-}
-
-@(private)
-player_sync_camera :: proc() {
-	body := engine.physics_body_get(voxel_engine, player_body)
-	if body == nil do return
-	camera.position = body.position + glm.vec3{PLAYER_HALF_WIDTH, PLAYER_EYE_HEIGHT, PLAYER_HALF_WIDTH}
-	camera.target = camera.position + camera.direction
 }
 
 @(private)
@@ -436,13 +344,12 @@ key_handler :: proc(e: engine.Event) {
 			torch_enabled = !torch_enabled
 			log.infof("VS-23 tocha dinâmica {}", "ON" if torch_enabled else "OFF")
 		case glfw.KEY_SPACE:
-			if !space_pressed {
-				space_pressed = true
-				engine.gameplay_jump(voxel_engine, engine.physics_body_get(voxel_engine, player_body))
-			}
+			engine.player_on_space(&player, voxel_engine, true)
 		}
 	case .KeyRelease:
-		if p.key == glfw.KEY_SPACE do space_pressed = false
+		if p.key == glfw.KEY_SPACE {
+			engine.player_on_space(&player, voxel_engine, false)
+		}
 	}
 }
 
@@ -450,13 +357,9 @@ key_handler :: proc(e: engine.Event) {
 mouse_handler :: proc(e: engine.Event) {
 	#partial switch p in e.payload {
 	case engine.MouseMovePayload:
-		sensitivity: f32 = 0.07
-		delta_rotation := glm.vec3{p.dy * sensitivity, p.dx * sensitivity, 0}
-		camera_rotate(&camera, delta_rotation)
+		engine.player_on_mouse_move(&player, p.dx, p.dy)
 	case engine.MouseButtonPayload:
-		if p.press {
-			engine.gameplay_mouse_press(voxel_engine, p.button, engine.physics_body_get(voxel_engine, player_body))
-		}
+		engine.player_on_mouse_button(&player, voxel_engine, p.button, p.press)
 	}
 }
 

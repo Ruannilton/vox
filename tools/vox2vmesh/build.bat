@@ -1,0 +1,2 @@
+D:\Dev\tools\mingw64\bin\g++.exe vox2vmesh.cpp meshoptimizer/allocator.cpp meshoptimizer/clusterizer.cpp meshoptimizer/indexgenerator.cpp meshoptimizer/simplifier.cpp meshoptimizer/vcacheoptimizer.cpp meshoptimizer/vfetchoptimizer.cpp meshoptimizer/meshletutils.cpp -Imeshoptimizer/ -o vox2vmesh.exe
+odin build vmesh_inspect.odin -file

@@ -5,3 +5,5 @@ bin/
 *__pycache__/
 debug/
 .obsidian/
+
+!tools/tracy/*.exe

@@ -83,6 +83,7 @@ VoxelEngine :: struct {
 	light_dirty:                    map[ChunkCoordinate]struct{},
 	light_grid_min:                 ChunkCoordinate,
 	light_job_counts:               [MAX_FRAMES_IN_FLIGHT]u32,
+	view_camera:                 ^Camera,
 
 	// --- domínio de queue_mutex (thread principal <-> worker) ---
 	queue_mutex:           sync.Mutex,
@@ -379,6 +380,10 @@ voxel_engine_update :: proc(ve: ^VoxelEngine, camera_position: [3]f32) {
 	if time.duration_seconds(time.tick_since(ve.last_empty_log_time)) >= 5.0 {
 		ve_log_empty_stats(ve)
 	}
+}
+
+voxel_engine_set_view_camera :: proc(ve: ^VoxelEngine, camera: ^Camera) {
+	ve.view_camera = camera
 }
 
 @(private)

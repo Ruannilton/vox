@@ -121,13 +121,12 @@ voxel_render_pipeline_create :: proc() {
 
 voxel_render_prepare :: proc(
 	cmd: vk.CommandBuffer,
-	vp: matrix[4, 4]f32,
 	camera_position: [3]f32,
 	visible_count: u32,
 	frame_index: u32,
 	edit_job_count: u32,
 ) {
-
+	vp: matrix[4, 4]f32 = camera_get_view_projection(active_ve.view_camera)
 	light_job_count := active_ve.light_job_counts[int(frame_index % config.frames_in_flight)]
 	if visible_count == 0 && edit_job_count == 0 && light_job_count == 0 do return
 
@@ -310,14 +309,13 @@ voxel_render_prepare :: proc(
 
 voxel_render_record :: proc(
 	cmd: vk.CommandBuffer,
-	vp: matrix[4, 4]f32,
 	camera_position: [3]f32,
 	visible_count: u32,
 	frame_index: u32,
 	swapchain_frame: SwapChainFrameData,
 ) {
 	if visible_count == 0 do return
-
+	vp: matrix[4, 4]f32 = camera_get_view_projection(active_ve.view_camera)
 	viewport := vk.Viewport {
 		width    = f32(app.presentation.width),
 		height   = f32(app.presentation.height),

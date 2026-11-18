@@ -17,7 +17,7 @@
       "blocoSubsuperficie": "terra",
       "blocoProfundo": "pedra",
       "profundidadeSubsuperficie": 8,
-      "permitePlantas": false,
+      "permitePlantas": true,
       "camadas": [
         { "amplitude": 10, "frequencia": 0.01, "oitavas": 1, "tipo": "simplex", "operacao": "adicao" },
         { "amplitude": 5, "frequencia": 0.01, "oitavas": 1, "tipo": "perlin", "operacao": "adicao" }

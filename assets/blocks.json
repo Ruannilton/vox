@@ -405,7 +405,90 @@
           1
         ]
       ]
-    }
+    },
+   {
+  "name": "cubo_reduzido",
+  "vertices": [
+    [0.0625, 0, 0.0625],
+    [0.0625, 0, 0.9375],
+    [0.0625, 1, 0.9375],
+    [0.0625, 1, 0.0625],
+    [0.9375, 0, 0.0625],
+    [0.9375, 0, 0.9375],
+    [0.9375, 1, 0.9375],
+    [0.9375, 1, 0.0625],
+    [0.0625, 1, 0.9375],
+    [0.9375, 1, 0.9375],
+    [0.9375, 1, 0.0625],
+    [0.0625, 1, 0.0625],
+    [0.0625, 0, 0.0625],
+    [0.9375, 0, 0.0625],
+    [0.9375, 0, 0.9375],
+    [0.0625, 0, 0.9375],
+    [0.0625, 0, 0.9375],
+    [0.9375, 0, 0.9375],
+    [0.9375, 1, 0.9375],
+    [0.0625, 1, 0.9375],
+    [0.0625, 0, 0.0625],
+    [0.0625, 1, 0.0625],
+    [0.9375, 0, 0.0625],
+    [0.9375, 1, 0.0625]
+  ],
+  "triangles": [
+    [0, 1, 2],
+    [0, 2, 3],
+    [4, 6, 5],
+    [4, 7, 6],
+    [8, 9, 10],
+    [8, 10, 11],
+    [12, 13, 14],
+    [12, 14, 15],
+    [16, 17, 18],
+    [16, 18, 19],
+    [20, 21, 23],
+    [20, 23, 22]
+  ],
+   "cull_tags": [
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7
+      ],
+  "uvs": [
+    [0.0625, 0],
+    [0.9375, 0],
+    [0.9375, 1],
+    [0.0625, 1],
+    [0.0625, 0],
+    [0.9375, 0],
+    [0.9375, 1],
+    [0.0625, 1],
+    [0.0625, 0.0625],
+    [0.9375, 0.0625],
+    [0.9375, 0.9375],
+    [0.0625, 0.9375],
+    [0.0625, 0.0625],
+    [0.9375, 0.0625],
+    [0.9375, 0.9375],
+    [0.0625, 0.9375],
+    [0.0625, 0],
+    [0.9375, 0],
+    [0.9375, 1],
+    [0.0625, 1],
+    [0.0625, 0],
+    [0.0625, 1],
+    [0.9375, 0],
+    [0.9375, 1]
+  ]
+}
   ],
   "textures": [
     {
@@ -423,10 +506,6 @@
     {
       "name": "pedra",
       "path": "textures/stone.png"
-    },
-    {
-      "name": "planta",
-      "path": "textures/plant.png"
     },
     {
       "name": "ice",
@@ -447,6 +526,38 @@
     {
       "name": "podzol_side",
       "path": "textures/podzol_side.png"
+    },
+    {
+      "name": "dandelion",
+      "path": "textures/plants/dandelion.png"
+    },
+    {
+      "name": "bush",
+      "path": "textures/plants/firefly_bush.png"
+    },
+    {
+      "name": "poppy",
+      "path": "textures/plants/poppy.png"
+    },
+    {
+      "name": "cactus_top",
+      "path": "textures/cactus_top.png"
+    },
+    {
+      "name": "cactus_side",
+      "path": "textures/cactus_side.png"
+    },
+    {
+      "name": "cactus_bottom",
+      "path": "textures/cactus_bottom.png"
+    },
+    {
+      "name": "dark_oak_log",
+      "path": "textures/dark_oak_log.png"
+    },
+    {
+      "name": "dark_oak_log_top",
+      "path": "textures/dark_oak_log_top.png"
     }
   ],
   "blocks": [
@@ -495,9 +606,9 @@
     },
     {
       "id": 4,
-      "name": "planta",
+      "name": "bush",
       "mesh": "planta",
-      "texture": "planta",
+      "texture": "bush",
       "transparent": true,
       "solid": false,
       "physics": {
@@ -576,6 +687,97 @@
         "left": "podzol_side",
         "right": "podzol_side"
       },
+      "physics": {
+        "blocking": true,
+        "hittable": true,
+        "friction": 0.6,
+        "restitution": 0.0
+      }
+    },
+    {
+      "id": 9,
+      "name": "poppy",
+      "mesh": "planta",
+      "texture": "poppy",
+      "transparent": true,
+      "solid": false,
+      "physics": {
+        "blocking": false,
+        "hittable": true,
+        "friction": 0.6,
+        "restitution": 0.0
+      }
+    },
+    {
+      "id": 10,
+      "name": "dandelion",
+      "mesh": "planta",
+      "texture": "dandelion",
+      "transparent": true,
+      "solid": false,
+      "physics": {
+        "blocking": false,
+        "hittable": true,
+        "friction": 0.6,
+        "restitution": 0.0
+      }
+    },
+    {
+      "id": 11,
+      "name": "oak_log",
+      "mesh": "cubo",
+      "texture": {
+        "top": "dark_oak_log_top",
+        "bottom": "dark_oak_log_top",
+        "front": "dark_oak_log",
+        "back": "dark_oak_log",
+        "left": "dark_oak_log",
+        "right": "dark_oak_log"
+      },
+      "transparent": false,
+      "solid": true,
+      "physics": {
+        "blocking": true,
+        "hittable": true,
+        "friction": 0.6,
+        "restitution": 0.0
+      }
+    },
+     {
+      "id": 12,
+      "name": "cactus_top",
+      "mesh": "cubo_reduzido",
+      "texture": {
+        "top": "cactus_top",
+        "bottom": "cactus_bottom",
+        "front": "cactus_side",
+        "back": "cactus_side",
+        "left": "cactus_side",
+        "right": "cactus_side"
+      },
+      "transparent": true,
+      "solid": true,
+      "physics": {
+        "blocking": true,
+        "hittable": true,
+        "friction": 0.6,
+        "restitution": 0.0
+      }
+    },
+    {
+      "id": 13,
+      "name": "cactus_bottom",
+      "mesh": "cubo_reduzido",
+      "texture": {
+        "top": "cactus_bottom",
+        "bottom": "cactus_bottom",
+        "front": "cactus_side",
+        "back": "cactus_side",
+        "left": "cactus_side",
+        "right": "cactus_side"
+      },
+      "transparent": true,
+      "solid": true,
       "physics": {
         "blocking": true,
         "hittable": true,

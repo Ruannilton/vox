@@ -213,7 +213,7 @@ init_glfw :: proc() {
 			app.swapchainNeedsRecreate = true
 		},
 	)
-
+	glfw.SetInputMode(app.glfwWindow, glfw.CURSOR, glfw.CURSOR_DISABLED)
 	log.info("GLFW initialized created successfully")
 }
 

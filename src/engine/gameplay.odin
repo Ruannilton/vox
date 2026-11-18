@@ -3,10 +3,10 @@ package engine
 
 import "core:log"
 import "core:math"
+import "vendor:glfw"
 
 TARGET_HIGHLIGHT_TINT :: 1.4 
 GAMEPLAY_REACH :: f32(12.0)  
-GAMEPLAY_BLOCK_PLACE_ID :: u32(3) // pedra
 JUMP_HEIGHT_VOXELS :: f32(1.5)
 
 TargetHighlight :: struct {
@@ -27,6 +27,8 @@ GameplayManager :: struct {
 	stats_jumps_rejected: u64,
 	stats_jumps_logged:  u64,
 }
+
+selected_block :u32= 12
 
 gameplay_init :: proc(ve: ^VoxelEngine) {
 	ve.gameplay = GameplayManager{}
@@ -53,6 +55,9 @@ gameplay_update_target :: proc(ve: ^VoxelEngine, frame_index: u32, origin, direc
 	slot_ptr^ = highlight
 }
 
+gameplay_upate :: proc(){
+	if events_is_pressed(glfw.KEY_TAB) do selected_block = (selected_block + 1) % 13
+}
 
 gameplay_clear_target :: proc(ve: ^VoxelEngine) {
 	ve.gameplay.target = {}
@@ -85,8 +90,8 @@ gameplay_mouse_press :: proc(ve: ^VoxelEngine, button: i32, player: ^PhysicsBody
 			ve.gameplay.stats_noop += 1
 			return
 		}
-		log.infof("VS-20 CONSTRUÇÃO place: voxel={} normal={} dest={} id={}", hit.voxel, hit.normal, destination, GAMEPLAY_BLOCK_PLACE_ID)
-		ve_request_voxel_edit(ve, destination, GAMEPLAY_BLOCK_PLACE_ID)
+		log.infof("VS-20 CONSTRUÇÃO place: voxel={} normal={} dest={} id={}", hit.voxel, hit.normal, destination, selected_block)
+		ve_request_voxel_edit(ve, destination, selected_block)
 		ve.gameplay.stats_edits += 1
 	} else if button == 1 {
 		ZoneN("gameplay_remove_block")
