@@ -9,8 +9,7 @@ import vma "shared:vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-NUM_FRAMES_IN_FLIGHT :: 2
-NUM_SWAP_CHAIN_IMAGES :: NUM_FRAMES_IN_FLIGHT + 1
+MAX_FRAMES_IN_FLIGHT :: 4
 ACQUIRE_TIMEOUT_NS :: 100_000_000 // 100 ms
 
 VoxEngine :: struct {
@@ -30,7 +29,7 @@ VoxEngine :: struct {
 	presentation:             PresentationInfo,
 	vmaAllocator:             vma.Allocator,
 	depthBuffer:              DepthBuffer,
-	frameData:                [NUM_FRAMES_IN_FLIGHT]FrameResource,
+	frameData:                [MAX_FRAMES_IN_FLIGHT]FrameResource,
 
 	// sync
 	timelineSemaphore:        vk.Semaphore,
@@ -66,7 +65,7 @@ CreateEngine :: proc(width: u32 = 800, height: u32 = 600) {
 		lastFrameTime     = glfw.GetTime(),
 		currentTime       = 0.0,
 		tick              = 0,
-		nextTimelineValue = NUM_FRAMES_IN_FLIGHT + 1,
+		nextTimelineValue = u64(config.frames_in_flight) + 1,
 	}
 
 	init_glfw()
@@ -106,7 +105,7 @@ Update :: proc() {
 	app.lastFrameTime = app.currentTime
 	app.currentTime = current_time
 	app.tick += 1
-	app.frameIndex = (app.frameIndex + 1) % NUM_FRAMES_IN_FLIGHT
+	app.frameIndex = (app.frameIndex + 1) % config.frames_in_flight
 	app.currentTimelineValue = app.nextTimelineValue
 	app.nextTimelineValue += 1
 }
@@ -164,14 +163,14 @@ Present :: proc() {
 }
 
 CancelFrameReservation :: proc() {
-	app.frameIndex = (app.frameIndex + NUM_FRAMES_IN_FLIGHT - 1) % NUM_FRAMES_IN_FLIGHT
+	app.frameIndex = (app.frameIndex + config.frames_in_flight - 1) % config.frames_in_flight
 	app.currentTimelineValue -= 1
 	app.nextTimelineValue -= 1
 }
 
 WaitTimelineSemaphore :: proc() -> u64 {
 	signal_value := app.currentTimelineValue
-	wait_value := signal_value - NUM_FRAMES_IN_FLIGHT
+	wait_value := signal_value - u64(config.frames_in_flight)
 
 	wait_info := vk.SemaphoreWaitInfo {
 		sType          = .SEMAPHORE_WAIT_INFO,
@@ -214,7 +213,7 @@ init_glfw :: proc() {
 			app.swapchainNeedsRecreate = true
 		},
 	)
-
+	glfw.SetInputMode(app.glfwWindow, glfw.CURSOR, glfw.CURSOR_DISABLED)
 	log.info("GLFW initialized created successfully")
 }
 

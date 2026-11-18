@@ -12,11 +12,13 @@ if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 echo Compilando shaders...
 
 :: Percorre todos os arquivos .slang do diretório de entrada
-:: (common.slang é biblioteca compartilhada — importada, não compilada sozinha)
+:: (common.slang e lighting.slang são bibliotecas compartilhadas — importadas, não compiladas sozinhas)
 for %%I in ("%IN_DIR%\*.slang") do (
     if /I not "%%~nxI"=="common.slang" (
-        echo [BUILD] %%~nxI
-        slangc "%%I" -target spirv -o "%OUT_DIR%\%%~nI.spv"
+        if /I not "%%~nxI"=="lighting.slang" (
+            echo [BUILD] %%~nxI
+            slangc "%%I" -target spirv -o "%OUT_DIR%\%%~nI.spv"
+        )
     )
 )
 

@@ -1,0 +1,26 @@
+{"t": 0.3, "type": "TeleportTo", "position": [32.5, 80, 60.5]}
+{"t": 0.5, "type": "LookAt", "target": [0, 60, 0]}
+{"t": 1.00, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 1.40, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 1.80, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 2.20, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 2.60, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 3.00, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 3.40, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 3.80, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 4.20, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 4.60, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 5.00, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 5.40, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 5.80, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 6.20, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 6.60, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 7.00, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 7.40, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 7.80, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 8.20, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 8.60, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 9.00, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 9.40, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 9.80, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 10.2, "type": "Wait", "seconds": 15}

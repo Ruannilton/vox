@@ -1,6 +1,14 @@
-package main
+package engine
 
+import "core:log"
 import glm "core:math/linalg/glsl"
+
+GL_TO_VK_CLIP :: matrix[4, 4]f32{
+		1, 0, 0, 0,
+		0, -1, 0, 0,
+		0, 0, 0.5, 0.5,
+		0, 0, 0, 1,
+	}
 
 Camera :: struct {
 	position:  glm.vec3,
@@ -10,13 +18,22 @@ Camera :: struct {
 	direction: glm.vec3,
 	up:        glm.vec3,
 	right:     glm.vec3,
+	projection: glm.mat4,
 }
 
 camera_create :: proc(position, rotation: glm.vec3, fov: f32) -> Camera {
+	projection := glm.mat4Perspective(
+		glm.radians(fov),
+		f32(app.presentation.width) / f32(app.presentation.height),
+		0.5,
+		500.0,
+	)
+	log.infof("Camera projection matrix: {},{}", app.presentation.width, app.presentation.height)
 	c := Camera {
 		position = position,
 		rotation = rotation,
 		fov      = fov,
+		projection = projection,
 	}
 	camera_rotate(&c, {0, 0, 0})
 	return c
@@ -62,4 +79,8 @@ camera_rotate :: proc(c: ^Camera, delta: glm.vec3) {
 	c.target = c.position + c.direction
 	c.right = glm.normalize(glm.cross(c.direction, glm.vec3{0, 1, 0}))
 	c.up = glm.cross(c.right, c.direction)
+}
+
+camera_get_view_projection :: proc(c: ^Camera) -> glm.mat4 {
+	return GL_TO_VK_CLIP * c.projection * camera_view(c)
 }

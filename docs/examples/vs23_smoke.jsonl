@@ -1,0 +1,22 @@
+{"t": 0.5, "type": "TeleportTo", "position": [32.5, 85, 60.5]}
+{"t": 0.7, "type": "LookAt", "target": [0, 60, 0]}
+{"t": 1.2, "type": "AddBlock", "position": [28, 78, 56], "block_id": 3}
+{"t": 1.2, "type": "AddBlock", "position": [28, 79, 56], "block_id": 3}
+{"t": 1.2, "type": "AddBlock", "position": [28, 80, 56], "block_id": 3}
+{"t": 1.2, "type": "AddBlock", "position": [29, 78, 57], "block_id": 3}
+{"t": 1.2, "type": "AddBlock", "position": [29, 79, 57], "block_id": 3}
+{"t": 1.2, "type": "AddBlock", "position": [29, 80, 57], "block_id": 3}
+{"t": 2.0, "type": "KeyPress", "key": 294, "key_name": "F5"}
+{"t": 2.2, "type": "KeyPress", "key": 294, "key_name": "F5"}
+{"t": 2.4, "type": "KeyPress", "key": 294, "key_name": "F5"}
+{"t": 2.6, "type": "KeyPress", "key": 294, "key_name": "F5"}
+{"t": 2.6, "type": "KeyPress", "key": 295, "key_name": "F6"}
+{"t": 3.0, "type": "KeyPress", "key": 295, "key_name": "F6"}
+{"t": 3.5, "type": "RemoveBlock", "position": [28, 78, 56]}
+{"t": 3.5, "type": "RemoveBlock", "position": [28, 79, 56]}
+{"t": 3.5, "type": "RemoveBlock", "position": [28, 80, 56]}
+{"t": 3.6, "type": "KeyPress", "key": 294, "key_name": "F5"}
+{"t": 3.8, "type": "KeyPress", "key": 294, "key_name": "F5"}
+{"t": 4.0, "type": "KeyPress", "key": 294, "key_name": "F5"}
+{"t": 4.2, "type": "KeyPress", "key": 294, "key_name": "F5"}
+{"t": 4.5, "type": "Wait", "seconds": 3}

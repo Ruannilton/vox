@@ -1,0 +1,9 @@
+{"t": 0.3, "type": "TeleportTo", "position": [32.5, 80, 60.5]}
+{"t": 0.5, "type": "LookAt", "target": [0, 60, 0]}
+{"t": 3.0, "type": "Wait", "seconds": 3}
+{"t": 6.0, "type": "TeleportTo", "position": [1600.5, 80, 1600.5]}
+{"t": 7.0, "type": "Wait", "seconds": 4}
+{"t": 11.0, "type": "TeleportTo", "position": [3200.5, 80, 100.5]}
+{"t": 12.0, "type": "Wait", "seconds": 4}
+{"t": 16.0, "type": "TeleportTo", "position": [100.5, 80, 3200.5]}
+{"t": 17.0, "type": "Wait", "seconds": 4}

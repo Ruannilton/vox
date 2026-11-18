@@ -1,4 +1,5 @@
 import common;
+import lighting;
 
 groupshared uint shared_item_offsets[BRICKS_PER_CHUNK]; // scan: offset do brick no lote do chunk
 groupshared uint shared_chunk_item_total;
@@ -11,8 +12,7 @@ void build_work_queue(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThre
     uint visible_index = group_id.x;
     VisibleChunk chunk = visible_chunks[push_constants.visible_chunk_offset + visible_index];
 
-    // VS-06 (REQ-CULL-02): early-out de chunk antes de ler header/ocupação —
-    // o teste é uniforme no workgroup, sem divergência.
+
     float4 frustum_planes[6] = frustum_planes_from_vp(push_constants.view_projection_matrix);
     float3 chunk_min = float3(chunk.chunk_world_origin);
     if (aabb_outside_frustum(chunk_min, chunk_min + float3(CHUNK_SIZE), frustum_planes)) {
@@ -199,10 +199,7 @@ void build_brick_mesh(
 
     if (!active || v_cnt == 0u) return;
 
-    // ------------------------- Emissão de vértices -------------------------
-    // VS-11 (REQ-UV-02): template com pool de UVs emite a UV do pool; sem
-    // pool (uv_offset == NO_TEMPLATE_UV_OFFSET) emite a sentinela (-1,-1) —
-    // o fragment cai no triplanar (fallback para mods procedurais).
+
     bool has_uvs = tmpl.uv_offset != NO_TEMPLATE_UV_OFFSET;
     float3 voxel_min_world = float3(chunk.chunk_world_origin + voxel_coord);
     for (uint i = 0; i < tmpl.vertex_count; i++) {
@@ -229,23 +226,15 @@ void build_brick_mesh(
     }
 }
 
-[shader("fragment")]
-float4 shade_voxel(MeshVertex input) : SV_Target {
-    BlockDefinition def = global_block_registry[input.block_id];
 
-    float3 normal_x = ddx(input.world_position);
-    float3 normal_y = ddy(input.world_position);
-    float3 normal = normalize(cross(normal_x, normal_y));
-    // VS-21 correção: a derivada em tela (Vulkan y-down) aponta para dentro
-    // da face visível — sem corrigir o sinal, a seleção de face por eixo
-    // dominante trocava +/- (o topo recebia bottom/terra) e o diffuse usava
-    // normal invertida. faceforward pela câmera deixa a normal outward.
+float3 face_normal_from_derivatives(MeshVertex input) {
+    float3 normal = normalize(cross(ddx(input.world_position), ddy(input.world_position)));
     float3 view_dir = normalize(push_constants.camera_position - input.world_position);
-    if (dot(normal, view_dir) < 0.0) normal = -normal;
+    return dot(normal, view_dir) < 0.0 ? -normal : normal;
+}
 
-    // VS-21 (REQ-TEX-06): camada por face — eixo dominante da normal mundial
-    // (maior |componente|; empate determinístico Y, X, Z; sinal escolhe +/-).
-    // A face segue +Y mundial mesmo em bloco rotacionado (semântica v1).
+
+float4 fetch_albedo(MeshVertex input, BlockDefinition def, float3 normal) {
     float3 an = abs(normal);
     uint face_index;
     if (an.y >= an.x && an.y >= an.z) {
@@ -256,33 +245,40 @@ float4 shade_voxel(MeshVertex input) : SV_Target {
         face_index = normal.z > 0.0 ? 4u : 5u;
     }
     uint albedo_layer = def.albedo_faces[face_index];
-
-    // VS-11 (REQ-UV-03): com UV (uv.x >= 0) amostra a camada de albedo por
-    // UV; com a sentinela cai no triplanar (fallback inalterado da VS-02).
-    float4 albedo = input.uv.x >= 0.0
+    return input.uv.x >= 0.0
         ? block_albedo_textures.Sample(float3(input.uv, float(albedo_layer)))
         : sample_triplanar_albedo(input.world_position, normal, albedo_layer);
+}
 
-    // VS-14 (REQ-PLT-01, ADR-P1 Opção A): alpha-test cutout — blocos com
-    // flags bit 0 (transparente) descartam fragmentos com albedo.a < 0.5
-    // (limiar constante). Cutout opaco: sem blending, CULL_MODE_NONE permanece.
+[shader("fragment")]
+float4 shade_voxel(MeshVertex input) : SV_Target {
+    BlockDefinition def = global_block_registry[input.block_id];
+    float3 normal = face_normal_from_derivatives(input);
+    // Amostras de textura antes de ramos divergentes (UV/triplanar).
+    float4 albedo = fetch_albedo(input, def, normal);
+
+
     if ((def.flags & BLOCK_DEFINITION_FLAG_TRANSPARENT) != 0u && albedo.a < 0.5) {
         discard;
     }
 
-    float3 light_dir = normalize(float3(0.5, 0.8, 0.3));
-    float diffuse = max(dot(normal, light_dir), 0.0);
-    float3 ambient = float3(0.2);
-    float3 final_color = albedo.rgb * (ambient + diffuse) + def.emission_color;
 
-    // VS-20 (REQ-GPL-02): realce do voxel-alvo da mira central. floor() do
-    // world_position identifica o voxel; flag 0 (miss/unknown) é bit a bit o
-    // caminho anterior. Fator de clareamento constante 1.4; alpha-test e o
-    // shading restante já foram aplicados acima.
+    float3 final_color = shade_surface(input.world_position, normal, albedo.rgb, input.block_id);
+
+    // VS-20 (REQ-GPL-02): realce do voxel-alvo da mira central.
     if (target_highlight.target_valid != 0u
         && all(int3(floor(input.world_position)) == target_highlight.target_voxel)) {
         final_color *= 1.4;
     }
 
     return float4(final_color, 1.0);
+}
+
+
+[shader("fragment")]
+void depth_prepass(MeshVertex input) {
+    BlockDefinition def = global_block_registry[input.block_id];
+    if ((def.flags & BLOCK_DEFINITION_FLAG_TRANSPARENT) == 0u) return; // opaco: nada a testar
+    float3 normal = face_normal_from_derivatives(input);
+    if (fetch_albedo(input, def, normal).a < 0.5) discard;
 }

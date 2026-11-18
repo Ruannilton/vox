@@ -8,9 +8,7 @@ import vk "vendor:vulkan"
 
 BLOCK_REGISTRY_CAPACITY :: 256
 MESH_TEMPLATE_CAPACITY :: 256
-// VS-21 correção: 24 vértices (4 por face) com UVs [0,1]² por face — a
-// projeção planar da VS-11 deixava U constante nas faces ±X e V constante
-// nas ±Z (listra de uma coluna de texel esticada nas laterais).
+
 BUILTIN_CUBE_VERTICES :: [24][3]f32 {
 	// -X (x=0), projeção (z,y)
 	{0, 0, 0}, {0, 0, 1}, {0, 1, 1}, {0, 1, 0},
@@ -57,8 +55,6 @@ VoxelGpu :: struct {
 	mesh_templates:         GpuBuffer,
 	template_vertices:      GpuBuffer,
 	template_triangles:     GpuBuffer,
-	// VS-11 (REQ-UV-02): pool de UVs dos templates (binding 19), paralelo a
-	// template_vertices e indexado por MeshTemplate.uv_offset.
 	template_uvs:           GpuBuffer,
 	work_queue:             GpuBuffer,
 	edit_jobs:              GpuBuffer,
@@ -69,16 +65,24 @@ VoxelGpu :: struct {
 	edit_results_mapped:    [^]u32,
 	mirror_export_ring:        GpuBuffer,
 	mirror_export_ring_mapped: [^]u16,
-	// VS-13 (REQ-MIR-01): ring paralelo do heightmap (binding 20) — mesmo
-	// índice de slot do ring denso; 1.024 u16 por slot (2 KiB).
 	mirror_heightmap_ring:        GpuBuffer,
 	mirror_heightmap_ring_mapped: [^]u16,
-	// VS-10 (REQ-VRT-02): flags do pack por slot (binding 18, host-visible).
 	chunk_result_flags:        GpuBuffer,
 	chunk_result_flags_mapped: [^]u32,
+	biome_definitions:  GpuBuffer,
+	biome_noise_layers: GpuBuffer,
+	biome_globals:      GpuBuffer,
 	target_highlight_ubo:        GpuBuffer,
 	target_highlight_ubo_mapped: [^]u8,
-	target_highlight_alignment:  vk.DeviceSize, // stride do slot (>= minUniformBufferOffsetAlignment)
+	target_highlight_alignment:  vk.DeviceSize,
+	chunk_grid:         GpuBuffer,
+	chunk_grid_mapped:  [^]u32,
+	light_globals_ubo:        GpuBuffer,
+	light_globals_ubo_mapped: [^]u8,
+	light_globals_alignment:  vk.DeviceSize,
+	light_pool:         GpuBuffer,
+	light_jobs:         GpuBuffer,
+	light_jobs_mapped:  [^]LightJob,
 	dummy_buffer:           GpuBuffer,
 	albedo_palette_image:      vk.Image,
 	albedo_palette_allocation: vma.Allocation,
@@ -101,9 +105,13 @@ VoxelGpu :: struct {
 	finalize_work_queue_pipeline: vk.Pipeline,
 	edit_pipeline:                vk.Pipeline,
 	mesh_pipeline:          vk.Pipeline,
+	mesh_prepass_pipeline:  vk.Pipeline, 
+	light_shader_module:    vk.ShaderModule,
+	light_seed_pipeline:     vk.Pipeline,
+	light_propagate_pipeline: vk.Pipeline,
 
 	compute_command_pool:    vk.CommandPool,
-	compute_command_buffers: []vk.CommandBuffer, // [batches_in_flight] (VS-08)
+	compute_command_buffers: []vk.CommandBuffer,
 }
 
 voxel_gpu: VoxelGpu
@@ -111,7 +119,6 @@ voxel_gpu: VoxelGpu
 voxel_gpu_init :: proc() {
 	log.info("Inicializando recursos GPU do voxel engine")
 
-	// VS-08 (REQ-CFG-05): command buffers dimensionados pelo Config.
 	voxel_gpu.compute_command_buffers = make([]vk.CommandBuffer, config.batches_in_flight)
 
 	vk_check(
@@ -139,7 +146,6 @@ voxel_gpu_init :: proc() {
 		),
 	)
 
-	// --- buffers (VS-08/REQ-CFG-05: tamanhos derivados do Config) ---
 	voxel_gpu.scratch = gpu_buffer_create(
 		vk.DeviceSize(config.scratch_chunks * CHUNK_VOXEL_COUNT * size_of(u32)),
 		{.STORAGE_BUFFER},
@@ -174,7 +180,7 @@ voxel_gpu_init :: proc() {
 
 	visible_mapped: rawptr
 	voxel_gpu.visible_chunks, visible_mapped = gpu_buffer_create_host(
-		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * config.visible_capacity * size_of(VisibleChunk)),
+		vk.DeviceSize(u64(config.frames_in_flight) * u64(config.visible_capacity) * size_of(VisibleChunk)),
 		{.STORAGE_BUFFER},
 	)
 	voxel_gpu.visible_chunks_mapped = cast([^]VisibleChunk)visible_mapped
@@ -190,33 +196,32 @@ voxel_gpu_init :: proc() {
 		vk.DeviceSize(1024 * size_of(u32)),
 		{.STORAGE_BUFFER, .TRANSFER_DST},
 	)
-	// VS-11 (REQ-UV-02): 1 float2 por vértice de template (stride 8 B std430).
+	
 	voxel_gpu.template_uvs = gpu_buffer_create(
 		vk.DeviceSize(1024 * 2 * size_of(f32)),
-		// VS-12: TRANSFER_SRC para o readback de validação (debug_readback_validate)
 		{.STORAGE_BUFFER, .TRANSFER_SRC, .TRANSFER_DST},
 	)
 
 	voxel_gpu.work_queue = gpu_buffer_create(
-		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * config.work_queue_slot_words * size_of(u32)),
+		vk.DeviceSize(u64(config.frames_in_flight) * u64(config.work_queue_slot_words) * size_of(u32)),
 		{.STORAGE_BUFFER, .INDIRECT_BUFFER, .TRANSFER_DST, .TRANSFER_SRC},
 	)
 
 	mapped_edit_jobs: rawptr
 	voxel_gpu.edit_jobs, mapped_edit_jobs = gpu_buffer_create_host(
-		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * MAX_EDIT_JOBS_PER_FLUSH * size_of(EditChunkJob)),
+		vk.DeviceSize(config.frames_in_flight) * vk.DeviceSize(MAX_EDIT_JOBS_PER_FLUSH) * size_of(EditChunkJob),
 		{.STORAGE_BUFFER},
 	)
 	voxel_gpu.edit_jobs_mapped = cast([^]EditChunkJob)mapped_edit_jobs
 	mapped_voxel_edits: rawptr
 	voxel_gpu.voxel_edits, mapped_voxel_edits = gpu_buffer_create_host(
-		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * MAX_EDITS_PER_FLUSH * size_of(u32)),
+		vk.DeviceSize(config.frames_in_flight) * vk.DeviceSize(MAX_EDITS_PER_FLUSH) * size_of(u32),
 		{.STORAGE_BUFFER},
 	)
 	voxel_gpu.voxel_edits_mapped = cast([^]u32)mapped_voxel_edits
 	mapped_edit_results: rawptr
 	voxel_gpu.edit_results, mapped_edit_results = gpu_buffer_create_host_flags(
-		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT * MAX_EDITS_PER_FLUSH * size_of(u32)),
+		vk.DeviceSize(config.frames_in_flight) * vk.DeviceSize(MAX_EDITS_PER_FLUSH) * size_of(u32),
 		{.STORAGE_BUFFER},
 		{.HOST_ACCESS_RANDOM, .MAPPED}, // CPU lê o feedback 2 frames depois
 	)
@@ -243,9 +248,30 @@ voxel_gpu_init :: proc() {
 		{.HOST_ACCESS_RANDOM, .MAPPED}, // CPU lê após a timeline do lote (B1)
 	)
 	voxel_gpu.chunk_result_flags_mapped = cast([^]u32)mapped_result_flags
-	// VS-20 (REQ-GPL-03): UBO do realce — NUM_FRAMES_IN_FLIGHT slots com
-	// stride alinhado a minUniformBufferOffsetAlignment (offset dinâmico no
-	// bind gráfico; sem corrida CPU/GPU por frame).
+	mapped_chunk_grid: rawptr
+	voxel_gpu.chunk_grid, mapped_chunk_grid = gpu_buffer_create_host_flags(
+		vk.DeviceSize(LIGHT_GRID_CELL_COUNT * size_of(u32)),
+		{.STORAGE_BUFFER},
+		{.HOST_ACCESS_RANDOM, .MAPPED},
+	)
+	voxel_gpu.chunk_grid_mapped = cast([^]u32)mapped_chunk_grid
+	for i in 0 ..< LIGHT_GRID_CELL_COUNT {
+		voxel_gpu.chunk_grid_mapped[i] = NEIGHBOR_SLOT_INVALID
+	}
+
+	voxel_gpu.light_pool = gpu_buffer_create(
+		vk.DeviceSize(config.resident_slots * CHUNK_VOXEL_COUNT * size_of(u16)),
+		{.STORAGE_BUFFER},
+	)
+	
+	mapped_light_jobs: rawptr
+	voxel_gpu.light_jobs, mapped_light_jobs = gpu_buffer_create_host_flags(
+		vk.DeviceSize(config.frames_in_flight) * vk.DeviceSize(MAX_LIGHT_JOBS_PER_FLUSH) * size_of(LightJob),
+		{.STORAGE_BUFFER},
+		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
+	)
+	voxel_gpu.light_jobs_mapped = cast([^]LightJob)mapped_light_jobs
+
 	alignment: vk.DeviceSize = 256
 	properties: vk.PhysicalDeviceProperties
 	vk.GetPhysicalDeviceProperties(app.vkPhysicalDevice, &properties)
@@ -253,15 +279,40 @@ voxel_gpu_init :: proc() {
 	voxel_gpu.target_highlight_alignment = alignment
 	mapped_target: rawptr
 	voxel_gpu.target_highlight_ubo, mapped_target = gpu_buffer_create_host_flags(
-		vk.DeviceSize(NUM_FRAMES_IN_FLIGHT) * alignment,
+		vk.DeviceSize(config.frames_in_flight) * alignment,
 		{.UNIFORM_BUFFER},
 		{.HOST_ACCESS_RANDOM, .MAPPED},
 	)
 	voxel_gpu.target_highlight_ubo_mapped = cast([^]u8)mapped_target
+	mapped_light_globals: rawptr
+	voxel_gpu.light_globals_alignment = alignment
+	voxel_gpu.light_globals_ubo, mapped_light_globals = gpu_buffer_create_host_flags(
+		vk.DeviceSize(config.frames_in_flight) * alignment,
+		{.UNIFORM_BUFFER},
+		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
+	)
+	voxel_gpu.light_globals_ubo_mapped = cast([^]u8)mapped_light_globals
+	for i in 0 ..< config.frames_in_flight {
+		globals: LightGlobals
+		globals.grid_dim_chunks = {LIGHT_GRID_DIM_X, LIGHT_GRID_DIM_Y, LIGHT_GRID_DIM_Z, 0}
+		slot := voxel_gpu.light_globals_ubo_mapped[int(i) * int(voxel_gpu.light_globals_alignment):]
+		(cast(^LightGlobals)&slot[0])^ = globals
+	}
 	voxel_gpu.dummy_buffer = gpu_buffer_create(vk.DeviceSize(16), {.STORAGE_BUFFER})
 
-	// VS-12: assets data-driven substituem built-ins quando assets/blocks.json
-	// existe (fallback = comportamento anterior, paridade total).
+	voxel_gpu.biome_definitions = gpu_buffer_create(
+		vk.DeviceSize(MAX_BIOMES * size_of(BiomeDefinition)),
+		{.STORAGE_BUFFER, .TRANSFER_DST},
+	)
+	voxel_gpu.biome_noise_layers = gpu_buffer_create(
+		vk.DeviceSize(MAX_BIOME_LAYERS_TOTAL * size_of(BiomeNoiseLayer)),
+		{.STORAGE_BUFFER, .TRANSFER_DST},
+	)
+	voxel_gpu.biome_globals = gpu_buffer_create(
+		vk.DeviceSize(size_of(BiomeGlobals)),
+		{.STORAGE_BUFFER, .TRANSFER_DST},
+	)
+
 	if voxel_assets.loaded {
 		upload_asset_templates()
 		upload_asset_registry()
@@ -272,10 +323,13 @@ voxel_gpu_init :: proc() {
 		upload_palette_textures()
 	}
 
+	upload_biome_tables()
+
 	// --- pipelines de compute (generate + pack) ---
 	voxel_gpu.shader_module = load_shader_module("./voxel.spv")
 	voxel_gpu.edit_shader_module = load_shader_module("./edit.spv")
 	voxel_gpu.render_shader_module = load_shader_module("./render.spv")
+	voxel_gpu.light_shader_module = load_shader_module("./light.spv")
 
 	generation_stage := vk.PipelineShaderStageCreateInfo {
 		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -381,11 +435,53 @@ voxel_gpu_init :: proc() {
 	)
 	voxel_render_pipeline_create()
 
+	// VS-23/T3.2-3.3: pipelines de luz (seed + propagate) — compartilham o
+	// layout de compute; o offset dos jobs vem do push constant batch_job_offset.
+	light_seed_stage := vk.PipelineShaderStageCreateInfo {
+		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+		stage  = {.COMPUTE},
+		module = voxel_gpu.light_shader_module,
+		pName  = "light_seed",
+	}
+	light_propagate_stage := vk.PipelineShaderStageCreateInfo {
+		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+		stage  = {.COMPUTE},
+		module = voxel_gpu.light_shader_module,
+		pName  = "light_propagate",
+	}
+	vk_check(
+		vk.CreateComputePipelines(
+			app.vkDevice,
+			{},
+			1,
+			&vk.ComputePipelineCreateInfo {
+				sType  = .COMPUTE_PIPELINE_CREATE_INFO,
+				stage  = light_seed_stage,
+				layout = app.computePipelineLayout,
+			},
+			nil,
+			&voxel_gpu.light_seed_pipeline,
+		),
+	)
+	vk_check(
+		vk.CreateComputePipelines(
+			app.vkDevice,
+			{},
+			1,
+			&vk.ComputePipelineCreateInfo {
+				sType  = .COMPUTE_PIPELINE_CREATE_INFO,
+				stage  = light_propagate_stage,
+				layout = app.computePipelineLayout,
+			},
+			nil,
+			&voxel_gpu.light_propagate_pipeline,
+		),
+	)
+
 	pool_sizes := [3]vk.DescriptorPoolSize {
 		{type = .STORAGE_BUFFER, descriptorCount = DESCRIPTOR_SET_BINDING_COUNT},
 		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = 2},
-		// VS-20 (REQ-GPL-03): UBO dinâmico do realce (binding 21).
-		{type = .UNIFORM_BUFFER_DYNAMIC, descriptorCount = 1},
+		{type = .UNIFORM_BUFFER_DYNAMIC, descriptorCount = 2},
 	}
 	vk_check(
 		vk.CreateDescriptorPool(
@@ -436,13 +532,20 @@ voxel_gpu_init :: proc() {
 		19 = voxel_gpu.template_uvs.handle,
 		20 = voxel_gpu.mirror_heightmap_ring.handle,
 		21 = voxel_gpu.target_highlight_ubo.handle,
+		22 = voxel_gpu.biome_definitions.handle,
+		23 = voxel_gpu.biome_noise_layers.handle,
+		24 = voxel_gpu.biome_globals.handle,
+		// VS-23 (ADR-L1): iluminação (25 = UBO dinâmico, write especial abaixo).
+		26 = voxel_gpu.chunk_grid.handle,
+		27 = voxel_gpu.light_pool.handle,
+		28 = voxel_gpu.light_jobs.handle,
 	}
 	buffer_infos: [DESCRIPTOR_SET_BINDING_COUNT]vk.DescriptorBufferInfo
 	writes: [DESCRIPTOR_SET_BINDING_COUNT]vk.WriteDescriptorSet
 	write_count := 0
 	for buffer, i in binding_buffers {
 		if i == 8 || i == 9 do continue // texturas, abaixo
-		if i == 21 do continue // UBO dinâmico, write especial abaixo
+		if i == 21 || i == 25 do continue // UBOs dinâmicos, writes especiais abaixo
 		buffer_infos[i] = {buffer = buffer, offset = 0, range = vk.DeviceSize(vk.WHOLE_SIZE)}
 		writes[write_count] = {
 			sType           = .WRITE_DESCRIPTOR_SET,
@@ -460,8 +563,6 @@ voxel_gpu_init :: proc() {
 		{sampler = voxel_gpu.texture_sampler, imageView = voxel_gpu.albedo_palette_view, imageLayout = .SHADER_READ_ONLY_OPTIMAL},
 		{sampler = voxel_gpu.texture_sampler, imageView = voxel_gpu.pbr_dummy_view, imageLayout = .SHADER_READ_ONLY_OPTIMAL},
 	}
-	// VS-20 (REQ-GPL-03): UBO dinâmico do realce (range inteiro; o offset do
-	// slot vem do bind do command buffer por frame).
 	buffer_infos[21] = {
 		buffer = voxel_gpu.target_highlight_ubo.handle,
 		offset = 0,
@@ -475,6 +576,22 @@ voxel_gpu_init :: proc() {
 		descriptorType  = .UNIFORM_BUFFER_DYNAMIC,
 		descriptorCount = 1,
 		pBufferInfo     = &buffer_infos[21],
+	}
+	write_count += 1
+	
+	buffer_infos[25] = {
+		buffer = voxel_gpu.light_globals_ubo.handle,
+		offset = 0,
+		range  = voxel_gpu.light_globals_alignment,
+	}
+	writes[write_count] = {
+		sType           = .WRITE_DESCRIPTOR_SET,
+		dstSet          = voxel_gpu.descriptor_set,
+		dstBinding      = 25,
+		dstArrayElement = 0,
+		descriptorType  = .UNIFORM_BUFFER_DYNAMIC,
+		descriptorCount = 1,
+		pBufferInfo     = &buffer_infos[25],
 	}
 	write_count += 1
 	for binding in 8 ..= 9 {
@@ -505,6 +622,15 @@ voxel_gpu_init :: proc() {
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.chunk_result_flags.handle, .BUFFER, "chunk_result_flags")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.template_uvs.handle, .BUFFER, "template_uvs")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.target_highlight_ubo.handle, .BUFFER, "target_highlight_ubo")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.biome_definitions.handle, .BUFFER, "biome_definitions")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.biome_noise_layers.handle, .BUFFER, "biome_noise_layers")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.biome_globals.handle, .BUFFER, "biome_globals")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.chunk_grid.handle, .BUFFER, "chunk_grid")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.light_pool.handle, .BUFFER, "light_pool")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.light_jobs.handle, .BUFFER, "light_jobs")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.light_globals_ubo.handle, .BUFFER, "light_globals_ubo")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.light_seed_pipeline, .PIPELINE, "pipeline_light_seed")
+	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.light_propagate_pipeline, .PIPELINE, "pipeline_light_propagate")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.generation_pipeline, .PIPELINE, "pipeline_generate")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.packing_pipeline, .PIPELINE, "pipeline_pack")
 	telemetry_name_object(cast(u64)cast(uintptr)voxel_gpu.edit_pipeline, .PIPELINE, "pipeline_apply_voxel_edits")
@@ -519,7 +645,11 @@ voxel_gpu_init :: proc() {
 voxel_gpu_destroy :: proc() {
 	log.info("Destruindo recursos GPU do voxel engine")
 	vk.DestroyDescriptorPool(app.vkDevice, voxel_gpu.descriptor_pool, nil)
+	vk.DestroyPipeline(app.vkDevice, voxel_gpu.mesh_prepass_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.mesh_pipeline, nil)
+	vk.DestroyPipeline(app.vkDevice, voxel_gpu.light_propagate_pipeline, nil)
+	vk.DestroyPipeline(app.vkDevice, voxel_gpu.light_seed_pipeline, nil)
+	vk.DestroyShaderModule(app.vkDevice, voxel_gpu.light_shader_module, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.edit_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.finalize_work_queue_pipeline, nil)
 	vk.DestroyPipeline(app.vkDevice, voxel_gpu.build_work_queue_pipeline, nil)
@@ -537,11 +667,19 @@ voxel_gpu_destroy :: proc() {
 	vk.DestroyCommandPool(app.vkDevice, voxel_gpu.compute_command_pool, nil)
 
 	vk.DestroySampler(app.vkDevice, voxel_gpu.texture_sampler, nil)
+
+	gpu_buffer_destroy(&voxel_gpu.biome_globals)
+	gpu_buffer_destroy(&voxel_gpu.biome_noise_layers)
+	gpu_buffer_destroy(&voxel_gpu.biome_definitions)
 	vk.DestroyImageView(app.vkDevice, voxel_gpu.pbr_dummy_view, nil)
 	vma.DestroyImage(app.vmaAllocator, voxel_gpu.pbr_dummy_image, voxel_gpu.pbr_dummy_allocation)
 	vk.DestroyImageView(app.vkDevice, voxel_gpu.albedo_palette_view, nil)
 	vma.DestroyImage(app.vmaAllocator, voxel_gpu.albedo_palette_image, voxel_gpu.albedo_palette_allocation)
 
+	gpu_buffer_destroy(&voxel_gpu.light_jobs)
+	gpu_buffer_destroy(&voxel_gpu.light_pool)
+	gpu_buffer_destroy(&voxel_gpu.light_globals_ubo)
+	gpu_buffer_destroy(&voxel_gpu.chunk_grid)
 	gpu_buffer_destroy(&voxel_gpu.target_highlight_ubo)
 	gpu_buffer_destroy(&voxel_gpu.dummy_buffer)
 	gpu_buffer_destroy(&voxel_gpu.chunk_result_flags)
@@ -573,9 +711,7 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	record: ChunkRecord
 	page: ^MirrorChunkPage
 	found := false
-	// Preferimos um chunk materializado no mirror (página MATERIALIZED): a
-	// checagem de conteúdo compara o readback packed contra o grid denso u16
-	// do mirror (mesmo scratch GPU, mesmo conteúdo — ver bloco abaixo).
+	
 	for c, r in ve.active_chunks {
 		p, ok := ve.mirror.pages[c]
 		if r.state != .GENERATING && ok && p.state == .MATERIALIZED && c.y * CHUNK_SIZE <= 1 && (c.y + 1) * CHUNK_SIZE > 0 {
@@ -607,8 +743,7 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	slot := record.storage_slot_index
 
 	{
-		// VS-12: com assets carregados, o readback casa com os dados do JSON
-		// (vértices + UVs); sem assets, mantém a regresso contra os built-ins.
+
 		vertex_count := 32
 		uv_count := 0
 		if voxel_assets.loaded {
@@ -629,7 +764,7 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 			),
 		)
 		vk.CmdCopyBuffer(cmd, voxel_gpu.template_vertices.handle, vtx_rb.handle, 1, &vk.BufferCopy{size = vtx_size})
-		// buffer único de readback: copia UVs para depois dos vértices
+		
 		if uv_size > 0 {
 			uv_copy := vk.BufferCopy{dstOffset = vtx_size, size = uv_size}
 			vk.CmdCopyBuffer(cmd, voxel_gpu.template_uvs.handle, vtx_rb.handle, 1, &uv_copy)
@@ -760,12 +895,6 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 	solid := 0
 	dense_checked := false
 	if page != nil && page.state == .MATERIALIZED {
-		// VS-04: a checagem de conteúdo NÃO compara contra um modelo de mundo
-		// CPU (C2/Etapa 7 — a CPU não reproduz o worldgen GPU bit a bit). Em vez
-		// disso, decodifica o readback packed (ocupação/paleta/planos) e compara
-		// voxel a voxel com o grid denso u16 do mirror, ambos derivados do mesmo
-		// scratch GPU. Esse decode é o mesmo espelhado bit a bit por
-		// tools/sim/pack_sim.py offline.
 		dense_checked = true
 		for y in 0 ..< CHUNK_SIZE {
 			for z in 0 ..< CHUNK_SIZE {
@@ -796,9 +925,6 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 			}
 		}
 	} else {
-		// Sem página MATERIALIZED (chunk fora da bolha de simulação): mantém
-		// apenas os invariantes estruturais abaixo (decode×denso coberto por
-		// tools/sim/pack_sim.py; CPU não reproduz worldgen — C2).
 		log.info("DEBUG READBACK: chunk sem página MATERIALIZED no mirror — checagem denso pulada (invariantes estruturais mantidas)")
 	}
 
@@ -826,10 +952,6 @@ debug_readback_validate :: proc(ve: ^VoxelEngine) {
 }
 
 
-// VS-21 (AC-01/AC-04): readback da paleta albedo e comparação pixel a pixel
-// com texture_pixels (já flipado). Executado ao final do init, com o device
-// ocioso — prova que a orientação pós-flip sobrevive ao upload. Sem assets
-// (fallback de paleta procedural) a checagem é estrutural apenas.
 debug_texture_parity :: proc() {
 	if !voxel_assets.loaded {
 		log.info("DEBUG TEXTURE PARITY: fallback built-in — checagem de camadas pulada")
@@ -897,13 +1019,12 @@ debug_texture_parity :: proc() {
 	}
 }
 
-// VS-21 (REQ-TEX-09): ponto de entrada público da validação de textura.
+
 debug_texture_validate :: proc() {
 	debug_texture_parity()
 }
 
-// VS-19 (AC-04): ponto de entrada público da validação packed×denso (a
-// rotina em si é privada deste arquivo); usada pelo hook de debug F7.
+
 debug_validate_run :: proc(ve: ^VoxelEngine) {
 	debug_readback_validate(ve)
 }
@@ -1103,14 +1224,29 @@ upload_asset_registry :: proc() {
 	)
 }
 
-// VS-12 (REQ-AST-03/05): Texture2DArray de albedo com uma camada por textura
-// (ordem de definição), no lugar da paleta procedural. Caminho de amostragem
-// (índice de camada + UV) inalterado — zero mudança de shader.
+@(private)
+upload_biome_tables :: proc() {
+	upload_to_device_buffer(
+		raw_data(&voxel_biomes.biomes),
+		vk.DeviceSize(MAX_BIOMES * size_of(BiomeDefinition)),
+		voxel_gpu.biome_definitions.handle,
+	)
+	upload_to_device_buffer(
+		raw_data(&voxel_biomes.layers),
+		vk.DeviceSize(MAX_BIOME_LAYERS_TOTAL * size_of(BiomeNoiseLayer)),
+		voxel_gpu.biome_noise_layers.handle,
+	)
+	upload_to_device_buffer(
+		&voxel_biomes.globals,
+		vk.DeviceSize(size_of(BiomeGlobals)),
+		voxel_gpu.biome_globals.handle,
+	)
+}
+
+
 @(private)
 upload_asset_textures :: proc() {
-	// VS-21 (REQ-TEX-09): zone no caminho de texturas — o decode propriamente
-	// roda em assets_load, ANTES do TracingStartup (BLK-37), e é medido por
-	// tempo no log; o upload é o primeiro ponto pós-startup do pipeline.
+
 	ZoneN("assets_texture_decode")
 	w := voxel_assets.texture_width
 	h := voxel_assets.texture_height
@@ -1128,8 +1264,6 @@ upload_asset_textures :: proc() {
 			app.vkDevice,
 			&vk.SamplerCreateInfo {
 				sType = .SAMPLER_CREATE_INFO,
-				// VS-21 (REQ-TEX-03): NEAREST sem mipmaps — texel nítido,
-				// sem blur; REPEAT preservado, um mip, maxLod = 0.
 				magFilter = .NEAREST,
 				minFilter = .NEAREST,
 				mipmapMode = .NEAREST,
@@ -1166,8 +1300,7 @@ upload_builtin_templates :: proc() {
 
 	cube_verts := BUILTIN_CUBE_VERTICES
 	plant_verts := BUILTIN_PLANT_VERTICES
-	// VS-11 (REQ-UV-02): built-ins com UV — planta: cada quad da cruz com [0,1]².
-	// VS-21 correção: UV [0,1]² por face do cubo 24 vértices.
+
 	cube_uvs: [24][2]f32 = {
 		{0, 0}, {1, 0}, {1, 1}, {0, 1}, // -X (z,y)
 		{0, 0}, {1, 0}, {1, 1}, {0, 1}, // +X (z,y)
@@ -1183,8 +1316,8 @@ upload_builtin_templates :: proc() {
 	log.assert(validate_template_uvs(2, plant_uvs[:]), "UVs do template planta fora de [0,1]²")
 
 	templates := [3]MeshTemplate {
-		{uv_offset = NO_TEMPLATE_UV_OFFSET}, // 0 = ar: nada emite
-		{ // 1 = cubo (VS-21: 24 vértices, 4 por face)
+		{uv_offset = NO_TEMPLATE_UV_OFFSET}, 
+		{
 			vertex_offset   = 0,
 			vertex_count    = 24,
 			triangle_offset = 0,
@@ -1193,7 +1326,7 @@ upload_builtin_templates :: proc() {
 			flags           = TEMPLATE_FLAG_HAS_FLUSH_FACES,
 			uv_offset       = 0,
 		},
-		{ // 2 = planta
+		{ 
 			vertex_offset   = 24,
 			vertex_count    = 8,
 			triangle_offset = 12,
@@ -1224,9 +1357,7 @@ upload_builtin_templates :: proc() {
 @(private)
 upload_block_registry :: proc() {
 	registry: [BLOCK_REGISTRY_CAPACITY]BlockDefinition
-	// VS-21 (REQ-TEX-07): fallback em paridade com o JSON — grama com
-	// top=grama (camada 1) e as demais 5 faces terra (camada 2); ordem
-	// FACE_NORMALS (+X,-X,+Y,-Y,+Z,-Z).
+
 	registry[1] = BlockDefinition{
 		mesh_template_index = 1,
 		albedo_faces = {2, 2, 1, 2, 2, 2},
@@ -1239,9 +1370,7 @@ upload_block_registry :: proc() {
 		mesh_template_index = 1,
 		albedo_faces = {3, 3, 3, 3, 3, 3},
 	}
-	// VS-14 (REQ-PLT-05): fallback sem assets — id 4 (planta) usa o template
-	// cruz built-in (2) + camada 4, com alpha-test (flags bit 0) e NON_SOLID
-	// (flags bit 1 — emenda 2026-11-07). VS-21: string normalizada (6x4).
+
 	registry[4] = BlockDefinition{
 		mesh_template_index = 2,
 		flags = BLOCK_DEFINITION_FLAG_TRANSPARENT | BLOCK_DEFINITION_FLAG_NON_SOLID,

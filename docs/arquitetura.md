@@ -99,6 +99,8 @@ Quando a GPU recebe o lote, ela opera em duas fases via Compute Shaders, transfo
 
 **Caminho B — custo geométrico por brick:** como cada voxel pode ter uma malha customizada, o pack também soma o custo pior-caso de geometria de cada brick e grava 2 bits de subdivisão por brick na região de ocupação (Etapa 4).
 
+**Biomas procedurais data-driven (VS-22, ADR-B12 — aprovada, Opção A):** a composição do terreno (hoje hardcoded: dois ruídos fixos e blocos grama/terra/pedra) passa a vir de `assets/biomes.json` — biomas com centro climático (temperatura/umidade), pilha de camadas de ruído e blocos de superfície/subsolo/fundo, classificados por distância eíclidiana contínua com blending no ecótono (sem paredões entre biomas). Config padrão: 5 biomas (planícies, deserto, pantano, gelado, montanhoso), sem vegetação. Detalhes na spec VS-22.
+
 ## 5. Etapa 4: Culling e geometria on-the-fly (mesh shading)
 
 No loop gráfico, enviamos um único comando: `vkCmdDrawMeshTasksEXT`. Daqui em diante não há CPU, vertex buffers ou index buffers.
@@ -205,6 +207,7 @@ Estados: PENDING_READBACK → (timeline + memcpy + replay pending) → MATERIALI
 | B9 | bug alto | generate_voxels cobria só 8192/32768 voxels: numthreads(8,8,8), job = thread_id.z/32 | Corrigido |
 | Caminho B | recurso | Templates de malha data-driven em SSBO + subdivisão de brick | Implementado |
 | Culling de frustum | recurso | Planos Gribb-Hartmann na GPU no builder: early-out de chunk + por brick (VS-06/ADR-B11) | Implementado |
+| VS-22 | recurso | Biomas procedurais data-driven no generate — config JSON (clima T/H contínuo, ecótono, domain warping, blocos de superfície/subsolo por bioma); spec VS-22/ADR-B12 (Opção A), config padrão de 5 biomas sem vegetação | Implementado (validação manual pendente) |
 | E1 | recurso | Edição de voxels bufferizada com flush no command buffer do frame | Implementado |
 | C2 | recurso | Mirror CPU-side: ChunkPage denso u16 y-major + ring host-visible | Implementado |
 | Eventos | recurso | Bus de eventos de input/comando com gravação JSONL e replay 1× (VS-07) | Implementado |

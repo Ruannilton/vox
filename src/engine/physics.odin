@@ -1,33 +1,26 @@
 package engine
 
-// VS-19 (REQ-PHY-02..10; ADR-F1): solver de física de gameplay na CPU sobre
-// o mirror C2. Corpos AABB, passo fixo com acumulador, sweep eixo a eixo
-// (X→Y→Z) com subdivisão anti-tunneling, sliding, grounded recalculado por
-// contato, step-up seguro e fast-path de chão via `heights`. Mundo
-// desconhecido congela o corpo (sem deslocamento parcial) e coalesce o
-// pedido de página para a worker. Algoritmo espelhado bit a bit por
-// tools/sim/physics_sim.py (28 checks).
 
 import "core:log"
 import "core:math"
 import "core:sync"
 
 PHYSICS_FIXED_DT :: 1.0 / 60.0
-PHYSICS_MAX_STEPS_PER_FRAME :: 5 // teto anti espiral de morte (excesso descartado)
-PHYSICS_MAX_FRAME_DT :: f32(0.25)     // clamp do dt de frame antes do acumulador
+PHYSICS_MAX_STEPS_PER_FRAME :: 5 
+PHYSICS_MAX_FRAME_DT :: f32(0.25)    
 PHYSICS_GRAVITY :: f32(-24.0)
 PHYSICS_TERMINAL_VELOCITY :: f32(-60.0)
-PHYSICS_MAX_SUBSTEP :: f32(0.4) // < 1 voxel: nunca atravessa um voxel sem teste
-PHYSICS_STEP_UP_HEIGHT :: f32(1.0) // limite de 1 voxel por step-up
+PHYSICS_MAX_SUBSTEP :: f32(0.4) 
+PHYSICS_STEP_UP_HEIGHT :: f32(1.0)
 PHYSICS_GROUND_EPS :: f32(0.0001)
-PHYSICS_FRICTION_DAMPING :: f32(10.0) // damping horizontal = friction * 10 * dt
+PHYSICS_FRICTION_DAMPING :: f32(10.0) 
 
 PhysicsBody :: struct {
-	position:    [3]f32, // canto mínimo da AABB
+	position:    [3]f32, 
 	size:        [3]f32,
 	velocity:    [3]f32,
 	grounded:    bool,
-	frozen:      bool, // página desconhecida: congelado no último estado válido
+	frozen:      bool, 
 	allow_step_up: bool,
 }
 
@@ -45,7 +38,7 @@ PhysicsRayHit :: struct {
 	voxel:        [3]i32,
 	block_id:     u16,
 	distance:     f32,
-	normal:       [3]i32, // zero quando a origem já está dentro do voxel
+	normal:       [3]i32, 
 	unknown_chunk: ChunkCoordinate,
 }
 
@@ -54,13 +47,12 @@ PhysicsManager :: struct {
 	free_handles:        [dynamic]PhysicsHandle,
 	accumulator:         f32,
 	dropped_steps:       u64,
-	pending_requests:    map[ChunkCoordinate]struct {}, // coalescido p/ a worker
-	// estatísticas (plots Tracy)
+	pending_requests:    map[ChunkCoordinate]struct {},
 	stats_steps:         u64,
 	stats_contacts:      u64,
 	stats_voxels:        u64,
 	stats_frozen_frames: u64,
-	unknown_hits:        u64, // monotônico: detecta desconhecido dentro do passo
+	unknown_hits:        u64,
 }
 
 physics_init :: proc(ve: ^VoxelEngine) {
@@ -74,8 +66,6 @@ physics_destroy :: proc(ve: ^VoxelEngine) {
 	delete(ve.physics.free_handles)
 	delete(ve.physics.pending_requests)
 }
-
-// --- API pública (REQ-PHY-10): ciclo de vida/consulta de corpos ---
 
 physics_body_create :: proc(ve: ^VoxelEngine, position, size: [3]f32, allow_step_up := true) -> PhysicsHandle {
 	body := PhysicsBody {
@@ -105,14 +95,14 @@ physics_body_get :: proc(ve: ^VoxelEngine, handle: PhysicsHandle) -> ^PhysicsBod
 	return &ve.physics.bodies[index]
 }
 
-// Tick do acumulador (REQ-PHY-02): avança o estado somente em passos fixos.
+
 physics_tick :: proc(ve: ^VoxelEngine, frame_dt: f32) {
 	ZoneN("physics_tick")
 	ve.physics.accumulator += min(frame_dt, PHYSICS_MAX_FRAME_DT)
 	steps := 0
 	for ve.physics.accumulator >= PHYSICS_FIXED_DT && steps < PHYSICS_MAX_STEPS_PER_FRAME {
 		for &body in ve.physics.bodies {
-			if body.size.x <= 0 do continue // handle removido
+			if body.size.x <= 0 do continue 
 			ZoneN("physics_body_step")
 			physics_step(ve, &body)
 		}
@@ -120,7 +110,6 @@ physics_tick :: proc(ve: ^VoxelEngine, frame_dt: f32) {
 		steps += 1
 	}
 	if ve.physics.accumulator >= PHYSICS_FIXED_DT {
-		// espiral de morte: descarte documentado do excesso
 		ve.physics.dropped_steps += u64(math.floor(ve.physics.accumulator / PHYSICS_FIXED_DT))
 		ve.physics.accumulator = 0
 	}
@@ -133,8 +122,6 @@ physics_tick :: proc(ve: ^VoxelEngine, frame_dt: f32) {
 	}
 }
 
-// Drena os pedidos coalescidos na worker (chamada sob mirror.mutex pela
-// worker em mirror_update_bubble — REQ-PHY-06).
 physics_drain_requests :: proc(ve: ^VoxelEngine) {
 	for coord in ve.physics.pending_requests {
 		if record, active := ve.active_chunks[coord]; active {
@@ -144,10 +131,8 @@ physics_drain_requests :: proc(ve: ^VoxelEngine) {
 	clear(&ve.physics.pending_requests)
 }
 
-// --- consulta tri-state ao mundo ---
 
 physics_request_chunk :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate) {
-	// coalescido: map dedup; consumido pela worker em physics_drain_requests
 	sync.mutex_lock(&ve.mirror.mutex)
 	ve.physics.pending_requests[coord] = {}
 	sync.mutex_unlock(&ve.mirror.mutex)
@@ -175,8 +160,6 @@ physics_aabb_voxels :: proc "contextless" (pos, size: [3]f32) -> ([3]i32, [3]i32
 	return lo, hi
 }
 
-// Congela e registra o pedido; sinalizado por ok=false no retorno das
-// rotinas de varredura (padrão tri-state — nunca presumir ar).
 @(private)
 physics_unknown :: proc(ve: ^VoxelEngine, voxel: [3]i32) {
 	chunk, _ := mirror_chunk_and_local(voxel)
@@ -184,7 +167,6 @@ physics_unknown :: proc(ve: ^VoxelEngine, voxel: [3]i32) {
 	physics_request_chunk(ve, chunk)
 }
 
-// AABB inteiramente livre (e conhecida). False também congela o pedido.
 @(private)
 physics_aabb_free :: proc(ve: ^VoxelEngine, body: ^PhysicsBody, pos: [3]f32) -> bool {
 	lo, hi := physics_aabb_voxels(pos, body.size)
@@ -261,7 +243,6 @@ physics_sweep_axis :: proc(ve: ^VoxelEngine, body: ^PhysicsBody, axis: int, delt
 	return moved, false
 }
 
-// Apoio real abaixo (eps) — grounded é recalculado por contato a cada passo.
 @(private)
 physics_support_probe :: proc(ve: ^VoxelEngine, body: ^PhysicsBody) -> bool {
 	test := body.position
@@ -283,12 +264,7 @@ physics_support_probe :: proc(ve: ^VoxelEngine, body: ^PhysicsBody) -> bool {
 	return false
 }
 
-// Fast-path de chão (REQ-PHY-05): apoio via `heights` em O(1)/coluna quando
-// TODAS as colunas cobertas pela AABB têm topo conhecido != 0xFFFF, estão no
-// mesmo chunk no plano XZ e o corpo está inteiramente acima do topo mais
-// alto (fora de interiores/cavernas). Qualquer ambiguidade (0xFFFF, travessia
-// de chunk, corpo abaixo do topo, página ausente, deslocamento vertical)
-// cai no sweep completo — prova de equivalência em tools/sim/physics_sim.py.
+
 @(private)
 physics_ground_probe :: proc(ve: ^VoxelEngine, body: ^PhysicsBody) -> bool {
 	ZoneN("physics_ground_probe")
@@ -332,8 +308,7 @@ physics_ground_probe :: proc(ve: ^VoxelEngine, body: ^PhysicsBody) -> bool {
 	return physics_support_probe(ve, body)
 }
 
-// Step-up de 1 voxel: espaço livre para TODA a AABB na altura elevada + apoio
-// bloqueante no destino (REQ-PHY-04). Só após bloqueio horizontal.
+
 @(private)
 physics_step_up :: proc(ve: ^VoxelEngine, body: ^PhysicsBody, axis: int, delta: f32) -> bool {
 	start := body.position
@@ -362,19 +337,13 @@ physics_step :: proc(ve: ^VoxelEngine, body: ^PhysicsBody) {
 	start_vel := body.velocity
 	start_grounded := body.grounded
 
-	// tri-state: qualquer desconhecido aborta o passo INTEIRO (freeze sem
-	// deslocamento parcial — REQ-PHY-06). physics_unknown incrementa o
-	// contador monotônico unknown_hits; qualquer incremento dentro do passo
-	// reverte tudo (o map de pedidos é coalescido, não serve de marcador).
 	unknown_before := ve.physics.unknown_hits
 
 	body.velocity.y = max(body.velocity.y + PHYSICS_GRAVITY * dt, PHYSICS_TERMINAL_VELOCITY)
 	grounded := physics_ground_probe(ve, body)
 	if grounded && body.velocity.y < 0 do body.velocity.y = 0
 	if grounded {
-		// material neutro padrão (o probe de apoio não devolve id; a regra de
-		// combinação determinística usa a definição do bloco de contato nas
-		// respostas — a fricção de apoio usa o default documentado)
+
 		friction := f32(PHYSICS_DEFAULT_FRICTION)
 		damp := max(0.0, 1.0 - friction * PHYSICS_FRICTION_DAMPING * dt)
 		body.velocity.x *= damp
@@ -426,10 +395,6 @@ physics_step :: proc(ve: ^VoxelEngine, body: ^PhysicsBody) {
 	body.frozen = false
 }
 
-// --- Raycast DDA (REQ-PHY-08/09): Amanatides & Woo, resultado tri-state ---
-
-// Distância máxima obrigatória (> 0) e direção não nula; caso contrário o
-// resultado é MISS sem percorrer a grade (rejeição definida).
 physics_raycast :: proc(ve: ^VoxelEngine, origin, direction: [3]f32, max_distance: f32) -> PhysicsRayHit {
 	ZoneN("physics_raycast")
 	if max_distance <= 0 do return PhysicsRayHit{result = .MISS}
@@ -457,7 +422,6 @@ physics_raycast :: proc(ve: ^VoxelEngine, origin, direction: [3]f32, max_distanc
 		}
 	}
 
-	// origem dentro de voxel: primeira célula testada é a da origem
 	distance: f32 = 0
 	normal := [3]i32{0, 0, 0}
 	for {
@@ -478,7 +442,7 @@ physics_raycast :: proc(ve: ^VoxelEngine, origin, direction: [3]f32, max_distanc
 				normal = normal,
 			}
 		}
-		// avança para a próxima célula atravessada
+
 		axis := 0
 		if t_max.y < t_max.x do axis = 1
 		if t_max[axis] > t_max.z do axis = 2

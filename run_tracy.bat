@@ -30,10 +30,13 @@ set "OUT_DIR=.\bin"
 
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 
+:: (common.slang e lighting.slang são bibliotecas — importadas, não compiladas sozinhas)
 for %%I in ("%IN_DIR%\*.slang") do (
     if /I not "%%~nxI"=="common.slang" (
-        echo [BUILD] %%~nxI
-        slangc "%%I" -target spirv -o "%OUT_DIR%\%%~nI.spv"
+        if /I not "%%~nxI"=="lighting.slang" (
+            echo [BUILD] %%~nxI
+            slangc "%%I" -target spirv -o "%OUT_DIR%\%%~nI.spv"
+        )
     )
 )
 

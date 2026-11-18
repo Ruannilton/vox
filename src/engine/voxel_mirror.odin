@@ -7,7 +7,7 @@ import vk "vendor:vulkan"
 
 MirrorManager :: struct {
 	mutex: sync.Mutex,
-	// Pool fixo de páginas (endereços estáveis — o hash guarda ponteiros).
+
 	pool:       []MirrorChunkPage,
 	free_pages: [dynamic]u32,
 	pages:      map[ChunkCoordinate]^MirrorChunkPage,
@@ -18,8 +18,7 @@ MirrorManager :: struct {
 	stats_ring_misses: u64,
 }
 
-// Índice do MIRROR (y-contíguo) — REGRA 7: nunca usar o índice denso
-// x-contíguo do GPU/E1 aqui.
+
 
 mirror_bit_test :: proc "contextless" (mask: []u32, index: u32) -> bool {
 	return (mask[index >> 5] >> (index & 31)) & 1 != 0
@@ -66,9 +65,7 @@ mirror_service_retries :: proc(ve: ^VoxelEngine) {
 	}
 }
 
-// VS-10 (REQ-VRT-04): um chunk EMPTY tem conteúdo worldgen conhecido (ar
-// puro): a página é preenchida com zeros e o journal do E1 é replayado por
-// cima — correta por construção, sem leitura GPU (o registro não tem slot).
+
 mirror_page_fill_empty :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, page: ^MirrorChunkPage) {
 	for &id in page.ids do id = 0
 	for &word in page.solid do word = 0
@@ -205,9 +202,7 @@ mirror_column_ground :: proc(ve: ^VoxelEngine, world_x, world_z, y_from: i32) ->
 	}
 }
 
-// VS-13 (REQ-MIR-04): altura do sólido mais alto da coluna em O(1).
-// ok = false se a página está ausente/em readback (tri-state preservado);
-// height = 0xFFFF significa coluna sem sólido.
+
 mirror_height_get :: proc(ve: ^VoxelEngine, chunk_coord: ChunkCoordinate, x, z: u32) -> (ok: bool, height: u16) {
 	sync.mutex_lock(&ve.mirror.mutex)
 	defer sync.mutex_unlock(&ve.mirror.mutex)
@@ -260,19 +255,14 @@ mirror_materialize_from_ring :: proc(ve: ^VoxelEngine, task: GenerationTask, bat
 		),
 	)
 
-	// ring -> página (y-contíguo u16) + reconstrução da bitmask de sólidos
-	// (registry: planta ocupa o voxel mas não é sólida — VS-14 emenda).
+
 	base := int(ring_slot) * CHUNK_VOXEL_COUNT
 	src := voxel_gpu.mirror_export_ring_mapped[base:base + CHUNK_VOXEL_COUNT]
 	for id, i in src {
 		page.ids[i] = id
 		mirror_bit_write(page.solid[:], u32(i), block_is_solid(u32(id)))
 	}
-	// VS-19 (REQ-PHY-07): as 1.024 colunas `heights` são derivadas do bitmask
-	// `solid` recém-preenchido (topo sólido real; 0xFFFF = coluna vazia),
-	// imune a arcos/flutuantes. O ring `mirror_heightmap_ring` (binding 20)
-	// continua sendo escrito pelo generate como RESERVA FUTURA, mas o
-	// materialize o ignora (emenda do mantenedor, 2026-11-08).
+
 	for z in 0 ..< CHUNK_SIZE {
 		for x in 0 ..< CHUNK_SIZE {
 			column := u32(x) | (u32(z) << 5)
@@ -348,8 +338,6 @@ mirror_log_stats :: proc(ve: ^VoxelEngine, prefix: string) {
 	)
 }
 
-// VS-19 (AC-04): varredura heights × bitmask em todas as páginas
-// MATERIALIZED — heights[x|z<<5] deve ser o topo SÓLIDO derivado do bitmask.
 debug_heights_parity :: proc(ve: ^VoxelEngine) {
 	sync.mutex_lock(&ve.mirror.mutex)
 	defer sync.mutex_unlock(&ve.mirror.mutex)
@@ -494,8 +482,7 @@ mirror_request_page :: proc(ve: ^VoxelEngine, coord: ChunkCoordinate, record: Ch
 	case .GENERATING:
 		mirror_try_attach_to_generation(ve, coord, record, page)
 	case .EMPTY:
-		// VS-10 (REQ-VRT-04): conteúdo worldgen conhecido (ar puro) —
-		// preenche na CPU, sem export GPU (o registro não tem slot).
+
 		mirror_page_fill_empty(ve, coord, page)
 	case:
 		mirror_schedule_export(ve, coord, record)
@@ -510,10 +497,6 @@ mirror_page_apply :: proc(page: ^MirrorChunkPage, world_voxel: [3]i32, block_id:
 	solid := block_is_solid(block_id)
 	mirror_bit_write(page.solid[:], index, solid)
 
-	// VS-13 (REQ-MIR-03): o journal mantém o heightmap da coluna (índice
-	// z-contíguo x|z<<5 — NÃO aplicar mirror_index_from_local aqui). VS-14
-	// (emenda 2026-11-07): o topo é SÓLIDO — planta acima da superfície não
-	// move o heights (colocar/remover planta é no-op para a coluna).
 	column := u32(local.x) | (u32(local.z) << 5)
 	if solid {
 		// colocar sólido acima do topo — ou em coluna vazia (0xFFFF) — sobe
@@ -521,8 +504,7 @@ mirror_page_apply :: proc(page: ^MirrorChunkPage, world_voxel: [3]i32, block_id:
 			page.heights[column] = u16(local.y)
 		}
 	} else if page.heights[column] == u16(local.y) {
-		// remover o bloco do topo: rescan da coluna (32 leituras) para o
-		// novo topo sólido (ou 0xFFFF se a coluna esvaziou)
+
 		new_top: u16 = 0xFFFF
 		for ly := local.y - 1; ly >= 0; ly -= 1 {
 			if mirror_bit_test(page.solid[:], mirror_index_from_local({local.x, ly, local.z})) {
@@ -532,8 +514,7 @@ mirror_page_apply :: proc(page: ^MirrorChunkPage, world_voxel: [3]i32, block_id:
 		}
 		page.heights[column] = new_top
 	}
-	// demais casos (sólido em/abaixo do topo, planta acima do topo,
-	// remoção abaixo do topo): heights inalterado
+
 }
 
 @(private)

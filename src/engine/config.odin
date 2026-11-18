@@ -1,8 +1,5 @@
 package engine
 
-// VS-08 (REQ-CFG-01..04, REQ-CFG-07): config via INI + provisionamento runtime.
-// O Config global é carregado/validado ANTES de CreateEngine (sem janela em erro
-// fatal); a validação de máquina (REQ-CFG-04) roda após create_vma_allocator.
 
 import "core:fmt"
 import "core:log"
@@ -14,11 +11,9 @@ import vk "vendor:vulkan"
 
 CONFIG_DEFAULT_PATH :: "vox.ini"
 
-// Fator de folga do pool de páginas do mirror (REQ-CFG-02).
 MIRROR_PAGE_FACTOR_NUM :: 3
 MIRROR_PAGE_FACTOR_DEN :: 2
 
-// Margem de segurança do budget device-local (REQ-CFG-04).
 CONFIG_BUDGET_MARGIN_NUM :: 9
 CONFIG_BUDGET_MARGIN_DEN :: 10
 
@@ -30,23 +25,24 @@ Config :: struct {
 	radius_simulation:   u32,
 	chunks_per_batch:    u32,
 	batches_in_flight:   u32,
+	frames_in_flight:    u32, 
 
 	// capacidades derivadas (REQ-CFG-02)
-	visible_capacity:      u32, // |esfera(vision)|
-	resident_slots:        u32, // |esfera(generation)|
-	scratch_chunks:        u32, // batches_in_flight × chunks_per_batch
-	mirror_pages:          u32, // ⌈|esfera(simulation)| × 1,5⌉
-	mirror_ring_slots:     u32, // max(64, próxima potência de 2 ≥ scratch_chunks)
-	work_item_capacity:    u32, // visible_capacity × BRICKS_PER_CHUNK
-	work_queue_slot_words: u32, // WORK_QUEUE_STATE_WORDS + work_item_capacity
+	visible_capacity:      u32, 
+	resident_slots:        u32, 
+	scratch_chunks:        u32, 
+	mirror_pages:          u32,
+	mirror_ring_slots:     u32, 
+	work_item_capacity:    u32, 
+	work_queue_slot_words: u32, 
 
-	provisioned_device_bytes: u64, // bytes device somados na validação de máquina
+	provisioned_device_bytes: u64,
 }
 
 config: Config
-config_path: string // definido pelo parsing de flags da VS-07 (--config)
+config_path: string
 
-// VS-15 (REQ-TRC-04): resumo da config efetiva para o AppInfo do Tracy.
+
 ConfigSummary :: proc() -> string {
 	return fmt.tprintf(
 		"cfg: visao={} geracao={} descarga={} simulacao={} lote={} lotes_em_voo={} vis_cap={} slots={} scratch={} paginas_mirror={}",
@@ -64,8 +60,6 @@ ConfigSummary :: proc() -> string {
 }
 
 
-// Carga do INI + defaults + derivações + validação (REQ-CFG-01..03); erros
-// fatais saem sem criar janela.
 config_load :: proc() {
 	path := config_path
 	if path == "" {
@@ -79,6 +73,7 @@ config_load :: proc() {
 		radius_simulation = 5,
 		chunks_per_batch  = 16,
 		batches_in_flight = 3,
+		frames_in_flight  = 2,
 	}
 
 	data, ferr := os.read_entire_file_from_path(path, context.temp_allocator)
@@ -96,8 +91,6 @@ config_load :: proc() {
 	config_log_effective()
 }
 
-// Validação de máquina (REQ-CFG-04): requerido × budget device-local × 0,9.
-// Roda após create_vma_allocator e antes de qualquer provisionamento.
 config_validate_machine :: proc() {
 	config.provisioned_device_bytes = config_device_bytes_required()
 
@@ -116,7 +109,6 @@ config_validate_machine :: proc() {
 	device_budget = (device_budget * CONFIG_BUDGET_MARGIN_NUM) / CONFIG_BUDGET_MARGIN_DEN
 
 	if config.provisioned_device_bytes > device_budget {
-		// sugestão: reduzir unload (que governa os slots residentes), piso em generation + 1
 		suggestion := config.radius_unload
 		for suggestion > config.radius_generation + 1 {
 			slots := (sphere_count(suggestion - 1) * 105 + 99) / 100
@@ -146,7 +138,7 @@ config_validate_machine :: proc() {
 	}
 
 	log.infof(
-		"VS-08: validação de máquina OK — {} bytes provisionados (device-local) de {} disponíveis (budget × 0,9)",
+		"validação de máquina OK — {} bytes provisionados (device-local) de {} disponíveis (budget × 0,9)",
 		config.provisioned_device_bytes,
 		device_budget,
 	)
@@ -164,9 +156,9 @@ config_device_bytes_required :: proc() -> u64 {
 		size_of(ChunkHeader) +
 		u64(SPECIAL_RECORDS_PER_CHUNK) * size_of(SpecialVoxelRecord)
 	)
-	work_queue := u64(NUM_FRAMES_IN_FLIGHT) * (u64(WORK_QUEUE_STATE_WORDS) + visible * BRICKS_PER_CHUNK) * size_of(u32)
+	work_queue := u64(config.frames_in_flight) * (u64(WORK_QUEUE_STATE_WORDS) + visible * BRICKS_PER_CHUNK) * size_of(u32)
 	scratch_bytes := scratch * u64(CHUNK_VOXEL_COUNT) * size_of(u32)
-	visible_chunks := u64(NUM_FRAMES_IN_FLIGHT) * visible * size_of(VisibleChunk)
+	visible_chunks := u64(config.frames_in_flight) * visible * size_of(VisibleChunk)
 	generation_jobs := scratch * size_of(ChunkGenerationJob)
 
 	fixed := u64(BLOCK_REGISTRY_CAPACITY) * size_of(BlockDefinition) +
@@ -176,8 +168,6 @@ config_device_bytes_required :: proc() -> u64 {
 		1024 * 2 * size_of(f32) + // template_uvs (VS-11, binding 19)
 		16 // dummy_buffer
 
-	// VS-10 (REQ-VRT-05): feedback de flags do pack por slot (binding 18,
-	// host-visible) — residual (4 B × slots).
 	result_flags := slots * size_of(u32)
 
 	return pools + work_queue + scratch_bytes + visible_chunks + generation_jobs + fixed + result_flags
@@ -185,8 +175,7 @@ config_device_bytes_required :: proc() -> u64 {
 
 @(private)
 config_derive_and_validate :: proc(cfg: ^Config) {
-	// REQ-CFG-03 (emendada VS-09, REQ-WID-02): visible_index de 16 bits —
-	// visíveis ≤ 65535, logo vision ≤ 25 (esfera(25)=65.267; esfera(26)=73.525 estoura).
+	
 	if cfg.radius_vision < 1 || cfg.radius_vision > 25 {
 		config_fatal(
 			"streaming.vision = {} fora do intervalo válido 1..25 (limite de formato: visible_index tem 16 bits no item da fila de trabalho, no máximo 65535 visíveis; vision=26 daria {} > 65535)",
@@ -217,11 +206,16 @@ config_derive_and_validate :: proc(cfg: ^Config) {
 	if cfg.batches_in_flight < 1 || cfg.batches_in_flight > 8 {
 		config_fatal("compute.batches_in_flight = {} fora do intervalo válido 1..8", cfg.batches_in_flight)
 	}
+	if cfg.frames_in_flight < 2 || cfg.frames_in_flight > MAX_FRAMES_IN_FLIGHT {
+		config_fatal(
+			"sync.frames_in_flight = {} fora do intervalo válido 2..{}",
+			cfg.frames_in_flight,
+			MAX_FRAMES_IN_FLIGHT,
+		)
+	}
 
 	visible := sphere_count(cfg.radius_vision)
 	generation := sphere_count(cfg.radius_generation)
-	// slots residentes: esfera de UNLOAD (retenção CAGED até unload + transitório
-	// de aposentadoria B1) + margem de 5% — derivar de generation esgota o pool.
 	resident := (sphere_count(cfg.radius_unload) * 105 + 99) / 100
 	simulation := sphere_count(cfg.radius_simulation)
 	scratch := u64(cfg.batches_in_flight) * u64(cfg.chunks_per_batch)
@@ -275,13 +269,14 @@ config_fatal :: proc(format: string, args: ..any) -> ! {
 @(private)
 config_log_effective :: proc() {
 	log.infof(
-		"Config efetiva: visão={} geração={} descarga={} simulação={} lote={} lotes_em_voo={} → visíveis={} slots={} scratch={} páginas_mirror={} ring_mirror={} itens_fila={}",
+		"Config efetiva: visão={} geração={} descarga={} simulação={} lote={} lotes_em_voo={} frames_em_voo={} → visíveis={} slots={} scratch={} páginas_mirror={} ring_mirror={} itens_fila={}",
 		config.radius_vision,
 		config.radius_generation,
 		config.radius_unload,
 		config.radius_simulation,
 		config.chunks_per_batch,
 		config.batches_in_flight,
+		config.frames_in_flight,
 		config.visible_capacity,
 		config.resident_slots,
 		config.scratch_chunks,
@@ -297,7 +292,6 @@ config_parse_ini :: proc(text, path: string, cfg: ^Config) {
 	lines := strings.split(text, "\n", context.temp_allocator)
 	for line_raw, line_no in lines {
 		line := strings.trim_space(line_raw)
-		// comentário: linha inteira ou inline com ';'
 		if i := strings.index(line, ";"); i >= 0 {
 			line = strings.trim_space(line[:i])
 		}
@@ -308,7 +302,7 @@ config_parse_ini :: proc(text, path: string, cfg: ^Config) {
 				config_fatal("{}:{}: seção malformada '{}' (esperado [nome])", path, line_no + 1, line)
 			}
 			section = line[1:len(line) - 1]
-			if section != "streaming" && section != "compute" {
+			if section != "streaming" && section != "compute" && section != "sync" {
 				log.warnf("{}:{}: seção desconhecida '[{}]'; chaves nela serão ignoradas", path, line_no + 1, section)
 			}
 			continue
@@ -321,7 +315,7 @@ config_parse_ini :: proc(text, path: string, cfg: ^Config) {
 		key := strings.trim_space(line[:eq])
 		value_raw := strings.trim_space(line[eq + 1:])
 
-		if section != "streaming" && section != "compute" {
+		if section != "streaming" && section != "compute" && section != "sync" {
 			continue
 		}
 
@@ -341,6 +335,8 @@ config_parse_ini :: proc(text, path: string, cfg: ^Config) {
 			dst = &cfg.chunks_per_batch
 		case "compute.batches_in_flight":
 			dst = &cfg.batches_in_flight
+		case "sync.frames_in_flight":
+			dst = &cfg.frames_in_flight
 		case:
 			known = false
 		}

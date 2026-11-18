@@ -1,6 +1,6 @@
 # Painel de status
 
-Última revisão geral: 2026-11-08.
+Última revisão geral: 2026-11-14.
 
 Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o frontmatter correspondente no mesmo trabalho.
 
@@ -8,14 +8,15 @@ Este é o registro central. Ao alterar uma spec ou ADR, atualize esta tabela e o
 
 | Indicador | Quantidade |
 | --- | ---: |
-| Specs registradas | 22 |
-| Specs aprovadas | 22 |
+| Specs registradas | 24 |
+| Specs aprovadas | 24 |
 | Specs em elaboração ou revisão | 0 |
 | Implementações em andamento | 0 |
-| Implementações concluídas | 22 |
+| Implementações concluídas | 23 |
 | Validações verificadas | 20 |
+| Validações em andamento | 3 |
 
-Vinte e duas especificações registradas e aprovadas; **22 implementadas, 20 integralmente verificadas** (VS-21 concluída e verificada). VS-15 e VS-16 aguardam os ACs manuais da UI Tracy. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
+Vinte e quatro especificações registradas e aprovadas; 23 implementadas, 20 integralmente verificadas (VS-15 e VS-16 aguardam os ACs manuais da UI Tracy). VS-22 (biomas procedurais data-driven, ADR-B12 Opção A) implementada em 2026-11-12 — config padrão de 5 biomas sem vegetação; sims verdes (biomes 1.271 / render 2.982 / pack 1.077) e `spirv-val` limpo; **validação manual com o mantenedor pendente** (screenshots de ecótono, telemetria de geração, regeneração bit a bit). VS-23 (iluminação híbrida por ray casting, ADR-L1) aprovada em 2026-11-14; Fases 0–3 implementadas em 2026-11-14 (sims opacity/trace/AO/light verdes, build default/Tracy limpo, smoke de validação Vulkan sem VUIDs) — ACs manuais de validação visual e captura Tracy pendentes com o mantenedor. Ver a lista consolidada de itens futuros em [[backlog|Backlog]].
 
 ## Tracking das especificações
 
@@ -43,7 +44,8 @@ Vinte e duas especificações registradas e aprovadas; **22 implementadas, 20 in
 | VS-19 | [[VS-19-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aprovada` | `concluida` | `verificada` | VS-04, VS-13, VS-14, VS-18 | — |
 | VS-20 | [[VS-20-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aprovada` | `concluida` | `verificada` | VS-03, VS-07, VS-19 | — |
 | VS-21 | [[VS-21-texturas-nearest-flip-stb-faces|Texturas — nearest, flip Y, stb_image e multi-face]] | `aprovada` | `concluida` | `verificada` | VS-11, VS-12 | — |
-| VS-21 | [[VS-21-texturas-nearest-flip-stb-faces|Texturas — nearest, flip Y, stb_image e multi-face]] | `aprovada` | `em-andamento` | `nao-iniciada` | VS-11, VS-12 | — |
+| VS-22 | [[VS-22-biomas-procedurais|Biomas procedurais data-driven na geração]] | `aprovada` | `concluida` | `em-validacao` | VS-01, VS-12, VS-13, VS-14 | validação manual do mantenedor |
+| VS-23 | [[VS-23-iluminacao-gpu-raycast|Iluminação híbrida por ray casting na GPU]] | `aprovada` | `em-andamento` | `nao-iniciada` | VS-02, VS-03, VS-04 | — |
 
 ## Decisões
 
@@ -80,6 +82,7 @@ O índice completo e suas justificativas estão em [[00-indice|Índice de ADRs]]
 | ADR-F1 | [[ADR-F1-fisica-solver-mirror|Física de gameplay — solver CPU sobre o mirror]] | `aceita` | VS-00, VS-13, VS-19 |
 | ADR-G2 | [[ADR-G2-gameplay-selecao-construcao-pulo|Gameplay — seleção, construção e pulo]] | `aceita` | VS-00, VS-20 |
 | ADR-T5 | [[ADR-T5-texturas-stb-face|Texturas — stb_image, flip Y, nearest e topo por face]] | `aceita` | VS-02, VS-12, VS-21 |
+| ADR-L1 | [[ADR-L1-iluminacao-gpu-raycast|Iluminação híbrida por ray casting na GPU]] | `aceita` | VS-23 |
 
 ## Vocabulário de status
 

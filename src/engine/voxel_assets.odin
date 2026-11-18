@@ -1,9 +1,5 @@
 package engine
 
-// VS-12 (REQ-AST-01..06, REQ-VAL-07): assets data-driven via JSON.
-// `assets/blocks.json` define meshes reaproveitáveis, texturas (PNG única) e
-// blocos por nome. Parse + validação rodam ANTES de CreateEngine; o resultado
-// é consumido no init do motor de voxels. Ausente → warning + built-ins (paridade).
 
 import "core:c"
 import "core:encoding/json"
@@ -17,21 +13,18 @@ import stbi "vendor:stb/image"
 
 ASSETS_DEFAULT_PATH :: "assets/blocks.json"
 
-// Pools de templates têm capacidade fixa (buffers criados em voxel_gpu_init).
+
 VERTEX_POOL_CAPACITY   :: 1024
 TRIANGLE_POOL_CAPACITY :: 1024
 UV_POOL_CAPACITY       :: 1024
 MAX_ASSET_TEXTURE_DIM  :: 256
 
-// VS-19 (REQ-PHY-01): tabela física exclusivamente CPU-side — o std430 de
-// BlockDefinition (48 B) NÃO muda e nenhuma propriedade física vai ao shader.
+
 PHYSICS_FLAG_BLOCKING  :: 1
 PHYSICS_FLAG_HITTABLE  :: 2
-PHYSICS_FLAG_CLIMBABLE :: 4 // reservado (líquidos/escaláveis fora de escopo)
-PHYSICS_FLAG_LIQUID    :: 8 // reservado
+PHYSICS_FLAG_CLIMBABLE :: 4 
+PHYSICS_FLAG_LIQUID    :: 8 
 
-// Defaults documentados (REQ-PHY-01): blocking deriva da solidez do tipo;
-// hittable = true para qualquer bloco não-ar; fricção/restituição neutras.
 PHYSICS_DEFAULT_FRICTION     :: 0.6
 PHYSICS_DEFAULT_RESTITUTION  :: 0.0
 
@@ -43,18 +36,17 @@ PhysicsDefinition :: struct {
 
 VoxelAssets :: struct {
 	loaded:      bool,
-	templates:   []MeshTemplate, // inclui slot 0 (AR) na posição 0
+	templates:   []MeshTemplate,
 	vertices:    [][4]f32,
-	triangles:   []u32, // packed com cull tag nos bits 24–26
-	uvs:         [][2]f32, // só malhas com UVs; indexado por uv_offset
+	triangles:   []u32, 
+	uvs:         [][2]f32, 
 	registry:    [BLOCK_REGISTRY_CAPACITY]BlockDefinition,
-	block_names: []string, // por id ("" quando o id não tem bloco)
-	texture_pixels: []u8, // RGBA8, w*h*4*layers (ordem de definição)
+	block_names: []string, 
+	texture_pixels: []u8,
 	texture_width:  u32,
 	texture_height: u32,
 	texture_layers: u32,
-	layer_of:       map[string]int, // nome de textura → camada (privado ao build)
-	// VS-21 (REQ-TEX-09): contadores de decode (zone assets_texture_decode)
+	layer_of:       map[string]int, 
 	stats_textures_decoded: u64,
 	stats_texture_bytes:    u64,
 	stats_decode_ms:        f64,
@@ -82,15 +74,9 @@ assets_json_block :: struct {
 	id:         i64 `json:"id"`,
 	name:       string `json:"name"`,
 	mesh:       string `json:"mesh"`,
-	// VS-14 (REQ-PLT-01): opcional; tipo errado falha o unmarshal (fatal).
 	transparent: bool `json:"transparent"`,
-	// VS-14 (emenda): opcional, default true; false marca NON_SOLID (planta).
 	solid: Maybe(bool) `json:"solid"`,
-	// VS-19 (REQ-PHY-01): opcional; objeto validado campo a campo em
-	// assets_parse_physics (tipos/flags/materiais citam o bloco).
 	physics: json.Value `json:"physics"`,
-	// VS-21 (REQ-TEX-04): string ou objeto de 6 faces — parse manual em
-	// assets_parse_texture_faces (json.Value captura os dois formatos).
 	texture: json.Value `json:"texture"`,
 }
 
@@ -106,7 +92,7 @@ assets_json_doc :: struct {
 	blocks:   []assets_json_block `json:"blocks"`,
 }
 
-// Carga + validação (REQ-AST-06). Ausente → loaded = false (fallback).
+
 assets_load :: proc() {
 	path := ASSETS_DEFAULT_PATH
 	data, ferr := os.read_entire_file_from_path(path, context.allocator)
@@ -130,8 +116,7 @@ assets_load :: proc() {
 	assets_build_blocks(&doc)
 
 	voxel_assets.loaded = true
-	// VS-21 (REQ-TEX-09): contagem de decode dentro da zone
-	// assets_texture_decode; resumo com texturas/bytes.
+
 	log.infof(
 		"VS-12: assets carregados de {} — {} malhas, {} texturas ({}x{}x{}), {} blocos | VS-21: {} texturas decodificadas, {} bytes",
 		path,
@@ -145,11 +130,10 @@ assets_load :: proc() {
 		voxel_assets.stats_texture_bytes,
 	)
 	log.infof("VS-21: decode/flip de texturas em {:.2f} ms (zone assets_texture_decode no upload)", voxel_assets.stats_decode_ms)
+	biomes_load()
 }
 
-// VS-14 (emenda 2026-11-07): solidez é propriedade do tipo de bloco. Com
-// assets, consulta o registry carregado; sem assets, a regra built-in
-// (ids 1..3 sólidos, 4 = planta não-sólida).
+
 block_is_solid :: proc "contextless" (block_id: u32) -> bool {
 	if block_id == 0 do return false
 	if voxel_assets.loaded {
@@ -158,8 +142,6 @@ block_is_solid :: proc "contextless" (block_id: u32) -> bool {
 	return block_id != 4
 }
 
-// VS-19 (REQ-PHY-01): o bitmask `solid` filtra candidatos; a semântica de
-// bloqueio vem da tabela física (planta ocupa o voxel sem bloquear).
 block_is_blocking :: proc "contextless" (block_id: u32) -> bool {
 	return voxel_physics[block_id].flags & PHYSICS_FLAG_BLOCKING != 0
 }
@@ -168,8 +150,7 @@ block_is_hittable :: proc "contextless" (block_id: u32) -> bool {
 	return voxel_physics[block_id].flags & PHYSICS_FLAG_HITTABLE != 0
 }
 
-// VS-21 (REQ-TEX-02): inverte as linhas de um buffer RGBA8 (stride w·4),
-// trocando y com height−1−y. Dupla aplicação restaura a entrada.
+
 flip_rows :: proc(pixels: []u8, width, height: int) {
 	stride := width * 4
 	row := make([]u8, stride, context.temp_allocator)
@@ -182,9 +163,7 @@ flip_rows :: proc(pixels: []u8, width, height: int) {
 	}
 }
 
-// Fallback built-in (REQ-PHY-01): paridade semântica com o caminho do JSON —
-// ids 1..3 bloqueantes e atingíveis, planta (4) não-bloqueante e atingível,
-// fricção/restituição nos defaults documentados.
+
 physics_init_builtin :: proc "contextless" () {
 	for id in 1 ..= 3 {
 		voxel_physics[id] = PhysicsDefinition{
@@ -358,9 +337,7 @@ assets_build_textures :: proc(doc: ^assets_json_doc, json_path: string) {
 		if ferr != nil {
 			assets_fatal("{}: PNG não encontrado: {}", ctx, tex.path)
 		}
-		// VS-21 (REQ-TEX-01/02): stb_image normaliza tudo para RGBA8;
-		// flip_rows explícito pós-decode corrige a orientação vertical
-		// (nem o decoder antigo nem o upload invertiam linhas).
+
 		w, h: c.int
 		channels_in_file: c.int
 		decoded := stbi.load_from_memory(raw_data(data), c.int(len(data)), &w, &h, &channels_in_file, 4)
@@ -445,8 +422,7 @@ assets_build_blocks :: proc(doc: ^assets_json_doc) {
 		if !ok {
 			assets_fatal("{}: malha '{}' não encontrada", ctx, block.mesh)
 		}
-		// VS-21 (REQ-TEX-04): string normalizada para o objeto de 6 faces
-		// iguais — internamente só existe a representação de objeto.
+
 		albedo_faces := assets_parse_texture_faces(ctx, block.texture, voxel_assets.layer_of)
 		flags: u32 = block.transparent ? BLOCK_DEFINITION_FLAG_TRANSPARENT : 0
 		if block.solid != nil && block.solid.? == false {
@@ -483,10 +459,7 @@ assets_build_blocks :: proc(doc: ^assets_json_doc) {
 		assets_fatal("blocos obrigatórios do worldgen ausentes: ids {}", strings.join(missing[:], ", ", context.temp_allocator))
 	}
 
-	// VS-19 (REQ-PHY-01): invariantes da tabela física — ar (id 0) nunca
-	// bloqueia nem é atingível; a planta padrão (4, NON_SOLID) é
-	// não-bloqueante e atingível. BlockDefinition/std430 inalterado (48 B,
-	// #assert em voxel_types.odin).
+
 	log.assert(voxel_physics[0].flags == 0, "tabela física: id 0 (AR) deve ser não-bloqueante e não-atingível")
 	if voxel_assets.registry[4].flags & BLOCK_DEFINITION_FLAG_NON_SOLID != 0 {
 		log.assert(
@@ -508,9 +481,6 @@ face_names_face :: proc(layer: u32) -> string {
 	return "?"
 }
 
-// VS-21 (REQ-TEX-04): ordena as faces do objeto para albedo_faces[6] na
-// ordem FACE_NORMALS (+X=right, -X=left, +Y=top, -Y=bottom, +Z=front,
-// -Z=back). String vira o objeto com as 6 faces iguais.
 TEXTURE_FACE_TO_SLOT :: [6]int{2, 3, 4, 5, 1, 0} // top,bottom,front,back,left,right -> slot FACE_NORMALS (+X=0,-X=1,+Y=2,-Y=3,+Z=4,-Z=5)
 
 @(private)
